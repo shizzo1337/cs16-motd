@@ -42,6 +42,22 @@ jobs:
         working-directory: cs16
         run: cmake --build build --target client
 
+      - name: Check architecture (must be 32-bit x86)
+        shell: bash
+        working-directory: cs16
+        run: |
+          found=0
+          for f in $(find build -name "client*.dll"); do
+            found=1
+            echo "== $f"
+            dumpbin -headers "$f" | grep -i "machine"
+            if ! dumpbin -headers "$f" | grep -qi "14C machine (x86)"; then
+              echo "ERROR: $f is NOT a 32-bit (x86) library"
+              exit 1
+            fi
+          done
+          if [ "$found" = "0" ]; then echo "ERROR: client dll was not built"; exit 1; fi
+
       - name: Collect result
         shell: bash
         working-directory: cs16
