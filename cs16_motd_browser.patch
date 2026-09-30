@@ -14,14 +14,15 @@ index b0af818..93f3656 100644
  	DESTINATION "${GAME_DIR}/${CLIENT_INSTALL_DIR}/"
  	PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
 diff --git a/cl_dll/hud.h b/cl_dll/hud.h
-index f23bb7c..b5fb7a8 100644
+index f23bb7c..df3728b 100644
 --- a/cl_dll/hud.h
 +++ b/cl_dll/hud.h
-@@ -347,14 +347,25 @@ public:
+@@ -347,14 +347,26 @@ public:
  	float scroll;
  	bool m_bShow;
  	cvar_t *cl_hide_motd;
 +	cvar_t *cl_motd_browser;
++	cvar_t *cl_motd_browser_keep_game;
  
  protected:
  	static int MOTD_DISPLAY_TIME;
@@ -44,20 +45,22 @@ index f23bb7c..b5fb7a8 100644
  
  
 diff --git a/cl_dll/hud/MOTD.cpp b/cl_dll/hud/MOTD.cpp
-index 83208f5..651248e 100644
+index 83208f5..95b0187 100644
 --- a/cl_dll/hud/MOTD.cpp
 +++ b/cl_dll/hud/MOTD.cpp
-@@ -39,6 +39,9 @@ int CHudMOTD :: Init( void )
+@@ -39,6 +39,11 @@ int CHudMOTD :: Init( void )
  	HOOK_MESSAGE( gHUD.m_MOTD, MOTD );
  
  	cl_hide_motd = CVAR_CREATE("cl_hide_motd", "0", FCVAR_ARCHIVE); // hide motd
 +	// 0 - show MOTD inside the game, 1 - open URL MOTD in system browser, 2 - open URL and HTML MOTD in system browser
 +	cl_motd_browser = CVAR_CREATE("cl_motd_browser", "2", FCVAR_ARCHIVE);
++	// 1 - do not let the game window minimize when the browser opens
++	cl_motd_browser_keep_game = CVAR_CREATE("cl_motd_browser_keep_game", "1", FCVAR_ARCHIVE);
 +	ResetBrowserState();
  	Reset();
  
  	return 1;
-@@ -47,9 +50,137 @@ int CHudMOTD :: Init( void )
+@@ -47,9 +52,137 @@ int CHudMOTD :: Init( void )
  int CHudMOTD :: VidInit( void )
  {
  	// Load sprites here
@@ -83,7 +86,7 @@ index 83208f5..651248e 100644
 +}
 +
 +#if XASH_WIN32 == 1
-+bool MOTD_OpenInBrowser( const char *target );
++bool MOTD_OpenInBrowser( const char *target, bool keepGameWindow );
 +bool MOTD_SaveTempHtml( const char *html, size_t len, char *outPath, size_t outSize );
 +#endif
 +
@@ -169,7 +172,7 @@ index 83208f5..651248e 100644
 +		if( StartsWithNoCase( url, "http://" ) || StartsWithNoCase( url, "https://" ))
 +		{
 +			gEngfuncs.Con_Printf( "Opening MOTD in browser: %s\n", url );
-+			MOTD_OpenInBrowser( url );
++			MOTD_OpenInBrowser( url, cl_motd_browser_keep_game->value != 0 );
 +		}
 +	}
 +	else if( m_iBrowserMode == BROWSER_HTML )
@@ -179,7 +182,7 @@ index 83208f5..651248e 100644
 +		if( MOTD_SaveTempHtml( m_szBrowserMOTD, m_iBrowserLen, path, sizeof( path )))
 +		{
 +			gEngfuncs.Con_Printf( "Opening MOTD in browser: %s\n", path );
-+			MOTD_OpenInBrowser( path );
++			MOTD_OpenInBrowser( path, cl_motd_browser_keep_game->value != 0 );
 +		}
 +		else gEngfuncs.Con_Printf( "Can't save MOTD to a temporary file\n" );
 +	}
@@ -195,7 +198,7 @@ index 83208f5..651248e 100644
  void CHudMOTD :: Reset( void )
  {
  	m_iFlags &= ~HUD_DRAW;  // start out inactive
-@@ -137,13 +268,19 @@ int CHudMOTD :: MsgFunc_MOTD( const char *pszName, int iSize, void *pbuf )
+@@ -137,13 +270,19 @@ int CHudMOTD :: MsgFunc_MOTD( const char *pszName, int iSize, void *pbuf )
  		Reset(); // clear the current MOTD in prep for this one
  	}
  
@@ -221,10 +224,10 @@ index 83208f5..651248e 100644
  	if( strcasestr( m_szMOTD.String(), "<!DOCTYPE HTML>" ) )
 diff --git a/cl_dll/hud/MOTD_browser.cpp b/cl_dll/hud/MOTD_browser.cpp
 new file mode 100644
-index 0000000..fad4296
+index 0000000..f093e19
 --- /dev/null
 +++ b/cl_dll/hud/MOTD_browser.cpp
-@@ -0,0 +1,64 @@
+@@ -0,0 +1,102 @@
 +//
 +// MOTD_browser.cpp
 +//
@@ -234,7 +237,7 @@ index 0000000..fad4296
 +
 +#include <stddef.h>
 +
-+bool MOTD_OpenInBrowser( const char *target );
++bool MOTD_OpenInBrowser( const char *target, bool keepGameWindow );
 +bool MOTD_SaveTempHtml( const char *html, size_t len, char *outPath, size_t outSize );
 +
 +#if defined( _WIN32 )
@@ -244,9 +247,47 @@ index 0000000..fad4296
 +#include <windows.h>
 +#include <shellapi.h>
 +#include <stdio.h>
++#include <stdlib.h>
 +
-+bool MOTD_OpenInBrowser( const char *target )
++// By default SDL minimizes a fullscreen game window when it loses focus,
++// and the browser takes focus as soon as it is opened.
++// Tell SDL not to do that. SDL is already loaded by the engine, so
++// take its function from the loaded module instead of linking to it.
++static void MOTD_DisableMinimizeOnFocusLoss( void )
 +{
++	typedef int ( __cdecl *pfnSDL_SetHint )( const char *name, const char *value );
++	static const char *modules[] = { "SDL2.dll", "SDL3.dll" };
++	static const char *hint = "SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS";
++	bool done = false;
++
++	for( int i = 0; i < 2; i++ )
++	{
++		HMODULE sdl = GetModuleHandleA( modules[i] );
++
++		if( !sdl )
++			continue;
++
++		pfnSDL_SetHint setHint = (pfnSDL_SetHint)GetProcAddress( sdl, "SDL_SetHint" );
++
++		if( setHint )
++		{
++			setHint( hint, "0" );
++			done = true;
++		}
++	}
++
++	if( !done ) // SDL not found, SDL also reads this setting from the environment
++	{
++		SetEnvironmentVariableA( hint, "0" );
++		_putenv( "SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS=0" );
++	}
++}
++
++bool MOTD_OpenInBrowser( const char *target, bool keepGameWindow )
++{
++	if( keepGameWindow )
++		MOTD_DisableMinimizeOnFocusLoss();
++
 +	HINSTANCE result = ShellExecuteA( NULL, "open", target, NULL, NULL, SW_SHOWNORMAL );
 +
 +	return (INT_PTR)result > 32;
@@ -276,9 +317,9 @@ index 0000000..fad4296
 +
 +#else // not implemented on other platforms yet
 +
-+bool MOTD_OpenInBrowser( const char *target )
++bool MOTD_OpenInBrowser( const char *target, bool keepGameWindow )
 +{
-+	(void)target;
++	(void)target; (void)keepGameWindow;
 +	return false;
 +}
 +
