@@ -1,4 +1,4 @@
-name: Build cs16-client with MOTD in browser
+name: Build cs16-client 3842 (32-bit) with MOTD in browser
 
 on:
   workflow_dispatch:
@@ -16,11 +16,11 @@ jobs:
         with:
           path: mypatch
 
-      - name: Get cs16-client sources (commit of build 3979)
+      - name: Get cs16-client sources (commit of build 3842)
         uses: actions/checkout@v4
         with:
           repository: Velaron/cs16-client
-          ref: e30e27c3bd890f731ad7921d9c876d171aea4b32
+          ref: c71cfc16e9e1d44104ee0e2c55da9ba24507f4f9
           submodules: recursive
           path: cs16
 
@@ -29,14 +29,14 @@ jobs:
         working-directory: cs16
         run: git apply --ignore-whitespace ../mypatch/cs16_motd_browser.patch
 
-      - name: Setup Visual Studio (64-bit)
+      - name: Setup Visual Studio (32-bit)
         uses: ilammy/msvc-dev-cmd@v1
         with:
-          arch: amd64
+          arch: x86
 
       - name: Configure
         working-directory: cs16
-        run: cmake --preset win32-release-amd64 -DBUILD_MAINUI=OFF -DBUILD_SERVER=OFF
+        run: cmake --preset win32-release-x86 -DBUILD_MAINUI=OFF -DBUILD_SERVER=OFF
 
       - name: Build client only
         working-directory: cs16
@@ -53,5 +53,5 @@ jobs:
       - name: Upload result
         uses: actions/upload-artifact@v4
         with:
-          name: cs16-client-motd-win64
+          name: cs16-client-3842-motd-x86
           path: result/*
