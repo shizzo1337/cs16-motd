@@ -1,0 +1,57 @@
+name: Build cs16-client with MOTD in browser
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Keep line endings as is
+        shell: bash
+        run: git config --global core.autocrlf false
+
+      - name: Get this repository (contains the patch)
+        uses: actions/checkout@v4
+        with:
+          path: mypatch
+
+      - name: Get cs16-client sources (commit of build 3979)
+        uses: actions/checkout@v4
+        with:
+          repository: Velaron/cs16-client
+          ref: e30e27c3bd890f731ad7921d9c876d171aea4b32
+          submodules: recursive
+          path: cs16
+
+      - name: Apply MOTD patch
+        shell: bash
+        working-directory: cs16
+        run: git apply --ignore-whitespace ../mypatch/cs16_motd_browser.patch
+
+      - name: Setup Visual Studio (64-bit)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: amd64
+
+      - name: Configure
+        working-directory: cs16
+        run: cmake --preset win32-release-amd64 -DBUILD_MAINUI=OFF -DBUILD_SERVER=OFF
+
+      - name: Build client only
+        working-directory: cs16
+        run: cmake --build build --target client
+
+      - name: Collect result
+        shell: bash
+        working-directory: cs16
+        run: |
+          mkdir -p ../result
+          find build -name "client*.dll" -exec cp -v {} ../result/ \;
+          ls -la ../result
+
+      - name: Upload result
+        uses: actions/upload-artifact@v4
+        with:
+          name: cs16-client-motd-win64
+          path: result/*
