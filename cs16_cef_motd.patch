@@ -765,16 +765,18 @@ index 0000000..90f7f15
 +#endif
 diff --git a/cl_dll/chrome/chrome_host.cpp b/cl_dll/chrome/chrome_host.cpp
 new file mode 100644
-index 0000000..0d1bcf4
+index 0000000..ffe04c4
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_host.cpp
-@@ -0,0 +1,485 @@
+@@ -0,0 +1,581 @@
 +#include "chrome_host.h"
 +#include "chrome_backend.h"
 +#include "chrome_debug.h"
 +#include "chrome_instance.h"
 +#include "chrome_runtime.h"
 +
++#include <algorithm>
++#include <chrono>
 +#include <cstdio>
 +#include <cstring>
 +#include <memory>
@@ -802,7 +804,8 @@ index 0000000..0d1bcf4
 +int g_toggle_demo_id = -1;
 +int g_openurl_demo_id = -1;
 +int g_motd_id = -1;
-+float g_motd_hide_time = 0.f;
++std::chrono::steady_clock::time_point g_motd_hide_at; // real time, does not depend on the game time
++bool g_motd_key_swallowed[256] = {};
 +cvar_t* cl_motd_browser_time = nullptr;
 +
 +int s_toggle_sync = -1;
@@ -906,6 +909,8 @@ index 0000000..0d1bcf4
 +	Chrome_DPrintf( 1.f, "[chrome] cl_chrome_openurl instance=%d url=%s\n", fid, url.c_str() );
 +}
 +
++void Cmd_MotdClose();
++
 +void RegisterCommands()
 +{
 +	static bool registered = false;
@@ -913,6 +918,7 @@ index 0000000..0d1bcf4
 +		return;
 +	registered = true;
 +	gEngfuncs.pfnAddCommand( "cl_chrome_openurl", Cmd_ChromeOpenUrl );
++	gEngfuncs.pfnAddCommand( "cl_motd_close", Cmd_MotdClose );
 +}
 +
 +void SyncToggleDemoBrowser()
@@ -1039,6 +1045,57 @@ index 0000000..0d1bcf4
 +	DrawUtils::Draw2DQuad( x1, y1, x2, y2 );
 +}
 +
++// The server MOTD is shown as a window in the middle of the screen, not over the whole screen
++void PresentMotdWindow( ChromeInstance* inst )
++{
++	if( !inst )
++		return;
++
++	const unsigned int tex = inst->texture_id();
++	if( tex == 0 || !gEngfuncs.pTriAPI )
++		return;
++
++	const RenderExtents ext = VisibleRenderExtents();
++	if( ext.w <= 1 || ext.h <= 1 )
++		return;
++
++	int bw = inst->width();
++	int bh = inst->height();
++	if( bw < 1 )
++		bw = 1;
++	if( bh < 1 )
++		bh = 1;
++
++	inst->set_viewport( ChromeRect{ 0, 0, bw, bh } );
++
++	// the page at its own size, but not bigger than 80% of the screen
++	const float scale = std::min( 1.0f, std::min( ext.w * 0.8f / bw, ext.h * 0.8f / bh ));
++	const float w = bw * scale;
++	const float h = bh * scale;
++	const float x1 = ( ext.w - w ) * 0.5f;
++	const float y1 = ( ext.h - h ) * 0.5f;
++
++	const int title_h = 20;
++
++	DrawUtils::DrawRectangle( (int)x1 - 3, (int)y1 - title_h - 3, (int)w + 6, (int)h + title_h + 6, 0, 0, 0, 220, true );
++	DrawUtils::DrawHudString( (int)x1 + 4, (int)y1 - title_h + 2, ext.w, "MOTD   [ENTER / ESC / LMB - close]", 255, 180, 0 );
++
++	gRenderAPI.GL_SelectTexture( 0 );
++	gRenderAPI.GL_Bind( 0, tex );
++	gEngfuncs.pTriAPI->RenderMode( kRenderTransAlpha );
++	gEngfuncs.pTriAPI->Color4f( 1.0f, 1.0f, 1.0f, 1.0f );
++	DrawUtils::Draw2DQuad( x1, y1, x1 + w, y1 + h );
++}
++
++void Cmd_MotdClose()
++{
++	if( Chrome::IsMotdShown() )
++	{
++		gEngfuncs.Con_Printf( "[motd] closed by command\n" );
++		Chrome::HideMotd();
++	}
++}
++
 +} // namespace
 +
 +namespace Chrome {
@@ -1086,8 +1143,11 @@ index 0000000..0d1bcf4
 +
 +	SyncToggleDemoBrowser();
 +
-+	if( g_motd_id >= 0 && gEngfuncs.GetClientTime() >= g_motd_hide_time )
++	if( g_motd_id >= 0 && std::chrono::steady_clock::now() >= g_motd_hide_at )
++	{
++		gEngfuncs.Con_Printf( "[motd] closed by timeout\n" );
 +		Chrome::HideMotd();
++	}
 +}
 +
 +void PresentDebugPresentationOverlays()
@@ -1102,7 +1162,7 @@ index 0000000..0d1bcf4
 +		PresentDebugQuad( Lookup( g_openurl_demo_id ) );
 +
 +	if( g_motd_id >= 0 )
-+		PresentDebugQuad( Lookup( g_motd_id ) );
++		PresentMotdWindow( Lookup( g_motd_id ) );
 +}
 +
 +int Create(
@@ -1230,12 +1290,18 @@ index 0000000..0d1bcf4
 +
 +	HideMotd();
 +
-+	const int id = Chrome::Create( url, 1280, 720, nullptr, nullptr );
++	// the page gets a window-like size (4:3), not the whole screen
++	const int id = Chrome::Create( url, 800, 600, nullptr, nullptr );
 +	if( id < 0 )
 +		return false;
 +
++	const float seconds = std::max( 3.0f, CvarFloat( cl_motd_browser_time, 30.0f ));
++
 +	g_motd_id = id;
-+	g_motd_hide_time = gEngfuncs.GetClientTime() + CvarFloat( cl_motd_browser_time, 30.0f );
++	g_motd_hide_at = std::chrono::steady_clock::now() + std::chrono::milliseconds( (long long)( seconds * 1000.0f ));
++	memset( g_motd_key_swallowed, 0, sizeof( g_motd_key_swallowed ));
++
++	gEngfuncs.Con_Printf( "[motd] shown for %.0f s: ENTER / ESC / LMB or cl_motd_close to close\n", seconds );
 +	return true;
 +}
 +
@@ -1247,19 +1313,49 @@ index 0000000..0d1bcf4
 +	const int id = g_motd_id;
 +	g_motd_id = -1;
 +	Chrome::Destroy( id );
++	gEngfuncs.Con_Printf( "[motd] window closed\n" );
 +}
 +
 +bool IsMotdShown()
 +{
 +	return g_motd_id >= 0;
 +}
++
++bool HandleMotdKey( int down, int keynum )
++{
++	const int K_ENTER_KEY = 13, K_ESCAPE_KEY = 27, K_SPACE_KEY = 32, K_KP_ENTER_KEY = 169, K_MOUSE1_KEY = 241;
++
++	if( keynum < 0 || keynum >= (int)( sizeof( g_motd_key_swallowed ) / sizeof( g_motd_key_swallowed[0] )))
++		return false;
++
++	// the release of a key that closed the window must not reach the game either
++	if( !down )
++	{
++		const bool was = g_motd_key_swallowed[keynum];
++		g_motd_key_swallowed[keynum] = false;
++		return was;
++	}
++
++	if( g_motd_id < 0 )
++		return false;
++
++	if( keynum == K_ENTER_KEY || keynum == K_ESCAPE_KEY || keynum == K_SPACE_KEY || keynum == K_KP_ENTER_KEY || keynum == K_MOUSE1_KEY )
++	{
++		g_motd_key_swallowed[keynum] = true;
++		gEngfuncs.Con_Printf( "[motd] closed by key\n" );
++		HideMotd();
++		return true;
++	}
++
++	return false;
++}
 +} // namespace Chrome
 diff --git a/cl_dll/chrome/chrome_host.h b/cl_dll/chrome/chrome_host.h
 new file mode 100644
-index 0000000..6e0944d
+index 0000000..c135f5e
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_host.h
-@@ -0,0 +1,30 @@
+@@ -0,0 +1,31 @@
 +#pragma once
 +
 +using ChromeOnPaintCallback =
@@ -1289,6 +1385,7 @@ index 0000000..6e0944d
 +bool ShowMotd( const char* url );  // false if CEF is unavailable (the caller uses a fallback)
 +void HideMotd();
 +bool IsMotdShown();
++bool HandleMotdKey( int down, int keynum ); // true if the key was used to close the MOTD and must not reach the game
 +} // namespace Chrome
 diff --git a/cl_dll/chrome/chrome_input_adapter.cpp b/cl_dll/chrome/chrome_input_adapter.cpp
 new file mode 100644
@@ -2992,7 +3089,7 @@ index 718d0ff..e34c6d0 100644
  
  
 diff --git a/cl_dll/input.cpp b/cl_dll/input.cpp
-index c6579ca..78c2958 100644
+index c6579ca..349b7df 100644
 --- a/cl_dll/input.cpp
 +++ b/cl_dll/input.cpp
 @@ -12,6 +12,7 @@
@@ -3003,7 +3100,18 @@ index c6579ca..78c2958 100644
  #include "cl_util.h"
  #include "camera.h"
  #include "kbutton.h"
-@@ -778,7 +779,9 @@ int CL_ButtonBits( int bResetState )
+@@ -367,6 +368,10 @@ Return 1 to allow engine to process the key, otherwise, act on it as needed
+ */
+ int DLLEXPORT HUD_Key_Event( int down, int keynum, const char *pszCurrentBinding )
+ {
++	// keys that close the server MOTD window are not passed to the game
++	if( Chrome::HandleMotdKey( down, keynum ))
++		return 0;
++
+ 	if( g_pMenu )
+ 		g_pMenu->Key( keynum, down );
+ 
+@@ -778,7 +783,9 @@ int CL_ButtonBits( int bResetState )
  
  	if ( in_attack.state & 3 )
  	{
