@@ -954,10 +954,10 @@ index 0000000..90f7f15
 +#endif
 diff --git a/cl_dll/chrome/chrome_host.cpp b/cl_dll/chrome/chrome_host.cpp
 new file mode 100644
-index 0000000..126f85f
+index 0000000..48d3b65
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_host.cpp
-@@ -0,0 +1,753 @@
+@@ -0,0 +1,693 @@
 +#include "chrome_host.h"
 +#include "chrome_backend.h"
 +#include "chrome_debug.h"
@@ -994,10 +994,7 @@ index 0000000..126f85f
 +int g_toggle_demo_id = -1;
 +int g_openurl_demo_id = -1;
 +int g_motd_id = -1;
-+std::chrono::steady_clock::time_point g_motd_hide_at; // real time, does not depend on the game time
-+bool g_motd_key_swallowed[256] = {}; // used by the old mode without mouse input
-+cvar_t* cl_motd_browser_time = nullptr;
-+cvar_t* cl_motd_browser_input = nullptr;
++std::chrono::steady_clock::time_point g_motd_shown_at;
 +MotdInput g_motd_input;
 +std::unordered_map<int, std::pair<int, int>> g_last_mouse_pos; // for the generic SendMouse* functions
 +
@@ -1037,11 +1034,6 @@ index 0000000..126f85f
 +		cl_chrome_framerate = CVAR_CREATE( "cl_chrome_framerate", "30", FCVAR_ARCHIVE );
 +	if( !cl_chrome_toggle )
 +		cl_chrome_toggle = CVAR_CREATE( "cl_chrome_toggle", "0", FCVAR_ARCHIVE );
-+	if( !cl_motd_browser_time )
-+		cl_motd_browser_time = CVAR_CREATE( "cl_motd_browser_time", "30", FCVAR_ARCHIVE );
-+	// 1 - the mouse and the keyboard work in the MOTD window, 0 - the window is only shown (Enter / Esc / Space / LMB close it)
-+	if( !cl_motd_browser_input )
-+		cl_motd_browser_input = CVAR_CREATE( "cl_motd_browser_input", "1", FCVAR_ARCHIVE );
 +}
 +
 +bool EnsureCefInitialized()
@@ -1242,20 +1234,9 @@ index 0000000..126f85f
 +	DrawUtils::Draw2DQuad( x1, y1, x2, y2 );
 +}
 +
-+bool MotdInputEnabled()
-+{
-+	return g_motd_id >= 0 && CvarFloat( cl_motd_browser_input, 1.0f ) != 0.0f;
-+}
-+
 +double NowSeconds()
 +{
 +	return std::chrono::duration<double>( std::chrono::steady_clock::now().time_since_epoch() ).count();
-+}
-+
-+void RestartMotdTimer()
-+{
-+	const float seconds = std::max( 3.0f, CvarFloat( cl_motd_browser_time, 30.0f ));
-+	g_motd_hide_at = std::chrono::steady_clock::now() + std::chrono::milliseconds( (long long)( seconds * 1000.0f ));
 +}
 +
 +// Executes what the input logic asks for
@@ -1267,9 +1248,6 @@ index 0000000..126f85f
 +	if( ChromeInstance* inst = Lookup( g_motd_id ))
 +		for( int i = 0; i < out.count; ++i )
 +			inst->EnqueueInput( out.events[i] );
-+
-+	if( out.touch )
-+		RestartMotdTimer();
 +
 +	if( out.close )
 +	{
@@ -1327,7 +1305,6 @@ index 0000000..126f85f
 +	const float y1 = ( ext.h - h ) * 0.5f;
 +
 +	const int title_h = 20;
-+	const bool interactive = MotdInputEnabled();
 +
 +	MotdLayout lay;
 +	lay.valid = true;
@@ -1343,8 +1320,7 @@ index 0000000..126f85f
 +	g_motd_input.SetLayout( lay );
 +
 +	DrawUtils::DrawRectangle( (int)x1 - 3, (int)y1 - title_h - 3, (int)w + 6, (int)h + title_h + 6, 0, 0, 0, 220, true );
-+	DrawUtils::DrawHudString( (int)x1 + 4, (int)y1 - title_h + 2, ext.w,
-+		interactive ? "MOTD   [mouse: click / scroll,  ESC: close]" : "MOTD   [ENTER / ESC / LMB - close]", 255, 180, 0 );
++	DrawUtils::DrawHudString( (int)x1 + 4, (int)y1 - title_h + 2, ext.w, "MOTD   [mouse: click / scroll,  ESC: close]", 255, 180, 0 );
 +
 +	gRenderAPI.GL_SelectTexture( 0 );
 +	gRenderAPI.GL_Bind( 0, tex );
@@ -1352,14 +1328,11 @@ index 0000000..126f85f
 +	gEngfuncs.pTriAPI->Color4f( 1.0f, 1.0f, 1.0f, 1.0f );
 +	DrawUtils::Draw2DQuad( x1, y1, x1 + w, y1 + h );
 +
-+	if( interactive )
-+	{
-+		// close button
-+		DrawUtils::DrawRectangle( (int)lay.close_x, (int)lay.close_y, (int)lay.close_size, (int)lay.close_size, 140, 20, 20, 230, true );
-+		DrawUtils::DrawHudString( (int)lay.close_x + 4, (int)lay.close_y + 1, ext.w, "X", 255, 255, 255 );
++	// close button
++	DrawUtils::DrawRectangle( (int)lay.close_x, (int)lay.close_y, (int)lay.close_size, (int)lay.close_size, 140, 20, 20, 230, true );
++	DrawUtils::DrawHudString( (int)lay.close_x + 4, (int)lay.close_y + 1, ext.w, "X", 255, 255, 255 );
 +
-+		DrawMotdCursor( (int)g_motd_input.cursor_x(), (int)g_motd_input.cursor_y() );
-+	}
++	DrawMotdCursor( (int)g_motd_input.cursor_x(), (int)g_motd_input.cursor_y() );
 +}
 +
 +void Cmd_MotdClose()
@@ -1417,12 +1390,6 @@ index 0000000..126f85f
 +			kv.second->Tick();
 +
 +	SyncToggleDemoBrowser();
-+
-+	if( g_motd_id >= 0 && std::chrono::steady_clock::now() >= g_motd_hide_at )
-+	{
-+		gEngfuncs.Con_Printf( "[motd] closed by timeout\n" );
-+		Chrome::HideMotd();
-+	}
 +}
 +
 +void PresentDebugPresentationOverlays()
@@ -1623,17 +1590,12 @@ index 0000000..126f85f
 +		return false;
 +
 +	g_motd_id = id;
-+	RestartMotdTimer();
-+	memset( g_motd_key_swallowed, 0, sizeof( g_motd_key_swallowed ));
++	g_motd_shown_at = std::chrono::steady_clock::now();
 +
 +	const RenderExtents ext = VisibleRenderExtents();
 +	g_motd_input.Open( ext.w, ext.h );
 +
-+	if( MotdInputEnabled() )
-+		gEngfuncs.Con_Printf( "[motd] shown: mouse and keyboard work in the window, ESC / X button / cl_motd_close close it\n" );
-+	else
-+		gEngfuncs.Con_Printf( "[motd] shown: ENTER / ESC / Space / LMB or cl_motd_close close it\n" );
-+
++	gEngfuncs.Con_Printf( "[motd] shown: mouse and keyboard work in the window, ESC / X button / cl_motd_close close it\n" );
 +	return true;
 +}
 +
@@ -1655,68 +1617,46 @@ index 0000000..126f85f
 +
 +bool HandleMotdKey( int down, int keynum )
 +{
-+	const int K_ENTER_KEY = 13, K_ESCAPE_KEY = 27, K_SPACE_KEY = 32, K_KP_ENTER_KEY = 169, K_MOUSE1_KEY = 241;
-+
-+	if( keynum < 0 || keynum >= (int)( sizeof( g_motd_key_swallowed ) / sizeof( g_motd_key_swallowed[0] )))
++	if( keynum < 0 || keynum >= 256 )
 +		return false;
 +
 +	// the window is closed: the release of a key that was used by it must not reach the game either
 +	if( g_motd_id < 0 )
-+	{
-+		if( down )
-+			return false;
++		return !down && g_motd_input.OnKey( 0, keynum, NowSeconds() ).consumed;
 +
-+		const bool was = g_motd_key_swallowed[keynum];
-+		g_motd_key_swallowed[keynum] = false;
++	const MotdOutput out = g_motd_input.OnKey( down, keynum, NowSeconds() );
 +
-+		return g_motd_input.OnKey( 0, keynum, NowSeconds() ).consumed || was;
-+	}
-+
-+	// mouse and keyboard work in the window
-+	if( MotdInputEnabled() )
-+	{
-+		const MotdOutput out = g_motd_input.OnKey( down, keynum, NowSeconds() );
-+
-+		ApplyMotdOutput( out );
-+		return out.consumed;
-+	}
-+
-+	// old mode: the window is only shown
-+	if( !down )
-+	{
-+		const bool was = g_motd_key_swallowed[keynum];
-+		g_motd_key_swallowed[keynum] = false;
-+		return was;
-+	}
-+
-+	if( keynum == K_ENTER_KEY || keynum == K_ESCAPE_KEY || keynum == K_SPACE_KEY || keynum == K_KP_ENTER_KEY || keynum == K_MOUSE1_KEY )
-+	{
-+		g_motd_key_swallowed[keynum] = true;
-+		gEngfuncs.Con_Printf( "[motd] closed by key\n" );
-+		HideMotd();
-+		return true;
-+	}
-+
-+	return false;
++	ApplyMotdOutput( out );
++	return out.consumed;
 +}
 +
 +bool MotdCapturesMouse()
 +{
-+	return MotdInputEnabled();
++	return g_motd_id >= 0;
 +}
 +
 +void MotdMouseDelta( float dx, float dy )
 +{
-+	if( MotdInputEnabled() )
++	if( g_motd_id >= 0 )
 +		ApplyMotdOutput( g_motd_input.OnMouseDelta( dx, dy ));
++}
++
++void HideMotdOnLevelChange()
++{
++	// the MOTD of a server comes right after the level is loaded, do not close it by mistake
++	if( g_motd_id >= 0 && std::chrono::steady_clock::now() - g_motd_shown_at > std::chrono::seconds( 3 ))
++	{
++		gEngfuncs.Con_Printf( "[motd] window closed: a new level was loaded\n" );
++		HideMotd();
++	}
 +}
 +} // namespace Chrome
 diff --git a/cl_dll/chrome/chrome_host.h b/cl_dll/chrome/chrome_host.h
 new file mode 100644
-index 0000000..b26c181
+index 0000000..d0f0e12
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_host.h
-@@ -0,0 +1,33 @@
+@@ -0,0 +1,34 @@
 +#pragma once
 +
 +using ChromeOnPaintCallback =
@@ -1749,6 +1689,7 @@ index 0000000..b26c181
 +bool HandleMotdKey( int down, int keynum ); // true if the key was used by the MOTD window and must not reach the game
 +bool MotdCapturesMouse();                   // the MOTD window with mouse input is shown: the mouse must not turn the view
 +void MotdMouseDelta( float dx, float dy );  // mouse movement in pixels
++void HideMotdOnLevelChange();               // a new level was loaded: a window left from the previous one is closed
 +} // namespace Chrome
 diff --git a/cl_dll/chrome/chrome_input_adapter.cpp b/cl_dll/chrome/chrome_input_adapter.cpp
 new file mode 100644
@@ -2180,10 +2121,10 @@ index 0000000..4776af8
 +} // namespace iHTMLChrome
 diff --git a/cl_dll/chrome/chrome_motd_input.h b/cl_dll/chrome/chrome_motd_input.h
 new file mode 100644
-index 0000000..e4049dc
+index 0000000..60fa085
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_motd_input.h
-@@ -0,0 +1,402 @@
+@@ -0,0 +1,396 @@
 +#pragma once
 +
 +// Input logic of the server MOTD window shown by the embedded browser.
@@ -2224,7 +2165,6 @@ index 0000000..e4049dc
 +{
 +	bool consumed = false; // the game must not see this key
 +	bool close = false;    // close the window
-+	bool touch = false;    // the user does something: restart the auto-close timer
 +	int count = 0;
 +	InputEvent events[4];
 +
@@ -2350,7 +2290,6 @@ index 0000000..e4049dc
 +			e.modifiers = Modifiers();
 +			out.Add( e );
 +			hover_ = true;
-+			out.touch = true;
 +		}
 +		else if( hover_ )
 +		{
@@ -2416,7 +2355,6 @@ index 0000000..e4049dc
 +						e.y = py;
 +					}
 +					out.Add( e );
-+					out.touch = true;
 +				}
 +			}
 +			else if( key != MotdKey::WheelUp && key != MotdKey::WheelDown && key != MotdKey::Escape )
@@ -2441,7 +2379,6 @@ index 0000000..e4049dc
 +		{
 +			swallowed_[key] = true;
 +			out.consumed = true;
-+			out.touch = true;
 +
 +			const int idx = key - MotdKey::Mouse1;
 +
@@ -2493,7 +2430,6 @@ index 0000000..e4049dc
 +				e.delta_y = key == MotdKey::WheelUp ? 120 : -120;
 +				e.modifiers = Modifiers();
 +				out.Add( e );
-+				out.touch = true;
 +			}
 +
 +			return out;
@@ -2504,7 +2440,6 @@ index 0000000..e4049dc
 +		{
 +			swallowed_[key] = true;
 +			out.consumed = true;
-+			out.touch = true;
 +			AddKey( out, true, key );
 +		}
 +
@@ -3392,17 +3327,16 @@ index 9ae956c..15e785d 100644
  	m_iLogo = 0;
  	m_iFOV = 0;
 diff --git a/cl_dll/hud.h b/cl_dll/hud.h
-index f23bb7c..631ce4e 100644
+index f23bb7c..08d5cb4 100644
 --- a/cl_dll/hud.h
 +++ b/cl_dll/hud.h
-@@ -347,14 +347,28 @@ public:
+@@ -347,14 +347,27 @@ public:
  	float scroll;
  	bool m_bShow;
  	cvar_t *cl_hide_motd;
 +	cvar_t *cl_motd_browser;
 +	cvar_t *cl_motd_browser_keep_game;
 +	cvar_t *cl_motd_browser_iframe;
-+	cvar_t *cl_motd_browser_trusted;
  
  protected:
  	static int MOTD_DISPLAY_TIME;
@@ -3425,41 +3359,38 @@ index f23bb7c..631ce4e 100644
  
  
 diff --git a/cl_dll/hud/MOTD.cpp b/cl_dll/hud/MOTD.cpp
-index 83208f5..5d2f621 100644
+index 83208f5..1d1e6a8 100644
 --- a/cl_dll/hud/MOTD.cpp
 +++ b/cl_dll/hud/MOTD.cpp
-@@ -27,6 +27,8 @@
+@@ -27,6 +27,7 @@
  #include <stdio.h>
  #include "draw_util.h"
  #include "build.h"
 +#include "chrome/chrome_host.h"
-+#include "net_api.h"
  
  #if XASH_WIN32 == 1 || XASH_PSVITA == 1
  #define strcasestr strstr
-@@ -39,6 +41,17 @@ int CHudMOTD :: Init( void )
+@@ -39,6 +40,14 @@ int CHudMOTD :: Init( void )
  	HOOK_MESSAGE( gHUD.m_MOTD, MOTD );
  
  	cl_hide_motd = CVAR_CREATE("cl_hide_motd", "0", FCVAR_ARCHIVE); // hide motd
 +	// 0 - show MOTD inside the game as text, 1 - open URL MOTD in system browser, 2 - open URL and HTML MOTD in system browser,
 +	// 3 - show URL and HTML MOTD in the game by the embedded browser (CEF), falls back to 2 if CEF is not available
-+	cl_motd_browser = CVAR_CREATE("cl_motd_browser", "2", FCVAR_ARCHIVE);
++	cl_motd_browser = CVAR_CREATE("cl_motd_browser", "3", FCVAR_ARCHIVE);
 +	// 1 - do not let the game window minimize when the browser opens
 +	cl_motd_browser_keep_game = CVAR_CREATE("cl_motd_browser_keep_game", "1", FCVAR_ARCHIVE);
 +	// 1 - if HTML MOTD contains an iframe with an http(s) address, open that address instead of the whole page
 +	cl_motd_browser_iframe = CVAR_CREATE("cl_motd_browser_iframe", "1", FCVAR_ARCHIVE);
-+	// servers whose pages may be shown by the built-in browser (mode 3): addresses "ip" or "ip:port" separated by blanks, "*" - any.
-+	// Pages of other servers are opened in the system browser, which is protected by the system
-+	cl_motd_browser_trusted = CVAR_CREATE("cl_motd_browser_trusted", "", FCVAR_ARCHIVE);
 +	ResetBrowserState();
  	Reset();
  
  	return 1;
-@@ -47,9 +60,374 @@ int CHudMOTD :: Init( void )
+@@ -47,9 +56,297 @@ int CHudMOTD :: Init( void )
  int CHudMOTD :: VidInit( void )
  {
  	// Load sprites here
 +	ResetBrowserState();
++	Chrome::HideMotdOnLevelChange();
  	return 1;
  }
  
@@ -3621,72 +3552,6 @@ index 83208f5..5d2f621 100644
 +	return true;
 +}
 +
-+// "ip:port" of the server we are connected to
-+static bool GetServerAddress( char *out, size_t size )
-+{
-+	if( !gEngfuncs.pNetAPI || !gEngfuncs.pNetAPI->Status || !gEngfuncs.pNetAPI->AdrToString )
-+		return false;
-+
-+	net_status_t status;
-+	memset( &status, 0, sizeof( status ));
-+	gEngfuncs.pNetAPI->Status( &status );
-+
-+	if( !status.connected )
-+		return false;
-+
-+	const char *adr = gEngfuncs.pNetAPI->AdrToString( &status.remote_address );
-+
-+	if( !adr || !adr[0] )
-+		return false;
-+
-+	snprintf( out, size, "%s", adr );
-+	return true;
-+}
-+
-+// The list: addresses separated by blanks, commas or semicolons.
-+// An entry is "ip" (any port) or "ip:port"; "*" means any server. A local server is always trusted.
-+static bool MatchTrustedList( const char *list, const char *addr )
-+{
-+	if( !addr || !addr[0] )
-+		return false;
-+
-+	if( !strcmp( addr, "loopback" ))
-+		return true;
-+
-+	// the part of the address before the port
-+	char ip[64];
-+	snprintf( ip, sizeof( ip ), "%s", addr );
-+	char *colon = strchr( ip, ':' );
-+	if( colon )
-+		*colon = 0;
-+
-+	for( const char *p = list ? list : ""; *p; )
-+	{
-+		while( *p && ( IsBlank( *p ) || *p == ',' || *p == ';' ))
-+			p++;
-+
-+		char token[64];
-+		size_t len = 0;
-+
-+		while( *p && !IsBlank( *p ) && *p != ',' && *p != ';' )
-+		{
-+			if( len + 1 < sizeof( token ))
-+				token[len++] = *p;
-+			p++;
-+		}
-+
-+		token[len] = 0;
-+
-+		if( !len )
-+			continue;
-+
-+		if( !strcmp( token, "*" ) || !stricmp( token, addr ) || !stricmp( token, ip ))
-+			return true;
-+	}
-+
-+	return false;
-+}
-+
 +void CHudMOTD :: ResetBrowserState( void )
 +{
 +	m_bMotdStarted = false;
@@ -3753,20 +3618,8 @@ index 83208f5..5d2f621 100644
 +		return true;
 +
 +	// whole MOTD received
-+	// the built-in browser (mode 3) is used only for trusted servers
-+	bool cef = mode >= 3;
-+
-+	if( cef )
-+	{
-+		char server[64] = "";
-+
-+		if( !GetServerAddress( server, sizeof( server )) || !MatchTrustedList( cl_motd_browser_trusted->string, server ))
-+		{
-+			cef = false;
-+			gEngfuncs.Con_Printf( "[motd] server %s is not trusted for the built-in browser, the page is opened in the system browser."
-+				" To trust it: cl_motd_browser_trusted \"%s\"\n", server[0] ? server : "(unknown)", server[0] ? server : "ip:port" );
-+		}
-+	}
++	// mode 3: the page is shown in the game by the built-in browser (falls back to the system browser if it is not available)
++	const bool cef = mode >= 3;
 +
 +	if( m_iBrowserMode == BROWSER_URL )
 +	{
@@ -3830,7 +3683,7 @@ index 83208f5..5d2f621 100644
  void CHudMOTD :: Reset( void )
  {
  	m_iFlags &= ~HUD_DRAW;  // start out inactive
-@@ -137,13 +515,19 @@ int CHudMOTD :: MsgFunc_MOTD( const char *pszName, int iSize, void *pbuf )
+@@ -137,13 +434,19 @@ int CHudMOTD :: MsgFunc_MOTD( const char *pszName, int iSize, void *pbuf )
  		Reset(); // clear the current MOTD in prep for this one
  	}
  
@@ -3996,7 +3849,7 @@ index 718d0ff..e34c6d0 100644
  
  
 diff --git a/cl_dll/input.cpp b/cl_dll/input.cpp
-index c6579ca..349b7df 100644
+index c6579ca..aa51abf 100644
 --- a/cl_dll/input.cpp
 +++ b/cl_dll/input.cpp
 @@ -12,6 +12,7 @@
@@ -4018,17 +3871,6 @@ index c6579ca..349b7df 100644
  	if( g_pMenu )
  		g_pMenu->Key( keynum, down );
  
-@@ -778,7 +783,9 @@ int CL_ButtonBits( int bResetState )
- 
- 	if ( in_attack.state & 3 )
- 	{
--		if(gHUD.m_MOTD.m_bShow)
-+		if( Chrome::IsMotdShown() )
-+			Chrome::HideMotd();
-+		else if(gHUD.m_MOTD.m_bShow)
- 			gHUD.m_MOTD.Reset();
- 		else
- 			bits |= IN_ATTACK;
 diff --git a/cl_dll/input/input_xash3d.cpp b/cl_dll/input/input_xash3d.cpp
 index c86bb0a..52990f5 100644
 --- a/cl_dll/input/input_xash3d.cpp
