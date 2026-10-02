@@ -1,5 +1,5 @@
 diff --git a/cl_dll/CMakeLists.txt b/cl_dll/CMakeLists.txt
-index b0af818..32578cc 100644
+index b0af818..ac4fa05 100644
 --- a/cl_dll/CMakeLists.txt
 +++ b/cl_dll/CMakeLists.txt
 @@ -10,6 +10,7 @@ file(GLOB CS_WPNSH_SRC "../dlls/wpn_shared/*.cpp")
@@ -73,7 +73,7 @@ index b0af818..32578cc 100644
  set_target_postfix(${CLIENT_LIB})
  
 +if(WIN32)
-+	target_link_libraries(${CLIENT_LIB} shell32)
++	target_link_libraries(${CLIENT_LIB} PRIVATE shell32)
 +endif()
 +
  install(TARGETS ${CLIENT_LIB}
