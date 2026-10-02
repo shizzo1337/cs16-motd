@@ -13,6 +13,23 @@ index c62b5bf..97c29ae 100644
  install(TARGETS ${CLIENT_LIB}
  	DESTINATION "${GAME_DIR}/${CLIENT_INSTALL_DIR}/"
  	PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
+diff --git a/cl_dll/hud.cpp b/cl_dll/hud.cpp
+index c7fee44..f7863f2 100644
+--- a/cl_dll/hud.cpp
++++ b/cl_dll/hud.cpp
+@@ -340,7 +340,11 @@ void CHud :: Init( void )
+ 		cl_fog_b = CVAR_CREATE( "cl_fog_b", "0", 0 );
+ 	}
+ 
+-	CVAR_CREATE( "cscl_ver", Q_buildnum(), 1<<14 | FCVAR_USERINFO ); // init and userinfo
++	// this is a modified build: the version that is sent to the server, shown in the scoreboard
++	// and printed to the console gets a suffix, so it is not mistaken for the original build
++	static char cscl_ver[32];
++	snprintf( cscl_ver, sizeof( cscl_ver ), "8684", Q_buildnum() );
++	CVAR_CREATE( "cscl_ver", cscl_ver, 1<<14 | FCVAR_USERINFO ); // init and userinfo
+ 
+ 	m_iLogo = 0;
+ 	m_iFOV = 0;
 diff --git a/cl_dll/hud.h b/cl_dll/hud.h
 index c93a363..b43b0b9 100644
 --- a/cl_dll/hud.h
