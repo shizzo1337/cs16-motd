@@ -1,5 +1,5 @@
 diff --git a/cl_dll/CMakeLists.txt b/cl_dll/CMakeLists.txt
-index b0af818..ac4fa05 100644
+index b0af818..fdb2116 100644
 --- a/cl_dll/CMakeLists.txt
 +++ b/cl_dll/CMakeLists.txt
 @@ -10,6 +10,7 @@ file(GLOB CS_WPNSH_SRC "../dlls/wpn_shared/*.cpp")
@@ -18,7 +18,7 @@ index b0af818..ac4fa05 100644
  list(APPEND CS_CLIENT_SRC ${CS_GAMSH_SRC})
  list(APPEND CS_CLIENT_SRC ${MINIUTL_SRC})
  list(APPEND CS_CLIENT_SRC ${CS_PARTICLEMAN_SRC})
-@@ -74,9 +76,60 @@ else()
+@@ -74,9 +76,75 @@ else()
  endif()
  
  add_library(${CLIENT_LIB} SHARED ${CS_CLIENT_SRC})
@@ -66,6 +66,21 @@ index b0af818..ac4fa05 100644
 +    if(MSVC)
 +        target_link_libraries(${CLIENT_LIB} PRIVATE delayimp)
 +        target_link_options(${CLIENT_LIB} PRIVATE "/DELAYLOAD:libcef.dll")
++    endif()
++
++    # Helper executable for the Chromium processes (renderer etc.), it is installed next to libcef.dll
++    if(WIN32)
++        add_executable(cs16_cef_helper WIN32
++            cef_helper/cef_helper_main.cpp
++            chrome/chrome_policy.cpp)
++        target_compile_features(cs16_cef_helper PRIVATE cxx_std_20)
++        target_compile_definitions(cs16_cef_helper PRIVATE CS16CLIENT_ENABLE_CEF=1 NOMINMAX)
++        target_include_directories(cs16_cef_helper PRIVATE
++            "${_cef_root}"
++            "${_cef_root}/include"
++            "${CMAKE_CURRENT_SOURCE_DIR}/chrome")
++        target_link_libraries(cs16_cef_helper PRIVATE libcef_dll_wrapper "${_cef_root}/Release/libcef.lib")
++        install(TARGETS cs16_cef_helper RUNTIME DESTINATION "${GAME_DIR}/cef/")
 +    endif()
 +
 +endif()
@@ -119,6 +134,57 @@ index 4f5a9e8..d91aef8 100644
  }
  
  
+diff --git a/cl_dll/cef_helper/cef_helper_main.cpp b/cl_dll/cef_helper/cef_helper_main.cpp
+new file mode 100644
+index 0000000..5cb3948
+--- /dev/null
++++ b/cl_dll/cef_helper/cef_helper_main.cpp
+@@ -0,0 +1,45 @@
++// Helper executable of the embedded browser (CEF).
++//
++// Chromium starts its renderer and other service processes from this executable instead of
++// the game, so the web pages of a server are not executed inside the game process.
++// It lives in <gamedir>/cef next to libcef.dll.
++
++#if defined( CS16CLIENT_ENABLE_CEF ) && defined( _WIN32 )
++
++#define WIN32_LEAN_AND_MEAN
++#define NOMINMAX
++#include <windows.h>
++
++#include "cef_app.h"
++#include "cef_command_line.h"
++
++#include "chrome_policy.h"
++
++namespace
++{
++// Same command line switches as in the game process (it is called in every Chromium process)
++class HelperApp final : public CefApp
++{
++public:
++	void OnBeforeCommandLineProcessing( const CefString&, CefRefPtr<CefCommandLine> command_line ) override
++	{
++		iHTMLChrome::CEF::SetCefSingleProcess( false );
++		iHTMLChrome::CEF::ApplyCefCommandLinePolicy( command_line );
++	}
++
++	IMPLEMENT_REFCOUNTING( HelperApp );
++};
++} // namespace
++
++int APIENTRY wWinMain( HINSTANCE hInstance, HINSTANCE, LPWSTR, int )
++{
++	CefMainArgs main_args( hInstance );
++	CefRefPtr<HelperApp> app( new HelperApp() );
++
++	const int exit_code = CefExecuteProcess( main_args, app, nullptr );
++
++	// a negative value: started by hand, not as a Chromium process
++	return exit_code >= 0 ? exit_code : 0;
++}
++
++#endif
 diff --git a/cl_dll/chrome/chrome_backend.h b/cl_dll/chrome/chrome_backend.h
 new file mode 100644
 index 0000000..b1dfb44
@@ -157,10 +223,10 @@ index 0000000..b1dfb44
 +} // namespace iHTMLChrome
 diff --git a/cl_dll/chrome/chrome_backend_cef.cpp b/cl_dll/chrome/chrome_backend_cef.cpp
 new file mode 100644
-index 0000000..b346708
+index 0000000..a540a53
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_backend_cef.cpp
-@@ -0,0 +1,376 @@
+@@ -0,0 +1,405 @@
 +#include "chrome_backend.h"
 +
 +#if defined(CS16CLIENT_ENABLE_CEF)
@@ -176,6 +242,8 @@ index 0000000..b346708
 +#include "cef_client.h"
 +#include "cef_parser.h"
 +#include "cef_render_handler.h"
++#include "cef_request.h"
++#include "cef_request_handler.h"
 +
 +#include "chrome_cef_input.h"
 +
@@ -216,7 +284,20 @@ index 0000000..b346708
 +	return level;
 +}
 +
-+class CEFRenderClient final : public CefClient, public CefLifeSpanHandler, public CefRenderHandler, public CefLoadHandler
++// Only web pages can be opened by the pages: no file://, chrome://, devtools:// and so on
++static bool IsAllowedNavigationUrl( const std::string& url )
++{
++	std::string lower( url );
++	for( char& c : lower )
++		if( c >= 'A' && c <= 'Z' )
++			c = static_cast<char>( c - 'A' + 'a' );
++
++	auto starts = [&lower]( const char* prefix ) { return lower.compare( 0, strlen( prefix ), prefix ) == 0; };
++
++	return starts( "http://" ) || starts( "https://" ) || starts( "about:blank" ) || starts( "data:text/html" );
++}
++
++class CEFRenderClient final : public CefClient, public CefLifeSpanHandler, public CefRenderHandler, public CefLoadHandler, public CefRequestHandler
 +{
 +public:
 +	explicit CEFRenderClient( ChromeInstance* instance ) : instance_( instance )
@@ -295,6 +376,20 @@ index 0000000..b346708
 +	CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override { return this; }
 +	CefRefPtr<CefRenderHandler> GetRenderHandler() override { return this; }
 +	CefRefPtr<CefLoadHandler> GetLoadHandler() override { return this; }
++	CefRefPtr<CefRequestHandler> GetRequestHandler() override { return this; }
++
++	bool OnBeforeBrowse( CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>, CefRefPtr<CefRequest> request, bool, bool ) override
++	{
++		if( !request )
++			return false;
++
++		const std::string url = request->GetURL().ToString();
++		if( IsAllowedNavigationUrl( url ))
++			return false;
++
++		Chrome_Printf( "[chrome] navigation blocked: %s\n", url.c_str() );
++		return true; // cancel
++	}
 +
 +	void GetViewRect( CefRefPtr<CefBrowser>, CefRect& rect ) override
 +	{
@@ -2690,10 +2785,10 @@ index 0000000..5303a30
 +#endif
 diff --git a/cl_dll/chrome/chrome_policy.cpp b/cl_dll/chrome/chrome_policy.cpp
 new file mode 100644
-index 0000000..0edcfb4
+index 0000000..ae9eb8a
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_policy.cpp
-@@ -0,0 +1,48 @@
+@@ -0,0 +1,59 @@
 +#include "chrome_policy.h"
 +
 +#if defined(CS16CLIENT_ENABLE_CEF)
@@ -2702,6 +2797,16 @@ index 0000000..0edcfb4
 +
 +namespace iHTMLChrome {
 +namespace CEF {
++
++namespace
++{
++bool g_single_process = true;
++}
++
++void SetCefSingleProcess( bool enable )
++{
++	g_single_process = enable;
++}
 +
 +void ApplyCefCommandLinePolicy( CefRefPtr<CefCommandLine> command_line )
 +{
@@ -2735,7 +2840,8 @@ index 0000000..0edcfb4
 +	command_line->AppendSwitch( "disable-translate" );
 +	command_line->AppendSwitch( "metrics-recording-only" );
 +	command_line->AppendSwitch( "enable-low-end-device-mode" );
-+	command_line->AppendSwitch( "single-process" );
++	if( g_single_process )
++		command_line->AppendSwitch( "single-process" );
 +}
 +
 +} // namespace CEF
@@ -2744,10 +2850,10 @@ index 0000000..0edcfb4
 +#endif
 diff --git a/cl_dll/chrome/chrome_policy.h b/cl_dll/chrome/chrome_policy.h
 new file mode 100644
-index 0000000..764e121
+index 0000000..2c81df4
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_policy.h
-@@ -0,0 +1,16 @@
+@@ -0,0 +1,19 @@
 +#pragma once
 +
 +#if defined(CS16CLIENT_ENABLE_CEF)
@@ -2758,6 +2864,9 @@ index 0000000..764e121
 +namespace iHTMLChrome {
 +namespace CEF {
 +
++// true: Chromium runs inside the game process (used when there is no helper executable)
++void SetCefSingleProcess( bool enable );
++
 +void ApplyCefCommandLinePolicy( CefRefPtr<CefCommandLine> command_line );
 +
 +} // namespace CEF
@@ -2766,10 +2875,12 @@ index 0000000..764e121
 +#endif
 diff --git a/cl_dll/chrome/chrome_runtime.cpp b/cl_dll/chrome/chrome_runtime.cpp
 new file mode 100644
-index 0000000..0097a2e
+index 0000000..824dd9d
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_runtime.cpp
-@@ -0,0 +1,127 @@
+@@ -0,0 +1,152 @@
++#include "chrome_runtime.h" // also needed without CEF, see the end of the file
++
 +#if defined(CS16CLIENT_ENABLE_CEF)
 +
 +#include "chrome_runtime.h"
@@ -2782,6 +2893,8 @@ index 0000000..0097a2e
 +
 +#include "cef_app.h"
 +#include "cef_command_line.h"
++
++#include <filesystem>
 +
 +namespace
 +{
@@ -2827,6 +2940,27 @@ index 0000000..0097a2e
 +
 +	if( !CefInstallation_Validate( env ) )
 +		return false;
++
++#if defined( _WIN32 )
++	// Normal multi-process mode: a separate helper executable runs the renderer and the other
++	// Chromium processes. Without it Chromium has to run inside the game process (single-process).
++	{
++		const std::filesystem::path helper = std::filesystem::path( env.cefDir ) / "cs16_cef_helper.exe";
++		std::error_code ec;
++
++		if( std::filesystem::exists( helper, ec ))
++		{
++			env.subprocessPath = helper.generic_string();
++			SetCefSingleProcess( false );
++			Chrome_Printf( "[chrome] multi-process mode, helper: %s\n", env.subprocessPath.c_str() );
++		}
++		else
++		{
++			SetCefSingleProcess( true );
++			Chrome_Printf( "[chrome] single-process mode (no cs16_cef_helper.exe in %s)\n", env.cefDir.c_str() );
++		}
++	}
++#endif
 +
 +	if( !CefInstallation_EnsureCachePath( env ) )
 +		return false;
@@ -3258,16 +3392,17 @@ index 9ae956c..15e785d 100644
  	m_iLogo = 0;
  	m_iFOV = 0;
 diff --git a/cl_dll/hud.h b/cl_dll/hud.h
-index f23bb7c..08d5cb4 100644
+index f23bb7c..631ce4e 100644
 --- a/cl_dll/hud.h
 +++ b/cl_dll/hud.h
-@@ -347,14 +347,27 @@ public:
+@@ -347,14 +347,28 @@ public:
  	float scroll;
  	bool m_bShow;
  	cvar_t *cl_hide_motd;
 +	cvar_t *cl_motd_browser;
 +	cvar_t *cl_motd_browser_keep_game;
 +	cvar_t *cl_motd_browser_iframe;
++	cvar_t *cl_motd_browser_trusted;
  
  protected:
  	static int MOTD_DISPLAY_TIME;
@@ -3290,18 +3425,19 @@ index f23bb7c..08d5cb4 100644
  
  
 diff --git a/cl_dll/hud/MOTD.cpp b/cl_dll/hud/MOTD.cpp
-index 83208f5..b1fc69e 100644
+index 83208f5..5d2f621 100644
 --- a/cl_dll/hud/MOTD.cpp
 +++ b/cl_dll/hud/MOTD.cpp
-@@ -27,6 +27,7 @@
+@@ -27,6 +27,8 @@
  #include <stdio.h>
  #include "draw_util.h"
  #include "build.h"
 +#include "chrome/chrome_host.h"
++#include "net_api.h"
  
  #if XASH_WIN32 == 1 || XASH_PSVITA == 1
  #define strcasestr strstr
-@@ -39,6 +40,14 @@ int CHudMOTD :: Init( void )
+@@ -39,6 +41,17 @@ int CHudMOTD :: Init( void )
  	HOOK_MESSAGE( gHUD.m_MOTD, MOTD );
  
  	cl_hide_motd = CVAR_CREATE("cl_hide_motd", "0", FCVAR_ARCHIVE); // hide motd
@@ -3312,11 +3448,14 @@ index 83208f5..b1fc69e 100644
 +	cl_motd_browser_keep_game = CVAR_CREATE("cl_motd_browser_keep_game", "1", FCVAR_ARCHIVE);
 +	// 1 - if HTML MOTD contains an iframe with an http(s) address, open that address instead of the whole page
 +	cl_motd_browser_iframe = CVAR_CREATE("cl_motd_browser_iframe", "1", FCVAR_ARCHIVE);
++	// servers whose pages may be shown by the built-in browser (mode 3): addresses "ip" or "ip:port" separated by blanks, "*" - any.
++	// Pages of other servers are opened in the system browser, which is protected by the system
++	cl_motd_browser_trusted = CVAR_CREATE("cl_motd_browser_trusted", "", FCVAR_ARCHIVE);
 +	ResetBrowserState();
  	Reset();
  
  	return 1;
-@@ -47,9 +56,293 @@ int CHudMOTD :: Init( void )
+@@ -47,9 +60,374 @@ int CHudMOTD :: Init( void )
  int CHudMOTD :: VidInit( void )
  {
  	// Load sprites here
@@ -3482,6 +3621,72 @@ index 83208f5..b1fc69e 100644
 +	return true;
 +}
 +
++// "ip:port" of the server we are connected to
++static bool GetServerAddress( char *out, size_t size )
++{
++	if( !gEngfuncs.pNetAPI || !gEngfuncs.pNetAPI->Status || !gEngfuncs.pNetAPI->AdrToString )
++		return false;
++
++	net_status_t status;
++	memset( &status, 0, sizeof( status ));
++	gEngfuncs.pNetAPI->Status( &status );
++
++	if( !status.connected )
++		return false;
++
++	const char *adr = gEngfuncs.pNetAPI->AdrToString( &status.remote_address );
++
++	if( !adr || !adr[0] )
++		return false;
++
++	snprintf( out, size, "%s", adr );
++	return true;
++}
++
++// The list: addresses separated by blanks, commas or semicolons.
++// An entry is "ip" (any port) or "ip:port"; "*" means any server. A local server is always trusted.
++static bool MatchTrustedList( const char *list, const char *addr )
++{
++	if( !addr || !addr[0] )
++		return false;
++
++	if( !strcmp( addr, "loopback" ))
++		return true;
++
++	// the part of the address before the port
++	char ip[64];
++	snprintf( ip, sizeof( ip ), "%s", addr );
++	char *colon = strchr( ip, ':' );
++	if( colon )
++		*colon = 0;
++
++	for( const char *p = list ? list : ""; *p; )
++	{
++		while( *p && ( IsBlank( *p ) || *p == ',' || *p == ';' ))
++			p++;
++
++		char token[64];
++		size_t len = 0;
++
++		while( *p && !IsBlank( *p ) && *p != ',' && *p != ';' )
++		{
++			if( len + 1 < sizeof( token ))
++				token[len++] = *p;
++			p++;
++		}
++
++		token[len] = 0;
++
++		if( !len )
++			continue;
++
++		if( !strcmp( token, "*" ) || !stricmp( token, addr ) || !stricmp( token, ip ))
++			return true;
++	}
++
++	return false;
++}
++
 +void CHudMOTD :: ResetBrowserState( void )
 +{
 +	m_bMotdStarted = false;
@@ -3548,6 +3753,21 @@ index 83208f5..b1fc69e 100644
 +		return true;
 +
 +	// whole MOTD received
++	// the built-in browser (mode 3) is used only for trusted servers
++	bool cef = mode >= 3;
++
++	if( cef )
++	{
++		char server[64] = "";
++
++		if( !GetServerAddress( server, sizeof( server )) || !MatchTrustedList( cl_motd_browser_trusted->string, server ))
++		{
++			cef = false;
++			gEngfuncs.Con_Printf( "[motd] server %s is not trusted for the built-in browser, the page is opened in the system browser."
++				" To trust it: cl_motd_browser_trusted \"%s\"\n", server[0] ? server : "(unknown)", server[0] ? server : "ip:port" );
++		}
++	}
++
 +	if( m_iBrowserMode == BROWSER_URL )
 +	{
 +		char *url = m_szBrowserMOTD;
@@ -3563,7 +3783,7 @@ index 83208f5..b1fc69e 100644
 +		// only http(s) links, never pass anything else from the server to the system
 +		if( StartsWithNoCase( url, "http://" ) || StartsWithNoCase( url, "https://" ))
 +		{
-+			if( mode >= 3 && Chrome::ShowMotd( url ))
++			if( cef && Chrome::ShowMotd( url ))
 +			{
 +				gEngfuncs.Con_Printf( "Showing MOTD in the game browser: %s\n", url );
 +			}
@@ -3580,7 +3800,7 @@ index 83208f5..b1fc69e 100644
 +		char path[512];
 +		static char dataUrl[22528]; // enough for the base64 form of the whole MOTD buffer
 +
-+		if( mode >= 3 && MakeHtmlDataUrl( m_szBrowserMOTD, m_iBrowserLen, dataUrl, sizeof( dataUrl )) && Chrome::ShowMotd( dataUrl ))
++		if( cef && MakeHtmlDataUrl( m_szBrowserMOTD, m_iBrowserLen, dataUrl, sizeof( dataUrl )) && Chrome::ShowMotd( dataUrl ))
 +		{
 +			// the whole page is shown, like the original embedded browser does
 +			gEngfuncs.Con_Printf( "Showing MOTD in the game browser\n" );
@@ -3610,7 +3830,7 @@ index 83208f5..b1fc69e 100644
  void CHudMOTD :: Reset( void )
  {
  	m_iFlags &= ~HUD_DRAW;  // start out inactive
-@@ -137,13 +430,19 @@ int CHudMOTD :: MsgFunc_MOTD( const char *pszName, int iSize, void *pbuf )
+@@ -137,13 +515,19 @@ int CHudMOTD :: MsgFunc_MOTD( const char *pszName, int iSize, void *pbuf )
  		Reset(); // clear the current MOTD in prep for this one
  	}
  
