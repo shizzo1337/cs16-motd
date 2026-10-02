@@ -157,10 +157,10 @@ index 0000000..b1dfb44
 +} // namespace iHTMLChrome
 diff --git a/cl_dll/chrome/chrome_backend_cef.cpp b/cl_dll/chrome/chrome_backend_cef.cpp
 new file mode 100644
-index 0000000..407f8c6
+index 0000000..b346708
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_backend_cef.cpp
-@@ -0,0 +1,373 @@
+@@ -0,0 +1,376 @@
 +#include "chrome_backend.h"
 +
 +#if defined(CS16CLIENT_ENABLE_CEF)
@@ -176,6 +176,8 @@ index 0000000..407f8c6
 +#include "cef_client.h"
 +#include "cef_parser.h"
 +#include "cef_render_handler.h"
++
++#include "chrome_cef_input.h"
 +
 +namespace iHTMLChrome {
 +namespace CEF {
@@ -256,10 +258,11 @@ index 0000000..407f8c6
 +
 +	void SendInput( const InputEvent& event )
 +	{
-+		(void)event;
-+		Chrome_DPrintf(
-+			1.f,
-+			"[chrome] SendInput stub (TODO: wire CEF keyboard/mouse once input adapter is implemented)\n" );
++		if( !browser_ || !browser_->GetHost() )
++			return;
++
++		CefRefPtr<CefBrowserHost> host = browser_->GetHost();
++		DispatchInputToCef( host, event );
 +	}
 +
 +	void ApplyZoomLevel()
@@ -573,6 +576,97 @@ index 0000000..5326b09
 +#endif
 +} // namespace CEF
 +} // namespace iHTMLChrome
+diff --git a/cl_dll/chrome/chrome_cef_input.h b/cl_dll/chrome/chrome_cef_input.h
+new file mode 100644
+index 0000000..dd8654f
+--- /dev/null
++++ b/cl_dll/chrome/chrome_cef_input.h
+@@ -0,0 +1,85 @@
++#pragma once
++
++// Translation of the input events into calls of the CEF browser host.
++// The CEF headers (CefMouseEvent, CefKeyEvent, ...) must be included before this file.
++
++#include <cstdint>
++
++#include "chrome_types.h"
++
++namespace iHTMLChrome {
++namespace CEF {
++
++template <class HostPtr>
++inline void DispatchInputToCef( HostPtr& host, const InputEvent& event )
++{
++	std::uint32_t flags = 0;
++	if( event.modifiers & kModShift )
++		flags |= EVENTFLAG_SHIFT_DOWN;
++	if( event.modifiers & kModCtrl )
++		flags |= EVENTFLAG_CONTROL_DOWN;
++	if( event.modifiers & kModAlt )
++		flags |= EVENTFLAG_ALT_DOWN;
++	if( event.modifiers & kModLeftButton )
++		flags |= EVENTFLAG_LEFT_MOUSE_BUTTON;
++	if( event.modifiers & kModMiddleButton )
++		flags |= EVENTFLAG_MIDDLE_MOUSE_BUTTON;
++	if( event.modifiers & kModRightButton )
++		flags |= EVENTFLAG_RIGHT_MOUSE_BUTTON;
++
++	CefMouseEvent mouse;
++	mouse.x = event.x;
++	mouse.y = event.y;
++	mouse.modifiers = flags;
++
++	switch( event.type )
++	{
++	case InputType::MouseMove:
++		host->SendMouseMoveEvent( mouse, event.mouse_leave );
++		break;
++
++	case InputType::MouseDown:
++	case InputType::MouseUp:
++	{
++		cef_mouse_button_type_t button = MBT_LEFT;
++		if( event.button == 1 )
++			button = MBT_MIDDLE;
++		else if( event.button == 2 )
++			button = MBT_RIGHT;
++
++		if( event.type == InputType::MouseDown )
++			host->SetFocus( true );
++
++		host->SendMouseClickEvent( mouse, button, event.type == InputType::MouseUp, event.click_count > 0 ? event.click_count : 1 );
++		break;
++	}
++
++	case InputType::MouseWheel:
++		host->SendMouseWheelEvent( mouse, event.delta_x, event.delta_y );
++		break;
++
++	case InputType::KeyDown:
++	case InputType::KeyUp:
++	case InputType::KeyChar:
++	{
++		CefKeyEvent key;
++		key.type = event.type == InputType::KeyDown ? KEYEVENT_RAWKEYDOWN
++			: event.type == InputType::KeyUp ? KEYEVENT_KEYUP : KEYEVENT_CHAR;
++		key.modifiers = flags;
++		key.windows_key_code = event.key;
++		key.native_key_code = 0;
++		key.is_system_key = 0;
++		key.character = static_cast<char16_t>( event.codepoint );
++		key.unmodified_character = static_cast<char16_t>( event.codepoint );
++		key.focus_on_editable_field = 0;
++		host->SendKeyEvent( key );
++		break;
++	}
++
++	default:
++		break;
++	}
++}
++
++} // namespace CEF
++} // namespace iHTMLChrome
 diff --git a/cl_dll/chrome/chrome_debug.cpp b/cl_dll/chrome/chrome_debug.cpp
 new file mode 100644
 index 0000000..d5656f7
@@ -765,14 +859,15 @@ index 0000000..90f7f15
 +#endif
 diff --git a/cl_dll/chrome/chrome_host.cpp b/cl_dll/chrome/chrome_host.cpp
 new file mode 100644
-index 0000000..ffe04c4
+index 0000000..126f85f
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_host.cpp
-@@ -0,0 +1,581 @@
+@@ -0,0 +1,753 @@
 +#include "chrome_host.h"
 +#include "chrome_backend.h"
 +#include "chrome_debug.h"
 +#include "chrome_instance.h"
++#include "chrome_motd_input.h"
 +#include "chrome_runtime.h"
 +
 +#include <algorithm>
@@ -805,8 +900,11 @@ index 0000000..ffe04c4
 +int g_openurl_demo_id = -1;
 +int g_motd_id = -1;
 +std::chrono::steady_clock::time_point g_motd_hide_at; // real time, does not depend on the game time
-+bool g_motd_key_swallowed[256] = {};
++bool g_motd_key_swallowed[256] = {}; // used by the old mode without mouse input
 +cvar_t* cl_motd_browser_time = nullptr;
++cvar_t* cl_motd_browser_input = nullptr;
++MotdInput g_motd_input;
++std::unordered_map<int, std::pair<int, int>> g_last_mouse_pos; // for the generic SendMouse* functions
 +
 +int s_toggle_sync = -1;
 +
@@ -830,6 +928,7 @@ index 0000000..ffe04c4
 +		return;
 +
 +	Chrome_DPrintf( 1.f, "[chrome] Destroy instance id=%d\n", instance_id );
++	g_last_mouse_pos.erase( instance_id );
 +	g_instances.erase( it );
 +}
 +
@@ -845,6 +944,9 @@ index 0000000..ffe04c4
 +		cl_chrome_toggle = CVAR_CREATE( "cl_chrome_toggle", "0", FCVAR_ARCHIVE );
 +	if( !cl_motd_browser_time )
 +		cl_motd_browser_time = CVAR_CREATE( "cl_motd_browser_time", "30", FCVAR_ARCHIVE );
++	// 1 - the mouse and the keyboard work in the MOTD window, 0 - the window is only shown (Enter / Esc / Space / LMB close it)
++	if( !cl_motd_browser_input )
++		cl_motd_browser_input = CVAR_CREATE( "cl_motd_browser_input", "1", FCVAR_ARCHIVE );
 +}
 +
 +bool EnsureCefInitialized()
@@ -1045,6 +1147,60 @@ index 0000000..ffe04c4
 +	DrawUtils::Draw2DQuad( x1, y1, x2, y2 );
 +}
 +
++bool MotdInputEnabled()
++{
++	return g_motd_id >= 0 && CvarFloat( cl_motd_browser_input, 1.0f ) != 0.0f;
++}
++
++double NowSeconds()
++{
++	return std::chrono::duration<double>( std::chrono::steady_clock::now().time_since_epoch() ).count();
++}
++
++void RestartMotdTimer()
++{
++	const float seconds = std::max( 3.0f, CvarFloat( cl_motd_browser_time, 30.0f ));
++	g_motd_hide_at = std::chrono::steady_clock::now() + std::chrono::milliseconds( (long long)( seconds * 1000.0f ));
++}
++
++// Executes what the input logic asks for
++void ApplyMotdOutput( const MotdOutput& out )
++{
++	if( g_motd_id < 0 )
++		return;
++
++	if( ChromeInstance* inst = Lookup( g_motd_id ))
++		for( int i = 0; i < out.count; ++i )
++			inst->EnqueueInput( out.events[i] );
++
++	if( out.touch )
++		RestartMotdTimer();
++
++	if( out.close )
++	{
++		gEngfuncs.Con_Printf( "[motd] window closed by user\n" );
++		Chrome::HideMotd();
++	}
++}
++
++void DrawMotdCursor( int x, int y )
++{
++	// an arrow made of 1 pixel rows: black outline, white inside
++	for( int r = 0; r < 14; ++r )
++	{
++		const int w = r < 9 ? r + 1 : ( r < 12 ? 4 : 3 );
++		FillRGBA( x - 1, y + r, w + 2, 1, 0, 0, 0, 255 );
++	}
++	FillRGBA( x - 1, y - 1, 3, 1, 0, 0, 0, 255 );
++	FillRGBA( x - 1, y + 14, 5, 1, 0, 0, 0, 255 );
++
++	for( int r = 0; r < 14; ++r )
++	{
++		const int w = r < 9 ? r + 1 : ( r < 12 ? 4 : 3 );
++		FillRGBA( x, y + r, w, 1, 255, 255, 255, 255 );
++	}
++}
++
 +// The server MOTD is shown as a window in the middle of the screen, not over the whole screen
 +void PresentMotdWindow( ChromeInstance* inst )
 +{
@@ -1076,15 +1232,39 @@ index 0000000..ffe04c4
 +	const float y1 = ( ext.h - h ) * 0.5f;
 +
 +	const int title_h = 20;
++	const bool interactive = MotdInputEnabled();
++
++	MotdLayout lay;
++	lay.valid = true;
++	lay.x = x1;
++	lay.y = y1;
++	lay.w = w;
++	lay.h = h;
++	lay.scale = scale;
++	lay.close_size = 16.f;
++	lay.close_x = x1 + w - lay.close_size;
++	lay.close_y = y1 - title_h + 1;
++	g_motd_input.SetScreen( ext.w, ext.h );
++	g_motd_input.SetLayout( lay );
 +
 +	DrawUtils::DrawRectangle( (int)x1 - 3, (int)y1 - title_h - 3, (int)w + 6, (int)h + title_h + 6, 0, 0, 0, 220, true );
-+	DrawUtils::DrawHudString( (int)x1 + 4, (int)y1 - title_h + 2, ext.w, "MOTD   [ENTER / ESC / LMB - close]", 255, 180, 0 );
++	DrawUtils::DrawHudString( (int)x1 + 4, (int)y1 - title_h + 2, ext.w,
++		interactive ? "MOTD   [mouse: click / scroll,  ESC: close]" : "MOTD   [ENTER / ESC / LMB - close]", 255, 180, 0 );
 +
 +	gRenderAPI.GL_SelectTexture( 0 );
 +	gRenderAPI.GL_Bind( 0, tex );
 +	gEngfuncs.pTriAPI->RenderMode( kRenderTransAlpha );
 +	gEngfuncs.pTriAPI->Color4f( 1.0f, 1.0f, 1.0f, 1.0f );
 +	DrawUtils::Draw2DQuad( x1, y1, x1 + w, y1 + h );
++
++	if( interactive )
++	{
++		// close button
++		DrawUtils::DrawRectangle( (int)lay.close_x, (int)lay.close_y, (int)lay.close_size, (int)lay.close_size, 140, 20, 20, 230, true );
++		DrawUtils::DrawHudString( (int)lay.close_x + 4, (int)lay.close_y + 1, ext.w, "X", 255, 255, 255 );
++
++		DrawMotdCursor( (int)g_motd_input.cursor_x(), (int)g_motd_input.cursor_y() );
++	}
 +}
 +
 +void Cmd_MotdClose()
@@ -1241,29 +1421,81 @@ index 0000000..ffe04c4
 +
 +void SendMouseMove( const int instance_id, const int x, const int y )
 +{
-+	(void)Lookup( instance_id );
-+	Chrome_DPrintf( 1.f, "[chrome] TODO SendMouseMove id=%d xy=(%d,%d)\n", instance_id, x, y );
++	ChromeInstance* inst = Lookup( instance_id );
++	if( !inst )
++		return;
++
++	g_last_mouse_pos[instance_id] = std::make_pair( x, y );
++
++	InputEvent e;
++	e.type = InputType::MouseMove;
++	e.x = x;
++	e.y = y;
++	inst->EnqueueInput( e );
 +}
 +
 +void SendMouseButton( const int instance_id, const int button, const bool down )
 +{
-+	(void)Lookup( instance_id );
-+	Chrome_DPrintf(
-+		1.f, "[chrome] TODO SendMouseButton id=%d button=%d down=%d\n", instance_id, button, down ? 1 : 0 );
++	ChromeInstance* inst = Lookup( instance_id );
++	if( !inst )
++		return;
++
++	const auto pos = g_last_mouse_pos.find( instance_id );
++
++	InputEvent e;
++	e.type = down ? InputType::MouseDown : InputType::MouseUp;
++	e.button = button;
++	if( pos != g_last_mouse_pos.end() )
++	{
++		e.x = pos->second.first;
++		e.y = pos->second.second;
++	}
++	inst->EnqueueInput( e );
 +}
 +
 +void SendMouseWheel( const int instance_id, const int delta_x, const int delta_y )
 +{
-+	(void)Lookup( instance_id );
-+	Chrome_DPrintf(
-+		1.f, "[chrome] TODO SendMouseWheel id=%d dxy=(%d,%d)\n", instance_id, delta_x, delta_y );
++	ChromeInstance* inst = Lookup( instance_id );
++	if( !inst )
++		return;
++
++	const auto pos = g_last_mouse_pos.find( instance_id );
++
++	InputEvent e;
++	e.type = InputType::MouseWheel;
++	e.delta_x = delta_x;
++	e.delta_y = delta_y;
++	if( pos != g_last_mouse_pos.end() )
++	{
++		e.x = pos->second.first;
++		e.y = pos->second.second;
++	}
++	inst->EnqueueInput( e );
 +}
 +
 +void SendKeyEvent( const int instance_id, const int key_code, const bool down )
 +{
-+	(void)Lookup( instance_id );
-+	Chrome_DPrintf(
-+		1.f, "[chrome] TODO SendKeyEvent id=%d key=%d down=%d\n", instance_id, key_code, down ? 1 : 0 );
++	ChromeInstance* inst = Lookup( instance_id );
++	if( !inst )
++		return;
++
++	int vk, ch;
++	if( !MapMotdKey( key_code, false, vk, ch ))
++		return;
++
++	InputEvent e;
++	e.type = down ? InputType::KeyDown : InputType::KeyUp;
++	e.key = vk;
++	inst->EnqueueInput( e );
++
++	if( down && ch )
++	{
++		InputEvent c;
++		c.type = InputType::KeyChar;
++		c.key = ch;
++		c.codepoint = (std::uint32_t)ch;
++		inst->EnqueueInput( c );
++	}
 +}
 +
 +unsigned int GetTextureId( const int instance_id )
@@ -1295,13 +1527,18 @@ index 0000000..ffe04c4
 +	if( id < 0 )
 +		return false;
 +
-+	const float seconds = std::max( 3.0f, CvarFloat( cl_motd_browser_time, 30.0f ));
-+
 +	g_motd_id = id;
-+	g_motd_hide_at = std::chrono::steady_clock::now() + std::chrono::milliseconds( (long long)( seconds * 1000.0f ));
++	RestartMotdTimer();
 +	memset( g_motd_key_swallowed, 0, sizeof( g_motd_key_swallowed ));
 +
-+	gEngfuncs.Con_Printf( "[motd] shown for %.0f s: ENTER / ESC / LMB or cl_motd_close to close\n", seconds );
++	const RenderExtents ext = VisibleRenderExtents();
++	g_motd_input.Open( ext.w, ext.h );
++
++	if( MotdInputEnabled() )
++		gEngfuncs.Con_Printf( "[motd] shown: mouse and keyboard work in the window, ESC / X button / cl_motd_close close it\n" );
++	else
++		gEngfuncs.Con_Printf( "[motd] shown: ENTER / ESC / Space / LMB or cl_motd_close close it\n" );
++
 +	return true;
 +}
 +
@@ -1328,16 +1565,34 @@ index 0000000..ffe04c4
 +	if( keynum < 0 || keynum >= (int)( sizeof( g_motd_key_swallowed ) / sizeof( g_motd_key_swallowed[0] )))
 +		return false;
 +
-+	// the release of a key that closed the window must not reach the game either
++	// the window is closed: the release of a key that was used by it must not reach the game either
++	if( g_motd_id < 0 )
++	{
++		if( down )
++			return false;
++
++		const bool was = g_motd_key_swallowed[keynum];
++		g_motd_key_swallowed[keynum] = false;
++
++		return g_motd_input.OnKey( 0, keynum, NowSeconds() ).consumed || was;
++	}
++
++	// mouse and keyboard work in the window
++	if( MotdInputEnabled() )
++	{
++		const MotdOutput out = g_motd_input.OnKey( down, keynum, NowSeconds() );
++
++		ApplyMotdOutput( out );
++		return out.consumed;
++	}
++
++	// old mode: the window is only shown
 +	if( !down )
 +	{
 +		const bool was = g_motd_key_swallowed[keynum];
 +		g_motd_key_swallowed[keynum] = false;
 +		return was;
 +	}
-+
-+	if( g_motd_id < 0 )
-+		return false;
 +
 +	if( keynum == K_ENTER_KEY || keynum == K_ESCAPE_KEY || keynum == K_SPACE_KEY || keynum == K_KP_ENTER_KEY || keynum == K_MOUSE1_KEY )
 +	{
@@ -1349,13 +1604,24 @@ index 0000000..ffe04c4
 +
 +	return false;
 +}
++
++bool MotdCapturesMouse()
++{
++	return MotdInputEnabled();
++}
++
++void MotdMouseDelta( float dx, float dy )
++{
++	if( MotdInputEnabled() )
++		ApplyMotdOutput( g_motd_input.OnMouseDelta( dx, dy ));
++}
 +} // namespace Chrome
 diff --git a/cl_dll/chrome/chrome_host.h b/cl_dll/chrome/chrome_host.h
 new file mode 100644
-index 0000000..c135f5e
+index 0000000..b26c181
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_host.h
-@@ -0,0 +1,31 @@
+@@ -0,0 +1,33 @@
 +#pragma once
 +
 +using ChromeOnPaintCallback =
@@ -1385,7 +1651,9 @@ index 0000000..c135f5e
 +bool ShowMotd( const char* url );  // false if CEF is unavailable (the caller uses a fallback)
 +void HideMotd();
 +bool IsMotdShown();
-+bool HandleMotdKey( int down, int keynum ); // true if the key was used to close the MOTD and must not reach the game
++bool HandleMotdKey( int down, int keynum ); // true if the key was used by the MOTD window and must not reach the game
++bool MotdCapturesMouse();                   // the MOTD window with mouse input is shown: the mouse must not turn the view
++void MotdMouseDelta( float dx, float dy );  // mouse movement in pixels
 +} // namespace Chrome
 diff --git a/cl_dll/chrome/chrome_input_adapter.cpp b/cl_dll/chrome/chrome_input_adapter.cpp
 new file mode 100644
@@ -1813,6 +2081,414 @@ index 0000000..4776af8
 +	ChromePaintConsumerFn paint_consumer_ = nullptr;
 +	void* paint_consumer_userdata_ = nullptr;
 +};
++} // namespace CEF
++} // namespace iHTMLChrome
+diff --git a/cl_dll/chrome/chrome_motd_input.h b/cl_dll/chrome/chrome_motd_input.h
+new file mode 100644
+index 0000000..e4049dc
+--- /dev/null
++++ b/cl_dll/chrome/chrome_motd_input.h
+@@ -0,0 +1,402 @@
++#pragma once
++
++// Input logic of the server MOTD window shown by the embedded browser.
++//
++// This file does not depend on the engine or on CEF, so it can be tested alone.
++// The host feeds it with the mouse movement and the key events, and executes
++// what it returns: events for the browser, "close the window", "the key must not
++// reach the game".
++
++#include "chrome_types.h"
++
++namespace iHTMLChrome {
++namespace CEF {
++
++// Keys of the engine (engine/keydefs.h)
++namespace MotdKey {
++constexpr int Tab = 9, Enter = 13, Escape = 27, Space = 32, Backspace = 127;
++constexpr int Up = 128, Down = 129, Left = 130, Right = 131;
++constexpr int Alt = 132, Ctrl = 133, Shift = 134;
++constexpr int Ins = 147, Del = 148, PgDn = 149, PgUp = 150, Home = 151, End = 152;
++constexpr int KpEnter = 169;
++constexpr int WheelDown = 239, WheelUp = 240;
++constexpr int Mouse1 = 241, Mouse2 = 242, Mouse3 = 243;
++} // namespace MotdKey
++
++// Where the window is on the screen (filled by the host every frame)
++struct MotdLayout
++{
++	bool valid = false;
++	float x = 0.f, y = 0.f; // page rectangle on the screen
++	float w = 0.f, h = 0.f;
++	float scale = 1.f;      // screen size / page size
++	float close_x = 0.f, close_y = 0.f, close_size = 16.f; // close button
++};
++
++// Result of one event
++struct MotdOutput
++{
++	bool consumed = false; // the game must not see this key
++	bool close = false;    // close the window
++	bool touch = false;    // the user does something: restart the auto-close timer
++	int count = 0;
++	InputEvent events[4];
++
++	void Add( const InputEvent& e )
++	{
++		if( count < 4 )
++			events[count++] = e;
++	}
++};
++
++// Translation of an engine key into the Windows key code and the typed character
++// Returns false if the key is not forwarded to the page.
++inline bool MapMotdKey( int key, bool shift, int& vk, int& ch )
++{
++	vk = 0;
++	ch = 0;
++
++	if( key >= 'a' && key <= 'z' )
++	{
++		vk = key - 'a' + 'A';
++		ch = shift ? vk : key;
++		return true;
++	}
++
++	if( key >= '0' && key <= '9' )
++	{
++		static const char shifted[] = ")!@#$%^&*(";
++		vk = key;
++		ch = shift ? shifted[key - '0'] : key;
++		return true;
++	}
++
++	switch( key )
++	{
++	case MotdKey::Space:     vk = 0x20; ch = ' '; return true;
++	case MotdKey::Enter:
++	case MotdKey::KpEnter:   vk = 0x0D; ch = '\r'; return true;
++	case MotdKey::Tab:       vk = 0x09; return true;
++	case MotdKey::Backspace: vk = 0x08; ch = 8; return true;
++	case MotdKey::Up:        vk = 0x26; return true;
++	case MotdKey::Down:      vk = 0x28; return true;
++	case MotdKey::Left:      vk = 0x25; return true;
++	case MotdKey::Right:     vk = 0x27; return true;
++	case MotdKey::Ins:       vk = 0x2D; return true;
++	case MotdKey::Del:       vk = 0x2E; return true;
++	case MotdKey::PgDn:      vk = 0x22; return true;
++	case MotdKey::PgUp:      vk = 0x21; return true;
++	case MotdKey::Home:      vk = 0x24; return true;
++	case MotdKey::End:       vk = 0x23; return true;
++	case ';':  vk = 0xBA; ch = shift ? ':' : ';';  return true;
++	case '=':  vk = 0xBB; ch = shift ? '+' : '=';  return true;
++	case ',':  vk = 0xBC; ch = shift ? '<' : ',';  return true;
++	case '-':  vk = 0xBD; ch = shift ? '_' : '-';  return true;
++	case '.':  vk = 0xBE; ch = shift ? '>' : '.';  return true;
++	case '/':  vk = 0xBF; ch = shift ? '?' : '/';  return true;
++	case '[':  vk = 0xDB; ch = shift ? '{' : '[';  return true;
++	case '\\': vk = 0xDC; ch = shift ? '|' : '\\'; return true;
++	case ']':  vk = 0xDD; ch = shift ? '}' : ']';  return true;
++	case '\'': vk = 0xDE; ch = shift ? '"' : '\''; return true;
++	default: break;
++	}
++
++	// '`' / '~' (the console key), F1..F12 and others are left to the engine
++	return false;
++}
++
++class MotdInput
++{
++public:
++	// a new window was opened
++	void Open( int screen_w, int screen_h )
++	{
++		screen_w_ = screen_w > 0 ? screen_w : 1;
++		screen_h_ = screen_h > 0 ? screen_h : 1;
++		cursor_x_ = screen_w_ * 0.5f;
++		cursor_y_ = screen_h_ * 0.5f;
++		buttons_ = 0;
++		mods_ = 0;
++		hover_ = false;
++		last_click_time_ = -1000.0;
++		click_count_ = 0;
++		for( int i = 0; i < 256; ++i )
++			swallowed_[i] = false;
++	}
++
++	void SetScreen( int w, int h )
++	{
++		if( w > 0 )
++			screen_w_ = w;
++		if( h > 0 )
++			screen_h_ = h;
++		Clamp();
++	}
++
++	void SetLayout( const MotdLayout& layout ) { layout_ = layout; }
++
++	float cursor_x() const { return cursor_x_; }
++	float cursor_y() const { return cursor_y_; }
++	int buttons() const { return buttons_; }
++
++	// mouse moved (in screen pixels)
++	MotdOutput OnMouseDelta( float dx, float dy )
++	{
++		MotdOutput out;
++		out.consumed = true;
++
++		cursor_x_ += dx;
++		cursor_y_ += dy;
++		Clamp();
++
++		if( dx == 0.f && dy == 0.f )
++			return out;
++
++		int px, py;
++		const bool inside = PagePoint( cursor_x_, cursor_y_, px, py );
++
++		if( inside )
++		{
++			InputEvent e;
++			e.type = InputType::MouseMove;
++			e.x = px;
++			e.y = py;
++			e.modifiers = Modifiers();
++			out.Add( e );
++			hover_ = true;
++			out.touch = true;
++		}
++		else if( hover_ )
++		{
++			InputEvent e;
++			e.type = InputType::MouseMove;
++			e.x = last_x_;
++			e.y = last_y_;
++			e.modifiers = Modifiers();
++			e.mouse_leave = true;
++			out.Add( e );
++			hover_ = false;
++		}
++
++		if( inside )
++		{
++			last_x_ = px;
++			last_y_ = py;
++		}
++
++		return out;
++	}
++
++	// a key or a mouse button of the engine; now is the time in seconds
++	MotdOutput OnKey( int down, int key, double now )
++	{
++		MotdOutput out;
++
++		if( key < 0 || key >= 256 )
++			return out;
++
++		// modifiers are tracked and passed to the engine as well
++		if( key == MotdKey::Shift || key == MotdKey::Ctrl || key == MotdKey::Alt )
++		{
++			const int bit = key == MotdKey::Shift ? kModShift : key == MotdKey::Ctrl ? kModCtrl : kModAlt;
++			if( down ) mods_ |= bit; else mods_ &= ~bit;
++			return out;
++		}
++
++		if( !down )
++		{
++			if( !swallowed_[key] )
++				return out;
++
++			swallowed_[key] = false;
++			out.consumed = true;
++
++			if( key == MotdKey::Mouse1 || key == MotdKey::Mouse2 || key == MotdKey::Mouse3 )
++			{
++				const int idx = key - MotdKey::Mouse1;
++				if( buttons_ & ButtonBit( idx ))
++				{
++					buttons_ &= ~ButtonBit( idx );
++					InputEvent e;
++					e.type = InputType::MouseUp;
++					e.button = idx;
++					e.x = last_x_;
++					e.y = last_y_;
++					e.modifiers = Modifiers();
++					int px, py;
++					if( PagePoint( cursor_x_, cursor_y_, px, py ))
++					{
++						e.x = px;
++						e.y = py;
++					}
++					out.Add( e );
++					out.touch = true;
++				}
++			}
++			else if( key != MotdKey::WheelUp && key != MotdKey::WheelDown && key != MotdKey::Escape )
++			{
++				AddKey( out, false, key );
++			}
++
++			return out;
++		}
++
++		// ---- key pressed ----
++
++		if( key == MotdKey::Escape )
++		{
++			swallowed_[key] = true;
++			out.consumed = true;
++			out.close = true;
++			return out;
++		}
++
++		if( key == MotdKey::Mouse1 || key == MotdKey::Mouse2 || key == MotdKey::Mouse3 )
++		{
++			swallowed_[key] = true;
++			out.consumed = true;
++			out.touch = true;
++
++			const int idx = key - MotdKey::Mouse1;
++
++			if( idx == 0 && OverClose( cursor_x_, cursor_y_ ))
++			{
++				out.close = true;
++				return out;
++			}
++
++			int px, py;
++			if( PagePoint( cursor_x_, cursor_y_, px, py ))
++			{
++				buttons_ |= ButtonBit( idx );
++
++				if( idx == 0 && now - last_click_time_ < 0.4 && Near( px, py ))
++					click_count_ = click_count_ < 3 ? click_count_ + 1 : 1;
++				else
++					click_count_ = 1;
++
++				last_click_time_ = now;
++				last_x_ = px;
++				last_y_ = py;
++
++				InputEvent e;
++				e.type = InputType::MouseDown;
++				e.button = idx;
++				e.x = px;
++				e.y = py;
++				e.click_count = idx == 0 ? click_count_ : 1;
++				e.modifiers = Modifiers();
++				out.Add( e );
++			}
++
++			return out;
++		}
++
++		if( key == MotdKey::WheelUp || key == MotdKey::WheelDown )
++		{
++			swallowed_[key] = true;
++			out.consumed = true;
++
++			int px, py;
++			if( PagePoint( cursor_x_, cursor_y_, px, py ))
++			{
++				InputEvent e;
++				e.type = InputType::MouseWheel;
++				e.x = px;
++				e.y = py;
++				e.delta_y = key == MotdKey::WheelUp ? 120 : -120;
++				e.modifiers = Modifiers();
++				out.Add( e );
++				out.touch = true;
++			}
++
++			return out;
++		}
++
++		int vk, ch;
++		if( MapMotdKey( key, ( mods_ & kModShift ) != 0, vk, ch ))
++		{
++			swallowed_[key] = true;
++			out.consumed = true;
++			out.touch = true;
++			AddKey( out, true, key );
++		}
++
++		return out;
++	}
++
++private:
++	static int ButtonBit( int idx ) { return idx == 0 ? kModLeftButton : idx == 1 ? kModMiddleButton : kModRightButton; }
++
++	int Modifiers() const { return mods_ | ( buttons_ & ( kModLeftButton | kModMiddleButton | kModRightButton )); }
++
++	void Clamp()
++	{
++		if( cursor_x_ < 0.f ) cursor_x_ = 0.f;
++		if( cursor_y_ < 0.f ) cursor_y_ = 0.f;
++		if( cursor_x_ > screen_w_ - 1 ) cursor_x_ = (float)( screen_w_ - 1 );
++		if( cursor_y_ > screen_h_ - 1 ) cursor_y_ = (float)( screen_h_ - 1 );
++	}
++
++	bool PagePoint( float sx, float sy, int& px, int& py ) const
++	{
++		if( !layout_.valid || layout_.scale <= 0.f )
++			return false;
++
++		if( sx < layout_.x || sy < layout_.y || sx >= layout_.x + layout_.w || sy >= layout_.y + layout_.h )
++			return false;
++
++		px = (int)(( sx - layout_.x ) / layout_.scale );
++		py = (int)(( sy - layout_.y ) / layout_.scale );
++		return true;
++	}
++
++	bool OverClose( float sx, float sy ) const
++	{
++		return layout_.valid && sx >= layout_.close_x && sy >= layout_.close_y
++			&& sx < layout_.close_x + layout_.close_size && sy < layout_.close_y + layout_.close_size;
++	}
++
++	bool Near( int px, int py ) const
++	{
++		const int dx = px - last_x_, dy = py - last_y_;
++		return dx * dx + dy * dy <= 16;
++	}
++
++	void AddKey( MotdOutput& out, bool down, int key ) const
++	{
++		int vk, ch;
++		if( !MapMotdKey( key, ( mods_ & kModShift ) != 0, vk, ch ))
++			return;
++
++		InputEvent e;
++		e.type = down ? InputType::KeyDown : InputType::KeyUp;
++		e.key = vk;
++		e.modifiers = mods_;
++		out.Add( e );
++
++		// printable characters are typed, but not for Ctrl / Alt combinations
++		if( down && ch && !( mods_ & ( kModCtrl | kModAlt )))
++		{
++			InputEvent c;
++			c.type = InputType::KeyChar;
++			c.key = ch;
++			c.codepoint = (std::uint32_t)ch;
++			c.modifiers = mods_;
++			out.Add( c );
++		}
++	}
++
++	int screen_w_ = 1, screen_h_ = 1;
++	float cursor_x_ = 0.f, cursor_y_ = 0.f;
++	int buttons_ = 0, mods_ = 0;
++	bool hover_ = false;
++	int last_x_ = 0, last_y_ = 0;
++	double last_click_time_ = -1000.0;
++	int click_count_ = 0;
++	bool swallowed_[256] = {};
++	MotdLayout layout_;
++};
++
 +} // namespace CEF
 +} // namespace iHTMLChrome
 diff --git a/cl_dll/chrome/chrome_platform.cpp b/cl_dll/chrome/chrome_platform.cpp
@@ -2497,10 +3173,10 @@ index 0000000..29faab1
 +} // namespace iHTMLChrome
 diff --git a/cl_dll/chrome/chrome_types.h b/cl_dll/chrome/chrome_types.h
 new file mode 100644
-index 0000000..093c24b
+index 0000000..e5e0e81
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_types.h
-@@ -0,0 +1,52 @@
+@@ -0,0 +1,63 @@
 +#pragma once
 +
 +#include <cstddef>
@@ -2539,6 +3215,14 @@ index 0000000..093c24b
 +	TouchMove
 +};
 +
++// state of the keyboard modifiers and of the mouse buttons (InputEvent::modifiers)
++constexpr int kModShift = 1;
++constexpr int kModCtrl = 2;
++constexpr int kModAlt = 4;
++constexpr int kModLeftButton = 8;
++constexpr int kModMiddleButton = 16;
++constexpr int kModRightButton = 32;
++
 +struct InputEvent
 +{
 +	InputType type = InputType::MouseMove;
@@ -2546,10 +3230,13 @@ index 0000000..093c24b
 +	int y = 0;
 +	int delta_x = 0;
 +	int delta_y = 0;
-+	int button = 0;
-+	int key = 0;
++	int button = 0; // 0 - left, 1 - middle, 2 - right
++	int key = 0;    // Windows key code (or the character for KeyChar)
 +	std::uint32_t codepoint = 0;
 +	int pointer_id = 0;
++	int modifiers = 0;      // kMod* flags
++	int click_count = 1;
++	bool mouse_leave = false;
 +};
 +} // namespace CEF
 +} // namespace iHTMLChrome
@@ -3123,10 +3810,16 @@ index c6579ca..349b7df 100644
  		else
  			bits |= IN_ATTACK;
 diff --git a/cl_dll/input/input_xash3d.cpp b/cl_dll/input/input_xash3d.cpp
-index c86bb0a..cd5fb7b 100644
+index c86bb0a..52990f5 100644
 --- a/cl_dll/input/input_xash3d.cpp
 +++ b/cl_dll/input/input_xash3d.cpp
-@@ -117,6 +117,11 @@ void IN_ToggleButtons( float forwardmove, float sidemove )
+@@ -1,4 +1,5 @@
+ #include "hud.h"
++#include "chrome/chrome_host.h"
+ #include "usercmd.h"
+ #include "cvardef.h"
+ #include "kbutton.h"
+@@ -117,6 +118,11 @@ void IN_ToggleButtons( float forwardmove, float sidemove )
  
  }
  
@@ -3138,7 +3831,37 @@ index c86bb0a..cd5fb7b 100644
  void IN_ClientMoveEvent( float forwardmove, float sidemove )
  {
  	//gEngfuncs.Con_Printf("IN_MoveEvent\n");
-@@ -231,7 +236,7 @@ void DLLEXPORT IN_MouseEvent( int mstate )
+@@ -128,6 +134,29 @@ void IN_ClientMoveEvent( float forwardmove, float sidemove )
+ 
+ void IN_ClientLookEvent( float relyaw, float relpitch )
+ {
++	// the server MOTD window is shown: the mouse moves its cursor instead of turning the view.
++	// The engine gives the movement multiplied by m_yaw / m_pitch, so turn it back into pixels
++	if( Chrome::MotdCapturesMouse() )
++	{
++		static cvar_t *m_yaw = nullptr, *m_pitch = nullptr;
++
++		if( !m_yaw )
++			m_yaw = gEngfuncs.pfnGetCvarPointer( "m_yaw" );
++		if( !m_pitch )
++			m_pitch = gEngfuncs.pfnGetCvarPointer( "m_pitch" );
++
++		float yaw_step = m_yaw ? m_yaw->value : 0.022f;
++		float pitch_step = m_pitch ? m_pitch->value : 0.022f;
++
++		if( yaw_step > -0.0001f && yaw_step < 0.0001f )
++			yaw_step = 0.022f;
++		if( pitch_step > -0.0001f && pitch_step < 0.0001f )
++			pitch_step = 0.022f;
++
++		Chrome::MotdMouseDelta( -relyaw / yaw_step, relpitch / pitch_step );
++		return;
++	}
++
+ 	rel_yaw += relyaw;
+ 	rel_pitch += relpitch;
+ }
+@@ -231,7 +260,7 @@ void DLLEXPORT IN_MouseEvent( int mstate )
  			gEngfuncs.Key_Event( K_MOUSE1 + i, 0 );
  		}
  	}	
