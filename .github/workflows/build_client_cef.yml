@@ -117,7 +117,7 @@ jobs:
 
       - name: Build client only
         working-directory: cs16
-        run: cmake --build build --target client
+        run: cmake --build build --target client cs16_cef_helper
 
       - name: Collect result
         working-directory: cs16
@@ -125,6 +125,7 @@ jobs:
           OUT="$GITHUB_WORKSPACE/result"
           mkdir -p "$OUT/cstrike/cl_dlls" "$OUT/cstrike/cef/locales"
           find build -name "client*.dll" -exec cp -v {} "$OUT/cstrike/cl_dlls/" \;
+          find build -name "cs16_cef_helper.exe" -exec cp -v {} "$OUT/cstrike/cef/" \;
           find "$CEF_ROOT/Release" -maxdepth 1 \( -name '*.dll' -o -name '*.bin' -o -name '*.json' \) -exec cp -v {} "$OUT/cstrike/cef/" \;
           find "$CEF_ROOT/Resources" -maxdepth 1 \( -name '*.pak' -o -name '*.dat' -o -name '*.bin' \) -exec cp -v {} "$OUT/cstrike/cef/" \;
           cp -r "$CEF_ROOT/Resources/locales/." "$OUT/cstrike/cef/locales/"
@@ -148,6 +149,15 @@ jobs:
           PY
           grep -aq "libcef.dll" "$f" || { echo "ERROR: client is not linked with CEF"; exit 1; }
           test -f cstrike/cef/libcef.dll || { echo "ERROR: libcef.dll is missing"; exit 1; }
+          test -f cstrike/cef/cs16_cef_helper.exe || { echo "ERROR: cs16_cef_helper.exe is missing"; exit 1; }
+          python - cstrike/cef/cs16_cef_helper.exe <<'PY'
+          import struct, sys
+          d = open(sys.argv[1], 'rb').read(4096)
+          pe = struct.unpack_from('<I', d, 0x3c)[0]
+          machine = struct.unpack_from('<H', d, pe + 4)[0]
+          print('helper PE machine type:', hex(machine))
+          sys.exit(0 if machine == 0x8664 else 1)
+          PY
           test -f cstrike/cef/icudtl.dat || { echo "ERROR: icudtl.dat is missing"; exit 1; }
           test -f cstrike/cef/resources.pak || { echo "ERROR: resources.pak is missing"; exit 1; }
           echo "Result looks complete"
