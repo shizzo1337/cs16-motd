@@ -1,0 +1,159 @@
+name: Build cs16-client (x64) with CEF and MOTD
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Keep line endings as is
+        run: git config --global core.autocrlf false
+
+      - name: Get this repository (contains the patch)
+        uses: actions/checkout@v4
+        with:
+          path: mypatch
+
+      - name: Get cs16-client sources (latest, build 3979)
+        uses: actions/checkout@v4
+        with:
+          repository: Velaron/cs16-client
+          ref: e30e27c3bd890f731ad7921d9c876d171aea4b32
+          submodules: recursive
+          path: cs16
+
+      - name: Apply CEF + MOTD patch
+        working-directory: cs16
+        run: git apply --ignore-whitespace --whitespace=nowarn ../mypatch/cs16_cef_motd.patch
+
+      - name: Choose CEF version (64-bit)
+        run: |
+          cat > pick_cef.py <<'PY'
+          import json, os, sys, urllib.parse, urllib.request
+
+          plat = sys.argv[1]
+          BASE = os.environ.get("CEF_BASE", "https://cef-builds.spotifycdn.com/")
+          UA = {"User-Agent": "cs16-client-ci/1.0"}
+
+          # versions to try first, in this order
+          KNOWN = [
+              "147.0.10+gd58e84d+chromium-147.0.7727.118",  # the version the CEF integration was written for
+              "148.0.10+g7ee53f5+chromium-148.0.7778.218",
+              "152.0.10+g82a832e+chromium-152.0.7977.140",
+          ]
+
+          def exists(url):
+              for method in ("HEAD", "GET"):
+                  try:
+                      req = urllib.request.Request(url, method=method, headers=dict(UA, Range="bytes=0-0"))
+                      with urllib.request.urlopen(req, timeout=60) as r:
+                          if r.status in (200, 206):
+                              return True
+                  except Exception as e:
+                      print("  (%s %s)" % (method, e))
+              return False
+
+          cands = ["cef_binary_%s_%s_minimal.tar.bz2" % (v, plat) for v in KNOWN]
+
+          # then everything the official index lists for this platform, stable first
+          try:
+              req = urllib.request.Request(BASE + "index.json", headers=UA)
+              idx = json.load(urllib.request.urlopen(req, timeout=60))
+              versions = idx[plat]["versions"]
+              for channel in ("stable", "beta"):
+                  for v in versions:
+                      if v.get("channel") != channel:
+                          continue
+                      for f in v.get("files", []):
+                          if f.get("type") == "minimal":
+                              cands.append(f["name"])
+                              break
+          except Exception as e:
+              print("index.json is not usable:", e)
+
+          seen = set()
+          for name in cands:
+              if name in seen:
+                  continue
+              seen.add(name)
+              url = BASE + urllib.parse.quote(name)
+              ok = exists(url)
+              print(("FOUND    " if ok else "missing  ") + name)
+              if ok:
+                  print("CEF_URL=" + url)
+                  print("CEF_NAME=" + name)
+                  sys.exit(0)
+
+          print("ERROR: no CEF build found for " + plat)
+          sys.exit(1)
+          PY
+          python pick_cef.py windows64 | tee pick.log
+          grep '^CEF_URL=' pick.log >> "$GITHUB_ENV"
+          grep '^CEF_NAME=' pick.log >> "$GITHUB_ENV"
+
+      - name: Download and unpack CEF
+        run: |
+          CEF_ROOT="$(python cs16/scripts/ci_fetch_cef.py "$CEF_URL" "$RUNNER_TEMP/cef")"
+          CEF_ROOT="$(cygpath -m "$CEF_ROOT")"
+          echo "CEF root: $CEF_ROOT"
+          ls "$CEF_ROOT"
+          echo "CEF_ROOT=$CEF_ROOT" >> "$GITHUB_ENV"
+
+      - name: Setup Visual Studio (64-bit)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: amd64
+
+      - name: Configure
+        working-directory: cs16
+        env:
+          MSYS_NO_PATHCONV: "1"
+        run: |
+          cmake --preset win32-release-amd64 "-DCEF_ROOT=${CEF_ROOT}" -DCEF_RUNTIME_LIBRARY_FLAG=/MD -DBUILD_MAINUI=OFF -DBUILD_SERVER=OFF
+
+      - name: Build client only
+        working-directory: cs16
+        run: cmake --build build --target client
+
+      - name: Collect result
+        working-directory: cs16
+        run: |
+          OUT="$GITHUB_WORKSPACE/result"
+          mkdir -p "$OUT/cstrike/cl_dlls" "$OUT/cstrike/cef/locales"
+          find build -name "client*.dll" -exec cp -v {} "$OUT/cstrike/cl_dlls/" \;
+          find "$CEF_ROOT/Release" -maxdepth 1 \( -name '*.dll' -o -name '*.bin' -o -name '*.json' \) -exec cp -v {} "$OUT/cstrike/cef/" \;
+          find "$CEF_ROOT/Resources" -maxdepth 1 \( -name '*.pak' -o -name '*.dat' -o -name '*.bin' \) -exec cp -v {} "$OUT/cstrike/cef/" \;
+          cp -r "$CEF_ROOT/Resources/locales/." "$OUT/cstrike/cef/locales/"
+          echo "$CEF_NAME" > "$OUT/CEF_VERSION.txt"
+          du -sh "$OUT/cstrike/cef"
+          ls -la "$OUT/cstrike/cl_dlls" "$OUT/cstrike/cef" | head -40
+
+      - name: Check result (64-bit client linked with CEF, CEF files present)
+        working-directory: result
+        run: |
+          set -eu
+          f=$(ls cstrike/cl_dlls/client*.dll | head -n1)
+          echo "client: $f"
+          python - "$f" <<'PY'
+          import struct, sys
+          d = open(sys.argv[1], 'rb').read(4096)
+          pe = struct.unpack_from('<I', d, 0x3c)[0]
+          machine = struct.unpack_from('<H', d, pe + 4)[0]
+          print('PE machine type:', hex(machine), '(0x8664 = 64-bit x64)')
+          sys.exit(0 if machine == 0x8664 else 1)
+          PY
+          grep -aq "libcef.dll" "$f" || { echo "ERROR: client is not linked with CEF"; exit 1; }
+          test -f cstrike/cef/libcef.dll || { echo "ERROR: libcef.dll is missing"; exit 1; }
+          test -f cstrike/cef/icudtl.dat || { echo "ERROR: icudtl.dat is missing"; exit 1; }
+          test -f cstrike/cef/resources.pak || { echo "ERROR: resources.pak is missing"; exit 1; }
+          echo "Result looks complete"
+
+      - name: Upload result
+        uses: actions/upload-artifact@v4
+        with:
+          name: cs16-client-cef-motd-x64
+          path: result/*
