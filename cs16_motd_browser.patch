@@ -1,8 +1,8 @@
 diff --git a/cl_dll/CMakeLists.txt b/cl_dll/CMakeLists.txt
-index b0af818..93f3656 100644
+index c62b5bf..97c29ae 100644
 --- a/cl_dll/CMakeLists.txt
 +++ b/cl_dll/CMakeLists.txt
-@@ -77,6 +77,10 @@ add_library(${CLIENT_LIB} SHARED ${CS_CLIENT_SRC})
+@@ -62,6 +62,10 @@ add_library(${CLIENT_LIB} SHARED ${CS_CLIENT_SRC})
  
  set_target_postfix(${CLIENT_LIB})
  
@@ -14,15 +14,16 @@ index b0af818..93f3656 100644
  	DESTINATION "${GAME_DIR}/${CLIENT_INSTALL_DIR}/"
  	PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
 diff --git a/cl_dll/hud.h b/cl_dll/hud.h
-index f23bb7c..df3728b 100644
+index c93a363..b43b0b9 100644
 --- a/cl_dll/hud.h
 +++ b/cl_dll/hud.h
-@@ -347,14 +347,26 @@ public:
+@@ -335,14 +335,27 @@ public:
  	float scroll;
  	bool m_bShow;
  	cvar_t *cl_hide_motd;
 +	cvar_t *cl_motd_browser;
 +	cvar_t *cl_motd_browser_keep_game;
++	cvar_t *cl_motd_browser_iframe;
  
  protected:
  	static int MOTD_DISPLAY_TIME;
@@ -45,10 +46,10 @@ index f23bb7c..df3728b 100644
  
  
 diff --git a/cl_dll/hud/MOTD.cpp b/cl_dll/hud/MOTD.cpp
-index 83208f5..95b0187 100644
+index 83208f5..8ca7ef3 100644
 --- a/cl_dll/hud/MOTD.cpp
 +++ b/cl_dll/hud/MOTD.cpp
-@@ -39,6 +39,11 @@ int CHudMOTD :: Init( void )
+@@ -39,6 +39,13 @@ int CHudMOTD :: Init( void )
  	HOOK_MESSAGE( gHUD.m_MOTD, MOTD );
  
  	cl_hide_motd = CVAR_CREATE("cl_hide_motd", "0", FCVAR_ARCHIVE); // hide motd
@@ -56,11 +57,13 @@ index 83208f5..95b0187 100644
 +	cl_motd_browser = CVAR_CREATE("cl_motd_browser", "2", FCVAR_ARCHIVE);
 +	// 1 - do not let the game window minimize when the browser opens
 +	cl_motd_browser_keep_game = CVAR_CREATE("cl_motd_browser_keep_game", "1", FCVAR_ARCHIVE);
++	// 1 - if HTML MOTD contains an iframe with an http(s) address, open that address instead of the whole page
++	cl_motd_browser_iframe = CVAR_CREATE("cl_motd_browser_iframe", "1", FCVAR_ARCHIVE);
 +	ResetBrowserState();
  	Reset();
  
  	return 1;
-@@ -47,9 +52,137 @@ int CHudMOTD :: Init( void )
+@@ -47,9 +54,249 @@ int CHudMOTD :: Init( void )
  int CHudMOTD :: VidInit( void )
  {
  	// Load sprites here
@@ -89,6 +92,111 @@ index 83208f5..95b0187 100644
 +bool MOTD_OpenInBrowser( const char *target, bool keepGameWindow );
 +bool MOTD_SaveTempHtml( const char *html, size_t len, char *outPath, size_t outSize );
 +#endif
++
++static bool IsBlank( char c )
++{
++	return (unsigned char)c <= ' ';
++}
++
++static const char *FindNoCase( const char *s, const char *what )
++{
++	for( ; *s; s++ )
++		if( StartsWithNoCase( s, what ))
++			return s;
++
++	return NULL;
++}
++
++// Finds the first <iframe ... src="http(s)://..."> in HTML and copies its address to out.
++// Returns false if there is no such iframe or the address looks wrong.
++static bool ExtractIframeSrc( const char *html, char *out, size_t outSize )
++{
++	const char *tag = html;
++
++	while(( tag = FindNoCase( tag, "<iframe" )) != NULL )
++	{
++		const char *p = tag + 7;
++		tag = p; // continue the search after this tag if it does not fit
++
++		if( !IsBlank( *p ) && *p != '/' ) // not "<iframe", e.g. "<iframes"
++			continue;
++
++		const char *tagEnd = strchr( p, '>' );
++
++		if( !tagEnd )
++			tagEnd = p + strlen( p );
++
++		for( const char *a = p; a < tagEnd; a++ )
++		{
++			// attribute name begins after a blank, so "data-src" and "srcdoc" do not match
++			if( !IsBlank( a[-1] ) || !StartsWithNoCase( a, "src" ))
++				continue;
++
++			const char *q = a + 3;
++
++			while( q < tagEnd && IsBlank( *q )) q++;
++
++			if( q >= tagEnd || *q != '=' )
++				continue;
++
++			q++;
++			while( q < tagEnd && IsBlank( *q )) q++;
++
++			char quote = 0;
++
++			if( *q == '"' || *q == '\'' )
++				quote = *q++;
++
++			size_t len = 0;
++			bool ok = true;
++
++			for( ; *q; q++ )
++			{
++				if( quote ? ( *q == quote ) : ( IsBlank( *q ) || *q == '>' ))
++					break;
++
++				if( IsBlank( *q )) // an address never contains blanks or control characters
++				{
++					ok = false;
++					break;
++				}
++
++				if( !strncmp( q, "&amp;", 5 )) // HTML escaping of '&'
++				{
++					if( len + 1 >= outSize ) { ok = false; break; }
++					out[len++] = '&';
++					q += 4;
++					continue;
++				}
++
++				if( len + 1 >= outSize )
++				{
++					ok = false;
++					break;
++				}
++
++				out[len++] = *q;
++			}
++
++			// a tag that is not closed is dropped by browsers as well
++			if( ok && !*q )
++				ok = false;
++
++			if( ok )
++			{
++				out[len] = 0;
++
++				// only http(s) addresses are opened
++				if( StartsWithNoCase( out, "http://" ) || StartsWithNoCase( out, "https://" ))
++					return true;
++			}
++
++			break; // look at the next iframe
++		}
++	}
++
++	return false;
++}
 +
 +void CHudMOTD :: ResetBrowserState( void )
 +{
@@ -177,9 +285,16 @@ index 83208f5..95b0187 100644
 +	}
 +	else if( m_iBrowserMode == BROWSER_HTML )
 +	{
++		char iframeUrl[2048];
 +		char path[512];
 +
-+		if( MOTD_SaveTempHtml( m_szBrowserMOTD, m_iBrowserLen, path, sizeof( path )))
++		if( cl_motd_browser_iframe->value != 0 && ExtractIframeSrc( m_szBrowserMOTD, iframeUrl, sizeof( iframeUrl )))
++		{
++			// the page is only a wrapper around an iframe, open the iframe address directly
++			gEngfuncs.Con_Printf( "Opening MOTD iframe in browser: %s\n", iframeUrl );
++			MOTD_OpenInBrowser( iframeUrl, cl_motd_browser_keep_game->value != 0 );
++		}
++		else if( MOTD_SaveTempHtml( m_szBrowserMOTD, m_iBrowserLen, path, sizeof( path )))
 +		{
 +			gEngfuncs.Con_Printf( "Opening MOTD in browser: %s\n", path );
 +			MOTD_OpenInBrowser( path, cl_motd_browser_keep_game->value != 0 );
@@ -198,7 +313,7 @@ index 83208f5..95b0187 100644
  void CHudMOTD :: Reset( void )
  {
  	m_iFlags &= ~HUD_DRAW;  // start out inactive
-@@ -137,13 +270,19 @@ int CHudMOTD :: MsgFunc_MOTD( const char *pszName, int iSize, void *pbuf )
+@@ -137,13 +384,19 @@ int CHudMOTD :: MsgFunc_MOTD( const char *pszName, int iSize, void *pbuf )
  		Reset(); // clear the current MOTD in prep for this one
  	}
  
