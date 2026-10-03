@@ -223,10 +223,10 @@ index 0000000..b1dfb44
 +} // namespace iHTMLChrome
 diff --git a/cl_dll/chrome/chrome_backend_cef.cpp b/cl_dll/chrome/chrome_backend_cef.cpp
 new file mode 100644
-index 0000000..a540a53
+index 0000000..81503d8
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_backend_cef.cpp
-@@ -0,0 +1,405 @@
+@@ -0,0 +1,406 @@
 +#include "chrome_backend.h"
 +
 +#if defined(CS16CLIENT_ENABLE_CEF)
@@ -529,7 +529,8 @@ index 0000000..a540a53
 +
 +		CefBrowserSettings settings;
 +		settings.windowless_frame_rate = g_chrome_windowless_target_fps;
-+		settings.background_color = CefColorSetARGB( 255, 255, 255, 255 );
++		// alpha 0: the page is painted with transparency
++		settings.background_color = instance.transparent() ? CefColorSetARGB( 0, 0, 0, 0 ) : CefColorSetARGB( 255, 255, 255, 255 );
 +		client_->SetViewSize( width_, height_ );
 +
 +		std::string initial = "about:blank";
@@ -954,14 +955,15 @@ index 0000000..90f7f15
 +#endif
 diff --git a/cl_dll/chrome/chrome_host.cpp b/cl_dll/chrome/chrome_host.cpp
 new file mode 100644
-index 0000000..3f0d21f
+index 0000000..b1f89a7
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_host.cpp
-@@ -0,0 +1,759 @@
+@@ -0,0 +1,773 @@
 +#include "chrome_host.h"
 +#include "chrome_backend.h"
 +#include "chrome_debug.h"
 +#include "chrome_instance.h"
++#include "chrome_motd_frame.h"
 +#include "chrome_motd_input.h"
 +#include "chrome_runtime.h"
 +
@@ -994,7 +996,10 @@ index 0000000..3f0d21f
 +
 +int g_toggle_demo_id = -1;
 +int g_openurl_demo_id = -1;
-+int g_motd_id = -1;
++int g_motd_id = -1;       // the page of the server
++int g_motd_frame_id = -1; // the frame of the window (panel, title, OK button)
++std::string g_motd_frame_title;
++bool g_motd_frame_hover = false;
 +std::chrono::steady_clock::time_point g_motd_shown_at;
 +MotdInput g_motd_input;
 +std::unordered_map<int, std::pair<int, int>> g_last_mouse_pos; // for the generic SendMouse* functions
@@ -1275,39 +1280,19 @@ index 0000000..3f0d21f
 +	}
 +}
 +
-+// Rounded rectangle made of 1 pixel rows
-+void FillRoundedRect( int x, int y, int w, int h, int radius, int r, int g, int b, int a )
++// URL of the page that draws the frame of the window
++std::string MakeMotdFrameUrl( const char* title )
 +{
-+	if( w <= 0 || h <= 0 )
-+		return;
-+
-+	radius = std::max( 0, std::min( radius, std::min( w, h ) / 2 ));
-+
-+	FillRGBABlend( x, y + radius, w, h - radius * 2, r, g, b, a );
-+
-+	for( int i = 0; i < radius; ++i )
-+	{
-+		const float dy = radius - i - 0.5f;
-+		const int inset = radius - (int)( std::sqrt( (float)( radius * radius ) - dy * dy ) + 0.5f );
-+
-+		FillRGBABlend( x + inset, y + i, w - inset * 2, 1, r, g, b, a );
-+		FillRGBABlend( x + inset, y + h - 1 - i, w - inset * 2, 1, r, g, b, a );
-+	}
++	return MakeHtmlDataUrl( BuildMotdFrameHtml( title ));
 +}
 +
-+void FillFrame( int x, int y, int w, int h, int r, int g, int b, int a )
-+{
-+	FillRGBABlend( x, y, w, 1, r, g, b, a );
-+	FillRGBABlend( x, y + h - 1, w, 1, r, g, b, a );
-+	FillRGBABlend( x, y + 1, 1, h - 2, r, g, b, a );
-+	FillRGBABlend( x + w - 1, y + 1, 1, h - 2, r, g, b, a );
-+}
-+
-+// The server MOTD is shown as a window like the one of the Steam version of the game:
-+// a dark rounded panel with the server name, the page and the OK button.
-+// All sizes below are given for a page of 900x450 pixels and are scaled with the window.
++// The server MOTD is shown as a window like the one of the Steam version of the game.
++// The frame (dark rounded panel, server name, OK button) is a transparent page of the embedded browser,
++// so the text is crisp; the page of the server is drawn over it. The sizes are given for scale 1.
 +void PresentMotdWindow( ChromeInstance* inst )
 +{
++	using namespace MotdFrame;
++
 +	if( !inst )
 +		return;
 +
@@ -1319,36 +1304,18 @@ index 0000000..3f0d21f
 +	if( ext.w <= 1 || ext.h <= 1 )
 +		return;
 +
-+	int bw = inst->width();
-+	int bh = inst->height();
-+	if( bw < 1 )
-+		bw = 1;
-+	if( bh < 1 )
-+		bh = 1;
++	inst->set_viewport( ChromeRect{ 0, 0, kPageW, kPageH } );
 +
-+	inst->set_viewport( ChromeRect{ 0, 0, bw, bh } );
-+
-+	// layout (in pixels of the unscaled window)
-+	const int marginL = 106, marginR = 116, marginT = 161;
-+	const int buttonGap = 15, buttonW = 240, buttonH = 37, marginB = 36;
-+	const int panelW = marginL + bw + marginR;
-+	const int panelH = marginT + bh + buttonGap + buttonH + marginB;
-+
-+	const float scale = std::min( 1.0f, std::min( ext.w * 0.95f / panelW, ext.h * 0.95f / panelH ));
++	const float scale = std::min( 1.0f, std::min( ext.w * 0.95f / kPanelW, ext.h * 0.95f / kPanelH ));
 +	auto S = [scale]( int v ) { return (int)( v * scale + 0.5f ); };
 +
-+	const int panelX = (int)(( ext.w - panelW * scale ) * 0.5f );
-+	const int panelY = (int)(( ext.h - panelH * scale ) * 0.375f );
++	const int panelX = (int)(( ext.w - kPanelW * scale ) * 0.5f );
++	const int panelY = std::max( 0, (int)(( ext.h - kPanelH * scale ) * 0.5f + ext.h * 0.0216f ));
 +
-+	const int pageX = panelX + S( marginL );
-+	const int pageY = panelY + S( marginT );
-+	const int pageW = S( bw );
-+	const int pageH = S( bh );
-+
-+	const int btnX = pageX;
-+	const int btnY = pageY + pageH + S( buttonGap );
-+	const int btnW = S( buttonW );
-+	const int btnH = S( buttonH );
++	const int pageX = panelX + S( kPageX );
++	const int pageY = panelY + S( kPageY );
++	const int pageW = S( kPageW );
++	const int pageH = S( kPageH );
 +
 +	MotdLayout lay;
 +	lay.valid = true;
@@ -1356,47 +1323,55 @@ index 0000000..3f0d21f
 +	lay.y = (float)pageY;
 +	lay.w = (float)pageW;
 +	lay.h = (float)pageH;
-+	lay.scale = (float)pageW / bw;
-+	lay.close_x = (float)btnX;
-+	lay.close_y = (float)btnY;
-+	lay.close_w = (float)btnW;
-+	lay.close_h = (float)btnH;
++	lay.scale = (float)pageW / kPageW;
++	lay.close_x = (float)( panelX + S( kBtnX ));
++	lay.close_y = (float)( panelY + S( kBtnY ));
++	lay.close_w = (float)S( kBtnW );
++	lay.close_h = (float)S( kBtnH );
 +	g_motd_input.SetScreen( ext.w, ext.h );
 +	g_motd_input.SetLayout( lay );
 +
-+	// panel
-+	FillRoundedRect( panelX, panelY, S( panelW ), S( panelH ), S( 14 ), 0, 0, 0, 204 );
++	if( ChromeInstance* frame = Lookup( g_motd_frame_id ))
++	{
++		// the name of the server can come after the MOTD
++		if( g_motd_frame_title != gHUD.m_szServerName )
++		{
++			g_motd_frame_title = gHUD.m_szServerName;
++			frame->LoadURL( MakeMotdFrameUrl( g_motd_frame_title.c_str() ));
++		}
 +
-+	// title: the name of the server
-+	const char *title = gHUD.m_szServerName[0] ? gHUD.m_szServerName : "MOTD";
-+	const float titleScale = 1.4f * std::max( 0.6f, scale );
-+	const int titleY = panelY + S( 29 ) - (int)( gHUD.GetCharHeight() * titleScale * 0.5f );
-+	DrawUtils::DrawHudString( pageX + S( 2 ), titleY, 9999, title, 255, 176, 0, titleScale );
++		// the OK button is lit when the cursor is over it: the page has to know about the mouse
++		const bool hover = g_motd_input.cursor_over_close();
++		if( hover != g_motd_frame_hover )
++		{
++			g_motd_frame_hover = hover;
 +
-+	// thin line under the title
-+	FillRGBABlend( panelX + S( 541 ), panelY + S( 97 ), S( 149 ), std::max( 1, S( 2 )), 255, 176, 0, 200 );
++			InputEvent e;
++			e.type = InputType::MouseMove;
++			e.x = kBtnX + kBtnW / 2;
++			e.y = kBtnY + kBtnH / 2;
++			e.mouse_leave = !hover;
++			frame->EnqueueInput( e );
++		}
 +
-+	// the page
++		if( frame->texture_id() )
++		{
++			frame->set_viewport( ChromeRect{ 0, 0, kPanelW, kPanelH } );
++
++			gRenderAPI.GL_SelectTexture( 0 );
++			gRenderAPI.GL_Bind( 0, frame->texture_id() );
++			gEngfuncs.pTriAPI->RenderMode( kRenderTransAlpha );
++			gEngfuncs.pTriAPI->Color4f( 1.0f, 1.0f, 1.0f, 1.0f );
++			DrawUtils::Draw2DQuad( (float)panelX, (float)panelY, (float)( panelX + S( kPanelW )), (float)( panelY + S( kPanelH )));
++		}
++	}
++
++	// the page of the server
 +	gRenderAPI.GL_SelectTexture( 0 );
 +	gRenderAPI.GL_Bind( 0, tex );
 +	gEngfuncs.pTriAPI->RenderMode( kRenderTransAlpha );
 +	gEngfuncs.pTriAPI->Color4f( 1.0f, 1.0f, 1.0f, 1.0f );
 +	DrawUtils::Draw2DQuad( (float)pageX, (float)pageY, (float)( pageX + pageW ), (float)( pageY + pageH ));
-+
-+	// OK button
-+	const bool hover = g_motd_input.cursor_over_close();
-+	FillRGBABlend( btnX, btnY, btnW, btnH, 0, 0, 0, hover ? 230 : 200 );
-+	if( hover )
-+		FillFrame( btnX, btnY, btnW, btnH, 214, 147, 0, 255 );
-+	else
-+		FillFrame( btnX, btnY, btnW, btnH, 84, 58, 0, 255 );
-+
-+	const float okScale = 0.85f * std::max( 0.6f, scale );
-+	const int okW = (int)( DrawUtils::HudStringLen( "OK" ) * okScale );
-+	const int okX = btnX + ( btnW - okW ) / 2;
-+	const int okY = btnY + ( btnH - (int)( gHUD.GetCharHeight() * okScale )) / 2;
-+	DrawUtils::DrawHudString( okX, okY, 9999, "OK", 255, 176, 0, okScale );
-+	DrawUtils::DrawHudString( okX + 1, okY, 9999, "OK", 255, 176, 0, okScale ); // heavier strokes
 +
 +	DrawMotdCursor( (int)g_motd_input.cursor_x(), (int)g_motd_input.cursor_y() );
 +}
@@ -1431,6 +1406,7 @@ index 0000000..3f0d21f
 +	g_toggle_demo_id = -1;
 +	g_openurl_demo_id = -1;
 +	g_motd_id = -1;
++	g_motd_frame_id = -1;
 +
 +	if( !g_chrome_service_up )
 +		return;
@@ -1473,12 +1449,13 @@ index 0000000..3f0d21f
 +		PresentMotdWindow( Lookup( g_motd_id ) );
 +}
 +
-+int Create(
++static int CreateImpl(
 +	const char* url,
 +	const int width,
 +	const int height,
 +	const ChromeOnPaintCallback callback,
-+	void* userdata )
++	void* userdata,
++	const bool transparent )
 +{
 +	if( !EnsureCefInitialized() )
 +		return -1;
@@ -1489,6 +1466,7 @@ index 0000000..3f0d21f
 +	const int id = g_next_instance_id++;
 +
 +	auto inst = std::make_unique<ChromeInstance>( id );
++	inst->set_transparent( transparent );
 +	const char* start = ( url && url[0] ) ? url : "about:blank";
 +
 +	Chrome_DPrintf(
@@ -1515,6 +1493,21 @@ index 0000000..3f0d21f
 +	return id;
 +}
 +
++int Create(
++	const char* url,
++	const int width,
++	const int height,
++	const ChromeOnPaintCallback callback,
++	void* userdata )
++{
++	return CreateImpl( url, width, height, callback, userdata, false );
++}
++
++int CreateTransparent( const char* url, const int width, const int height )
++{
++	return CreateImpl( url, width, height, nullptr, nullptr, true );
++}
++
 +void Destroy( const int instance_id )
 +{
 +	if( instance_id == g_toggle_demo_id )
@@ -1523,6 +1516,8 @@ index 0000000..3f0d21f
 +		g_openurl_demo_id = -1;
 +	if( instance_id == g_motd_id )
 +		g_motd_id = -1;
++	if( instance_id == g_motd_frame_id )
++		g_motd_frame_id = -1;
 +	EraseInstanceRecord( instance_id );
 +}
 +
@@ -1645,16 +1640,29 @@ index 0000000..3f0d21f
 +
 +bool ShowMotd( const char* url )
 +{
++	using namespace MotdFrame;
++
 +	if( !IsAvailable() || !url || !url[0] )
 +		return false;
 +
 +	HideMotd();
 +
-+	// the page gets a window-like size (4:3), not the whole screen
-+	const int id = Chrome::Create( url, 900, 450, nullptr, nullptr );
-+	if( id < 0 )
++	// the frame of the window: a transparent page with the panel, the name of the server and the OK button
++	g_motd_frame_title = gHUD.m_szServerName;
++	const std::string frameUrl = MakeMotdFrameUrl( g_motd_frame_title.c_str() );
++	const int frame = frameUrl.empty() ? -1 : Chrome::CreateTransparent( frameUrl.c_str(), kPanelW, kPanelH );
++	if( frame < 0 )
 +		return false;
 +
++	const int id = Chrome::Create( url, kPageW, kPageH, nullptr, nullptr );
++	if( id < 0 )
++	{
++		Chrome::Destroy( frame );
++		return false;
++	}
++
++	g_motd_frame_id = frame;
++	g_motd_frame_hover = false;
 +	g_motd_id = id;
 +	g_motd_shown_at = std::chrono::steady_clock::now();
 +
@@ -1667,12 +1675,19 @@ index 0000000..3f0d21f
 +
 +void HideMotd()
 +{
-+	if( g_motd_id < 0 )
++	if( g_motd_id < 0 && g_motd_frame_id < 0 )
 +		return;
 +
 +	const int id = g_motd_id;
++	const int frame = g_motd_frame_id;
 +	g_motd_id = -1;
-+	Chrome::Destroy( id );
++	g_motd_frame_id = -1;
++
++	if( id >= 0 )
++		Chrome::Destroy( id );
++	if( frame >= 0 )
++		Chrome::Destroy( frame );
++
 +	gEngfuncs.Con_Printf( "[motd] window closed\n" );
 +}
 +
@@ -1719,10 +1734,10 @@ index 0000000..3f0d21f
 +} // namespace Chrome
 diff --git a/cl_dll/chrome/chrome_host.h b/cl_dll/chrome/chrome_host.h
 new file mode 100644
-index 0000000..d0f0e12
+index 0000000..d4c9a87
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_host.h
-@@ -0,0 +1,34 @@
+@@ -0,0 +1,37 @@
 +#pragma once
 +
 +using ChromeOnPaintCallback =
@@ -1746,6 +1761,9 @@ index 0000000..d0f0e12
 +void SendKeyEvent( int instance_id, int key_code, bool down );
 +
 +unsigned int GetTextureId( int instance_id );
++
++// like Create(), but the page background is transparent
++int CreateTransparent( const char* url, int width, int height );
 +
 +// Server MOTD shown in the game by the embedded browser
 +bool IsAvailable();                // CEF is built in and really running
@@ -2111,10 +2129,10 @@ index 0000000..a114b97
 +} // namespace iHTMLChrome
 diff --git a/cl_dll/chrome/chrome_instance.h b/cl_dll/chrome/chrome_instance.h
 new file mode 100644
-index 0000000..4776af8
+index 0000000..d68bba4
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_instance.h
-@@ -0,0 +1,70 @@
+@@ -0,0 +1,74 @@
 +#pragma once
 +
 +#include <atomic>
@@ -2157,6 +2175,9 @@ index 0000000..4776af8
 +	void set_viewport( const ChromeRect& viewport ) { viewport_ = viewport; }
 +	int width() const { return width_; }
 +	int height() const { return height_; }
++	// a page with a transparent background (must be set before Initialize)
++	void set_transparent( bool transparent ) { transparent_ = transparent; }
++	bool transparent() const { return transparent_; }
 +	unsigned int texture_id() const { return texture_bridge_.texture_id(); }
 +
 +private:
@@ -2167,6 +2188,7 @@ index 0000000..4776af8
 +	ChromeRect viewport_;
 +	int width_ = 0;
 +	int height_ = 0;
++	bool transparent_ = false;
 +
 +	TextureBridge texture_bridge_;
 +	std::atomic<bool> initialized_{ false };
@@ -2183,6 +2205,220 @@ index 0000000..4776af8
 +	ChromePaintConsumerFn paint_consumer_ = nullptr;
 +	void* paint_consumer_userdata_ = nullptr;
 +};
++} // namespace CEF
++} // namespace iHTMLChrome
+diff --git a/cl_dll/chrome/chrome_motd_frame.h b/cl_dll/chrome/chrome_motd_frame.h
+new file mode 100644
+index 0000000..e6b645c
+--- /dev/null
++++ b/cl_dll/chrome/chrome_motd_frame.h
+@@ -0,0 +1,208 @@
++#pragma once
++
++// The frame of the server MOTD window (dark panel, server name, OK button) is drawn by the
++// embedded browser itself from a small HTML page, so the text is crisp and has the right font.
++// The page of the server is drawn over it. This file has no dependencies on the engine or on CEF.
++
++#include <cstddef>
++#include <cstdio>
++#include <cstring>
++#include <string>
++
++namespace iHTMLChrome {
++namespace CEF {
++
++// Geometry of the window, in pixels at scale 1. It follows the window of the Steam version.
++namespace MotdFrame {
++constexpr int kPanelW = 1126, kPanelH = 824;
++constexpr int kRadius = 14;                              // corners of the panel
++constexpr int kSlitY = 99, kSlitH = 2;                   // a cut through the panel, the game is seen through it
++constexpr int kPageX = 108, kPageY = 163;                // the page of the server
++constexpr int kPageW = 900, kPageH = 450;
++constexpr int kBtnX = 108, kBtnY = 628, kBtnW = 240, kBtnH = 37; // OK button
++} // namespace MotdFrame
++
++inline bool IsValidUtf8( const char* s )
++{
++	const unsigned char* p = reinterpret_cast<const unsigned char*>( s );
++
++	while( *p )
++	{
++		int n;
++
++		if( *p < 0x80 )
++			n = 0;
++		else if(( *p & 0xE0 ) == 0xC0 && *p >= 0xC2 )
++			n = 1;
++		else if(( *p & 0xF0 ) == 0xE0 )
++			n = 2;
++		else if(( *p & 0xF8 ) == 0xF0 && *p <= 0xF4 )
++			n = 3;
++		else
++			return false;
++
++		for( int i = 1; i <= n; ++i )
++			if(( p[i] & 0xC0 ) != 0x80 )
++				return false;
++
++		p += n + 1;
++	}
++
++	return true;
++}
++
++inline void AppendUtf8( std::string& out, unsigned int cp )
++{
++	if( cp < 0x80 )
++	{
++		out += (char)cp;
++	}
++	else if( cp < 0x800 )
++	{
++		out += (char)( 0xC0 | ( cp >> 6 ));
++		out += (char)( 0x80 | ( cp & 0x3F ));
++	}
++	else
++	{
++		out += (char)( 0xE0 | ( cp >> 12 ));
++		out += (char)( 0x80 | (( cp >> 6 ) & 0x3F ));
++		out += (char)( 0x80 | ( cp & 0x3F ));
++	}
++}
++
++// Server names usually come in UTF-8 or in the Windows-1251 code page. Anything that is not valid UTF-8
++// is taken as Windows-1251.
++inline std::string ToUtf8( const char* s )
++{
++	if( !s )
++		return std::string();
++
++	if( IsValidUtf8( s ))
++		return std::string( s );
++
++	static const unsigned short cp1251_80_BF[64] = {
++		0x0402, 0x0403, 0x201A, 0x0453, 0x201E, 0x2026, 0x2020, 0x2021, 0x20AC, 0x2030, 0x0409, 0x2039, 0x040A, 0x040C, 0x040B, 0x040F,
++		0x0452, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014, 0xFFFD, 0x2122, 0x0459, 0x203A, 0x045A, 0x045C, 0x045B, 0x045F,
++		0x00A0, 0x040E, 0x045E, 0x0408, 0x00A4, 0x0490, 0x00A6, 0x00A7, 0x0401, 0x00A9, 0x0404, 0x00AB, 0x00AC, 0x00AD, 0x00AE, 0x0407,
++		0x00B0, 0x00B1, 0x0406, 0x0456, 0x0491, 0x00B5, 0x00B6, 0x00B7, 0x0451, 0x2116, 0x0454, 0x00BB, 0x0458, 0x0405, 0x0455, 0x0457 };
++
++	std::string out;
++
++	for( const unsigned char* p = reinterpret_cast<const unsigned char*>( s ); *p; ++p )
++	{
++		if( *p < 0x80 )
++			out += (char)*p;
++		else if( *p < 0xC0 )
++			AppendUtf8( out, cp1251_80_BF[*p - 0x80] );
++		else
++			AppendUtf8( out, 0x0410 + ( *p - 0xC0 )); // A..ya
++	}
++
++	return out;
++}
++
++inline std::string EscapeHtml( const std::string& in )
++{
++	std::string out;
++
++	for( char c : in )
++	{
++		switch( c )
++		{
++		case '&':  out += "&amp;";  break;
++		case '<':  out += "&lt;";   break;
++		case '>':  out += "&gt;";   break;
++		case '"':  out += "&quot;"; break;
++		case '\'': out += "&#39;";  break;
++		default:
++			// control characters would only confuse the page
++			if(( unsigned char )c >= 0x20 || c == '\t' )
++				out += c;
++			break;
++		}
++	}
++
++	return out;
++}
++
++// HTML of the frame. The title is the name of the server (any bytes).
++inline std::string BuildMotdFrameHtml( const char* title )
++{
++	using namespace MotdFrame;
++
++	char css[2048];
++	snprintf( css, sizeof( css ),
++		"*{margin:0;padding:0;box-sizing:border-box}"
++		"html,body{width:%dpx;height:%dpx;background:transparent;overflow:hidden;user-select:none;"
++		"font-family:'Trebuchet MS',Tahoma,'Segoe UI',Arial,sans-serif}"
++		".p{position:absolute;left:0;width:%dpx;background:rgba(0,0,0,.8)}"
++		".a{top:0;height:%dpx;border-radius:%dpx %dpx 0 0}"
++		".c{top:%dpx;height:%dpx;border-radius:0 0 %dpx %dpx}"
++		".t{position:absolute;left:%dpx;top:14px;width:%dpx;height:36px;line-height:36px;font-size:28px;"
++		"color:#ffb000;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}"
++		".b{position:absolute;left:%dpx;top:%dpx;width:%dpx;height:%dpx;border:1px solid #543a00;"
++		"background:rgba(0,0,0,.8);color:#ffb000;font-size:13px;font-weight:700;letter-spacing:1px;"
++		"text-align:center;line-height:%dpx}"
++		".b:hover{border-color:#d69300}",
++		kPanelW, kPanelH,
++		kPanelW,
++		kSlitY, kRadius, kRadius,
++		kSlitY + kSlitH, kPanelH - ( kSlitY + kSlitH ), kRadius, kRadius,
++		kPageX + 2, kPanelW - kPageX - 40,
++		kBtnX, kBtnY, kBtnW, kBtnH, kBtnH - 2 );
++
++	std::string name = EscapeHtml( ToUtf8( title && title[0] ? title : "MOTD" ));
++
++	std::string html;
++	html += "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><style>";
++	html += css;
++	html += "</style></head><body><div class=\"p a\"></div><div class=\"p c\"></div><div class=\"t\">";
++	html += name;
++	html += "</div><div class=\"b\">OK</div></body></html>";
++	return html;
++}
++
++// data: address of an HTML text (base64). Returns false if the buffer is too small.
++inline bool MakeHtmlDataUrl( const char* html, int len, char* out, size_t outSize )
++{
++	static const char b64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
++	static const char prefix[] = "data:text/html;charset=utf-8;base64,";
++	size_t need = sizeof( prefix ) - 1 + (( (size_t)len + 2 ) / 3 ) * 4 + 1;
++
++	if( len <= 0 || need > outSize )
++		return false;
++
++	memcpy( out, prefix, sizeof( prefix ) - 1 );
++	char* o = out + sizeof( prefix ) - 1;
++
++	for( int i = 0; i < len; i += 3 )
++	{
++		unsigned int v = (unsigned char)html[i] << 16;
++		int n = len - i;
++
++		if( n > 1 ) v |= (unsigned char)html[i + 1] << 8;
++		if( n > 2 ) v |= (unsigned char)html[i + 2];
++
++		*o++ = b64[( v >> 18 ) & 63];
++		*o++ = b64[( v >> 12 ) & 63];
++		*o++ = ( n > 1 ) ? b64[( v >> 6 ) & 63] : '=';
++		*o++ = ( n > 2 ) ? b64[v & 63] : '=';
++	}
++
++	*o = 0;
++	return true;
++}
++
++inline std::string MakeHtmlDataUrl( const std::string& html )
++{
++	std::string out( html.size() * 4 / 3 + 80, '\0' );
++
++	if( !MakeHtmlDataUrl( html.data(), (int)html.size(), &out[0], out.size() ))
++		return std::string();
++
++	out.resize( std::strlen( out.c_str() ));
++	return out;
++}
++
 +} // namespace CEF
 +} // namespace iHTMLChrome
 diff --git a/cl_dll/chrome/chrome_motd_input.h b/cl_dll/chrome/chrome_motd_input.h
@@ -3425,18 +3661,19 @@ index f23bb7c..34d6d0a 100644
  
  
 diff --git a/cl_dll/hud/MOTD.cpp b/cl_dll/hud/MOTD.cpp
-index 83208f5..cc32af4 100644
+index 83208f5..e14b1ae 100644
 --- a/cl_dll/hud/MOTD.cpp
 +++ b/cl_dll/hud/MOTD.cpp
-@@ -27,6 +27,7 @@
+@@ -27,6 +27,8 @@
  #include <stdio.h>
  #include "draw_util.h"
  #include "build.h"
 +#include "chrome/chrome_host.h"
++#include "chrome/chrome_motd_frame.h"
  
  #if XASH_WIN32 == 1 || XASH_PSVITA == 1
  #define strcasestr strstr
-@@ -39,6 +40,12 @@ int CHudMOTD :: Init( void )
+@@ -39,6 +41,12 @@ int CHudMOTD :: Init( void )
  	HOOK_MESSAGE( gHUD.m_MOTD, MOTD );
  
  	cl_hide_motd = CVAR_CREATE("cl_hide_motd", "0", FCVAR_ARCHIVE); // hide motd
@@ -3449,7 +3686,7 @@ index 83208f5..cc32af4 100644
  	Reset();
  
  	return 1;
-@@ -47,9 +54,297 @@ int CHudMOTD :: Init( void )
+@@ -47,9 +55,268 @@ int CHudMOTD :: Init( void )
  int CHudMOTD :: VidInit( void )
  {
  	// Load sprites here
@@ -3458,6 +3695,8 @@ index 83208f5..cc32af4 100644
  	return 1;
  }
  
++using iHTMLChrome::CEF::MakeHtmlDataUrl;
++
 +static bool StartsWithNoCase( const char *s, const char *prefix )
 +{
 +	while( *prefix )
@@ -3583,37 +3822,6 @@ index 83208f5..cc32af4 100644
 +	}
 +
 +	return false;
-+}
-+
-+// MOTD HTML is given to the embedded browser as a data: address
-+static bool MakeHtmlDataUrl( const char *html, int len, char *out, size_t outSize )
-+{
-+	static const char b64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-+	static const char prefix[] = "data:text/html;charset=utf-8;base64,";
-+	size_t need = sizeof( prefix ) - 1 + (( (size_t)len + 2 ) / 3 ) * 4 + 1;
-+
-+	if( len <= 0 || need > outSize )
-+		return false;
-+
-+	memcpy( out, prefix, sizeof( prefix ) - 1 );
-+	char *o = out + sizeof( prefix ) - 1;
-+
-+	for( int i = 0; i < len; i += 3 )
-+	{
-+		unsigned int v = (unsigned char)html[i] << 16;
-+		int n = len - i;
-+
-+		if( n > 1 ) v |= (unsigned char)html[i + 1] << 8;
-+		if( n > 2 ) v |= (unsigned char)html[i + 2];
-+
-+		*o++ = b64[( v >> 18 ) & 63];
-+		*o++ = b64[( v >> 12 ) & 63];
-+		*o++ = ( n > 1 ) ? b64[( v >> 6 ) & 63] : '=';
-+		*o++ = ( n > 2 ) ? b64[v & 63] : '=';
-+	}
-+
-+	*o = 0;
-+	return true;
 +}
 +
 +void CHudMOTD :: ResetBrowserState( void )
@@ -3747,7 +3955,7 @@ index 83208f5..cc32af4 100644
  void CHudMOTD :: Reset( void )
  {
  	m_iFlags &= ~HUD_DRAW;  // start out inactive
-@@ -137,13 +432,19 @@ int CHudMOTD :: MsgFunc_MOTD( const char *pszName, int iSize, void *pbuf )
+@@ -137,13 +404,19 @@ int CHudMOTD :: MsgFunc_MOTD( const char *pszName, int iSize, void *pbuf )
  		Reset(); // clear the current MOTD in prep for this one
  	}
  
