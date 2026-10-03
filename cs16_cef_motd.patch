@@ -954,10 +954,10 @@ index 0000000..90f7f15
 +#endif
 diff --git a/cl_dll/chrome/chrome_host.cpp b/cl_dll/chrome/chrome_host.cpp
 new file mode 100644
-index 0000000..48d3b65
+index 0000000..3f0d21f
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_host.cpp
-@@ -0,0 +1,693 @@
+@@ -0,0 +1,759 @@
 +#include "chrome_host.h"
 +#include "chrome_backend.h"
 +#include "chrome_debug.h"
@@ -966,6 +966,7 @@ index 0000000..48d3b65
 +#include "chrome_runtime.h"
 +
 +#include <algorithm>
++#include <cmath>
 +#include <chrono>
 +#include <cstdio>
 +#include <cstring>
@@ -1274,7 +1275,37 @@ index 0000000..48d3b65
 +	}
 +}
 +
-+// The server MOTD is shown as a window in the middle of the screen, not over the whole screen
++// Rounded rectangle made of 1 pixel rows
++void FillRoundedRect( int x, int y, int w, int h, int radius, int r, int g, int b, int a )
++{
++	if( w <= 0 || h <= 0 )
++		return;
++
++	radius = std::max( 0, std::min( radius, std::min( w, h ) / 2 ));
++
++	FillRGBABlend( x, y + radius, w, h - radius * 2, r, g, b, a );
++
++	for( int i = 0; i < radius; ++i )
++	{
++		const float dy = radius - i - 0.5f;
++		const int inset = radius - (int)( std::sqrt( (float)( radius * radius ) - dy * dy ) + 0.5f );
++
++		FillRGBABlend( x + inset, y + i, w - inset * 2, 1, r, g, b, a );
++		FillRGBABlend( x + inset, y + h - 1 - i, w - inset * 2, 1, r, g, b, a );
++	}
++}
++
++void FillFrame( int x, int y, int w, int h, int r, int g, int b, int a )
++{
++	FillRGBABlend( x, y, w, 1, r, g, b, a );
++	FillRGBABlend( x, y + h - 1, w, 1, r, g, b, a );
++	FillRGBABlend( x, y + 1, 1, h - 2, r, g, b, a );
++	FillRGBABlend( x + w - 1, y + 1, 1, h - 2, r, g, b, a );
++}
++
++// The server MOTD is shown as a window like the one of the Steam version of the game:
++// a dark rounded panel with the server name, the page and the OK button.
++// All sizes below are given for a page of 900x450 pixels and are scaled with the window.
 +void PresentMotdWindow( ChromeInstance* inst )
 +{
 +	if( !inst )
@@ -1297,40 +1328,75 @@ index 0000000..48d3b65
 +
 +	inst->set_viewport( ChromeRect{ 0, 0, bw, bh } );
 +
-+	// the page at its own size, but not bigger than 80% of the screen
-+	const float scale = std::min( 1.0f, std::min( ext.w * 0.8f / bw, ext.h * 0.8f / bh ));
-+	const float w = bw * scale;
-+	const float h = bh * scale;
-+	const float x1 = ( ext.w - w ) * 0.5f;
-+	const float y1 = ( ext.h - h ) * 0.5f;
++	// layout (in pixels of the unscaled window)
++	const int marginL = 106, marginR = 116, marginT = 161;
++	const int buttonGap = 15, buttonW = 240, buttonH = 37, marginB = 36;
++	const int panelW = marginL + bw + marginR;
++	const int panelH = marginT + bh + buttonGap + buttonH + marginB;
 +
-+	const int title_h = 20;
++	const float scale = std::min( 1.0f, std::min( ext.w * 0.95f / panelW, ext.h * 0.95f / panelH ));
++	auto S = [scale]( int v ) { return (int)( v * scale + 0.5f ); };
++
++	const int panelX = (int)(( ext.w - panelW * scale ) * 0.5f );
++	const int panelY = (int)(( ext.h - panelH * scale ) * 0.375f );
++
++	const int pageX = panelX + S( marginL );
++	const int pageY = panelY + S( marginT );
++	const int pageW = S( bw );
++	const int pageH = S( bh );
++
++	const int btnX = pageX;
++	const int btnY = pageY + pageH + S( buttonGap );
++	const int btnW = S( buttonW );
++	const int btnH = S( buttonH );
 +
 +	MotdLayout lay;
 +	lay.valid = true;
-+	lay.x = x1;
-+	lay.y = y1;
-+	lay.w = w;
-+	lay.h = h;
-+	lay.scale = scale;
-+	lay.close_size = 16.f;
-+	lay.close_x = x1 + w - lay.close_size;
-+	lay.close_y = y1 - title_h + 1;
++	lay.x = (float)pageX;
++	lay.y = (float)pageY;
++	lay.w = (float)pageW;
++	lay.h = (float)pageH;
++	lay.scale = (float)pageW / bw;
++	lay.close_x = (float)btnX;
++	lay.close_y = (float)btnY;
++	lay.close_w = (float)btnW;
++	lay.close_h = (float)btnH;
 +	g_motd_input.SetScreen( ext.w, ext.h );
 +	g_motd_input.SetLayout( lay );
 +
-+	DrawUtils::DrawRectangle( (int)x1 - 3, (int)y1 - title_h - 3, (int)w + 6, (int)h + title_h + 6, 0, 0, 0, 220, true );
-+	DrawUtils::DrawHudString( (int)x1 + 4, (int)y1 - title_h + 2, ext.w, "MOTD   [mouse: click / scroll,  ESC: close]", 255, 180, 0 );
++	// panel
++	FillRoundedRect( panelX, panelY, S( panelW ), S( panelH ), S( 14 ), 0, 0, 0, 204 );
 +
++	// title: the name of the server
++	const char *title = gHUD.m_szServerName[0] ? gHUD.m_szServerName : "MOTD";
++	const float titleScale = 1.4f * std::max( 0.6f, scale );
++	const int titleY = panelY + S( 29 ) - (int)( gHUD.GetCharHeight() * titleScale * 0.5f );
++	DrawUtils::DrawHudString( pageX + S( 2 ), titleY, 9999, title, 255, 176, 0, titleScale );
++
++	// thin line under the title
++	FillRGBABlend( panelX + S( 541 ), panelY + S( 97 ), S( 149 ), std::max( 1, S( 2 )), 255, 176, 0, 200 );
++
++	// the page
 +	gRenderAPI.GL_SelectTexture( 0 );
 +	gRenderAPI.GL_Bind( 0, tex );
 +	gEngfuncs.pTriAPI->RenderMode( kRenderTransAlpha );
 +	gEngfuncs.pTriAPI->Color4f( 1.0f, 1.0f, 1.0f, 1.0f );
-+	DrawUtils::Draw2DQuad( x1, y1, x1 + w, y1 + h );
++	DrawUtils::Draw2DQuad( (float)pageX, (float)pageY, (float)( pageX + pageW ), (float)( pageY + pageH ));
 +
-+	// close button
-+	DrawUtils::DrawRectangle( (int)lay.close_x, (int)lay.close_y, (int)lay.close_size, (int)lay.close_size, 140, 20, 20, 230, true );
-+	DrawUtils::DrawHudString( (int)lay.close_x + 4, (int)lay.close_y + 1, ext.w, "X", 255, 255, 255 );
++	// OK button
++	const bool hover = g_motd_input.cursor_over_close();
++	FillRGBABlend( btnX, btnY, btnW, btnH, 0, 0, 0, hover ? 230 : 200 );
++	if( hover )
++		FillFrame( btnX, btnY, btnW, btnH, 214, 147, 0, 255 );
++	else
++		FillFrame( btnX, btnY, btnW, btnH, 84, 58, 0, 255 );
++
++	const float okScale = 0.85f * std::max( 0.6f, scale );
++	const int okW = (int)( DrawUtils::HudStringLen( "OK" ) * okScale );
++	const int okX = btnX + ( btnW - okW ) / 2;
++	const int okY = btnY + ( btnH - (int)( gHUD.GetCharHeight() * okScale )) / 2;
++	DrawUtils::DrawHudString( okX, okY, 9999, "OK", 255, 176, 0, okScale );
++	DrawUtils::DrawHudString( okX + 1, okY, 9999, "OK", 255, 176, 0, okScale ); // heavier strokes
 +
 +	DrawMotdCursor( (int)g_motd_input.cursor_x(), (int)g_motd_input.cursor_y() );
 +}
@@ -1585,7 +1651,7 @@ index 0000000..48d3b65
 +	HideMotd();
 +
 +	// the page gets a window-like size (4:3), not the whole screen
-+	const int id = Chrome::Create( url, 800, 600, nullptr, nullptr );
++	const int id = Chrome::Create( url, 900, 450, nullptr, nullptr );
 +	if( id < 0 )
 +		return false;
 +
@@ -1595,7 +1661,7 @@ index 0000000..48d3b65
 +	const RenderExtents ext = VisibleRenderExtents();
 +	g_motd_input.Open( ext.w, ext.h );
 +
-+	gEngfuncs.Con_Printf( "[motd] shown: mouse and keyboard work in the window, ESC / X button / cl_motd_close close it\n" );
++	gEngfuncs.Con_Printf( "[motd] shown: mouse and keyboard work in the window, ESC / OK button / cl_motd_close close it\n" );
 +	return true;
 +}
 +
@@ -2121,10 +2187,10 @@ index 0000000..4776af8
 +} // namespace iHTMLChrome
 diff --git a/cl_dll/chrome/chrome_motd_input.h b/cl_dll/chrome/chrome_motd_input.h
 new file mode 100644
-index 0000000..60fa085
+index 0000000..5d23a0b
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_motd_input.h
-@@ -0,0 +1,396 @@
+@@ -0,0 +1,397 @@
 +#pragma once
 +
 +// Input logic of the server MOTD window shown by the embedded browser.
@@ -2157,7 +2223,7 @@ index 0000000..60fa085
 +	float x = 0.f, y = 0.f; // page rectangle on the screen
 +	float w = 0.f, h = 0.f;
 +	float scale = 1.f;      // screen size / page size
-+	float close_x = 0.f, close_y = 0.f, close_size = 16.f; // close button
++	float close_x = 0.f, close_y = 0.f, close_w = 0.f, close_h = 0.f; // close (OK) button
 +};
 +
 +// Result of one event
@@ -2264,6 +2330,7 @@ index 0000000..60fa085
 +	float cursor_x() const { return cursor_x_; }
 +	float cursor_y() const { return cursor_y_; }
 +	int buttons() const { return buttons_; }
++	bool cursor_over_close() const { return OverClose( cursor_x_, cursor_y_ ); }
 +
 +	// mouse moved (in screen pixels)
 +	MotdOutput OnMouseDelta( float dx, float dy )
@@ -2475,7 +2542,7 @@ index 0000000..60fa085
 +	bool OverClose( float sx, float sy ) const
 +	{
 +		return layout_.valid && sx >= layout_.close_x && sy >= layout_.close_y
-+			&& sx < layout_.close_x + layout_.close_size && sy < layout_.close_y + layout_.close_size;
++			&& sx < layout_.close_x + layout_.close_w && sy < layout_.close_y + layout_.close_h;
 +	}
 +
 +	bool Near( int px, int py ) const
