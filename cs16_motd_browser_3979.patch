@@ -13,6 +13,103 @@ index b0af818..93f3656 100644
  install(TARGETS ${CLIENT_LIB}
  	DESTINATION "${GAME_DIR}/${CLIENT_INSTALL_DIR}/"
  	PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
+diff --git a/cl_dll/draw_util.cpp b/cl_dll/draw_util.cpp
+index c585f3c..7c66a65 100644
+--- a/cl_dll/draw_util.cpp
++++ b/cl_dll/draw_util.cpp
+@@ -33,6 +33,7 @@ version.
+ #include "triangleapi.h"
+ #include <string.h>
+ #include <ctype.h>
++#include <math.h>
+ #include "utflib.h"
+ #include "utlvector.h"
+ 
+@@ -368,6 +369,84 @@ int DrawUtils::DrawHudNumber2( int x, int y, int iNumber, int r, int g, int b )
+ 	return ResX;
+ }
+ 
++// How far the rounded corner is from the side of the rectangle in the row i (0 is the outermost row)
++static int RoundedInset( int radius, int i )
++{
++	const float dy = radius - i - 0.5f;
++	return radius - (int)( sqrtf( (float)( radius * radius ) - dy * dy ) + 0.5f );
++}
++
++// Blended rectangle made of 1 pixel rows; the upper and/or the lower corners are rounded
++void DrawUtils::FillRoundedRect( int x, int y, int wide, int tall, int radius, bool roundTop, bool roundBottom,
++								 int r, int g, int b, int a )
++{
++	if( wide <= 0 || tall <= 0 )
++		return;
++
++	if( radius > wide / 2 ) radius = wide / 2;
++	if( radius > tall / 2 ) radius = tall / 2;
++	if( radius < 0 ) radius = 0;
++
++	const int rt = roundTop ? radius : 0;
++	const int rb = roundBottom ? radius : 0;
++
++	FillRGBABlend( x, y + rt, wide, tall - rt - rb, r, g, b, a );
++
++	for( int i = 0; i < rt; ++i )
++	{
++		const int inset = RoundedInset( rt, i );
++		FillRGBABlend( x + inset, y + i, wide - inset * 2, 1, r, g, b, a );
++	}
++
++	for( int i = 0; i < rb; ++i )
++	{
++		const int inset = RoundedInset( rb, i );
++		FillRGBABlend( x + inset, y + tall - 1 - i, wide - inset * 2, 1, r, g, b, a );
++	}
++}
++
++// Outline of a rectangle with rounded corners, 1 pixel thick, drawn without blending
++void DrawUtils::DrawRoundedFrame( int x, int y, int wide, int tall, int radius, int r, int g, int b, int a )
++{
++	if( wide <= 1 || tall <= 1 )
++		return;
++
++	if( radius > wide / 2 ) radius = wide / 2;
++	if( radius > tall / 2 ) radius = tall / 2;
++	if( radius < 0 ) radius = 0;
++
++	// straight sides between the corners
++	FillRGBA( x + radius, y,            wide - radius * 2, 1, r, g, b, a );
++	FillRGBA( x + radius, y + tall - 1, wide - radius * 2, 1, r, g, b, a );
++	FillRGBA( x,            y + radius, 1, tall - radius * 2, r, g, b, a );
++	FillRGBA( x + wide - 1, y + radius, 1, tall - radius * 2, r, g, b, a );
++
++	// corners: in every row a short piece, so the line has no gaps
++	int prevInset = radius;
++
++	for( int i = 0; i < radius; ++i )
++	{
++		const int inset = RoundedInset( radius, i );
++		const int runEnd = ( prevInset - 1 > inset ) ? prevInset - 1 : inset;
++		const int len = runEnd - inset + 1;
++
++		FillRGBA( x + inset,                y + i,                len, 1, r, g, b, a );
++		FillRGBA( x + wide - 1 - runEnd,    y + i,                len, 1, r, g, b, a );
++		FillRGBA( x + inset,                y + tall - 1 - i,     len, 1, r, g, b, a );
++		FillRGBA( x + wide - 1 - runEnd,    y + tall - 1 - i,     len, 1, r, g, b, a );
++
++		prevInset = inset;
++	}
++}
++
++void DrawUtils::DrawRoundedRectangle( int x, int y, int wide, int tall, int radius, int r, int g, int b, int a, bool drawStroke )
++{
++	FillRoundedRect( x, y, wide, tall, radius, true, true, r, g, b, a );
++
++	if( drawStroke )
++		DrawRoundedFrame( x, y, wide, tall, radius, 255, 140, 0, 255 ); // the colour of the stroke of DrawRectangle
++}
++
+ void DrawUtils::Draw2DQuad( float x1, float y1, float x2, float y2 )
+ {
+ 	// REMOVE WHEN NANOGL BUG WILL BE FIXED
 diff --git a/cl_dll/hud.cpp b/cl_dll/hud.cpp
 index 9ae956c..15e785d 100644
 --- a/cl_dll/hud.cpp
@@ -451,3 +548,72 @@ index 0000000..fad4296
 +}
 +
 +#endif
+diff --git a/cl_dll/hud/scoreboard.cpp b/cl_dll/hud/scoreboard.cpp
+index cdbde46..9610599 100644
+--- a/cl_dll/hud/scoreboard.cpp
++++ b/cl_dll/hud/scoreboard.cpp
+@@ -163,6 +163,18 @@ bool CHudScoreboard :: ShouldDrawScoreboard() const
+ 	return false;
+ }
+ 
++// Localize() gives the key itself if the strings of the game have no such record
++// (then the table shows "#Cstrike_HEALTH"), so a plain default is used in that case
++static const char *LocalizeOrDefault( const char *key, const char *fallback )
++{
++	const char *text = Localize( key );
++
++	if( !text || text == key || text[0] == '#' )
++		return fallback;
++
++	return text;
++}
++
+ // Y positions
+ #define ROW_GAP  15
+ 
+@@ -212,10 +224,10 @@ int CHudScoreboard :: DrawScoreboard( float fTime )
+ 	g_Columns[COL_KILLS] = Column( g_Columns[COL_DEATHS].end - 10, Localize( "#PlayerScore" ) );
+ 	g_Columns[COL_KILLS].end = min( g_Columns[COL_KILLS].end, g_Columns[COL_KILLS].start - DrawUtils::HudStringLen( "9999" ) );
+ 
+-	g_Columns[COL_MONEY] = Column( g_Columns[COL_KILLS].end - 10, Localize( "#Cstrike_ACCOUNT" ) );
++	g_Columns[COL_MONEY] = Column( g_Columns[COL_KILLS].end - 10, LocalizeOrDefault( "#Cstrike_ACCOUNT", "Money" ) );
+ 	g_Columns[COL_MONEY].end = min( g_Columns[COL_MONEY].end, g_Columns[COL_MONEY].start - DrawUtils::HudStringLen( "$999999" ) );
+ 
+-	g_Columns[COL_HP] = Column( g_Columns[COL_MONEY].end - 10, Localize( "#Cstrike_HEALTH" ) );
++	g_Columns[COL_HP] = Column( g_Columns[COL_MONEY].end - 10, LocalizeOrDefault( "#Cstrike_HEALTH", "HP" ) );
+ 	g_Columns[COL_HP].end = min( g_Columns[COL_HP].end, g_Columns[COL_HP].start - DrawUtils::HudStringLen( "999999" ) );
+ 
+ 	g_Columns[COL_ATTRIB] = Column( g_Columns[COL_HP].end - 10 );
+@@ -226,7 +238,13 @@ int CHudScoreboard :: DrawScoreboard( float fTime )
+ 
+ 	// print the heading line
+ 
+-	DrawUtils::DrawRectangle(xstart, ystart, xend - xstart, yend - ystart,
++	// the frame has rounded corners, the same as the MOTD window: 14 pixels on a big screen
++	// (as measured on the Steam version), smaller on a small one, like in the Steam version
++	int cornerRadius = (int)( 14.0f * min( 1.0f, ScreenHeight / 1017.0f ) + 0.5f );
++	if( cornerRadius < 6 )
++		cornerRadius = 6;
++
++	DrawUtils::DrawRoundedRectangle(xstart, ystart, xend - xstart, yend - ystart, cornerRadius,
+ 		m_colors.r, m_colors.g, m_colors.b, m_colors.a, m_bDrawStroke);
+ 
+ 	int ypos = ystart + (list_slot * ROW_GAP) + 5;
+diff --git a/cl_dll/include/draw_util.h b/cl_dll/include/draw_util.h
+index 1fa2af1..7904cf5 100644
+--- a/cl_dll/include/draw_util.h
++++ b/cl_dll/include/draw_util.h
+@@ -184,6 +184,13 @@ public:
+ 		}
+ 	}
+ 
++	// Rectangles with rounded corners (the same rounding is used by all windows of the client)
++	static void FillRoundedRect( int x, int y, int wide, int tall, int radius, bool roundTop, bool roundBottom,
++								 int r, int g, int b, int a );
++	static void DrawRoundedFrame( int x, int y, int wide, int tall, int radius, int r, int g, int b, int a );
++	static void DrawRoundedRectangle( int x, int y, int wide, int tall, int radius,
++									  int r = 0, int g = 0, int b = 0, int a = 153, bool drawStroke = true );
++
+ 	static void Draw2DQuad( float x1, float y1, float x2, float y2 );
+ 	static void DrawStretchPic( float x, float y, float w, float h,
+ 								float s1 = 0, float t1 = 0, float s2 = 1, float t2 = 1);
