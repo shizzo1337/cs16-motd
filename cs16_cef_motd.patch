@@ -1,5 +1,5 @@
 diff --git a/cl_dll/CMakeLists.txt b/cl_dll/CMakeLists.txt
-index b0af818..fdb2116 100644
+index b0af818..f844dcf 100644
 --- a/cl_dll/CMakeLists.txt
 +++ b/cl_dll/CMakeLists.txt
 @@ -10,6 +10,7 @@ file(GLOB CS_WPNSH_SRC "../dlls/wpn_shared/*.cpp")
@@ -18,7 +18,7 @@ index b0af818..fdb2116 100644
  list(APPEND CS_CLIENT_SRC ${CS_GAMSH_SRC})
  list(APPEND CS_CLIENT_SRC ${MINIUTL_SRC})
  list(APPEND CS_CLIENT_SRC ${CS_PARTICLEMAN_SRC})
-@@ -74,9 +76,75 @@ else()
+@@ -74,9 +76,76 @@ else()
  endif()
  
  add_library(${CLIENT_LIB} SHARED ${CS_CLIENT_SRC})
@@ -88,7 +88,8 @@ index b0af818..fdb2116 100644
  set_target_postfix(${CLIENT_LIB})
  
 +if(WIN32)
-+	target_link_libraries(${CLIENT_LIB} PRIVATE shell32)
++	# shell32: opening the MOTD in the browser; gdi32 and user32: the text of the MOTD window (Windows fonts)
++	target_link_libraries(${CLIENT_LIB} PRIVATE shell32 gdi32 user32)
 +endif()
 +
  install(TARGETS ${CLIENT_LIB}
@@ -954,16 +955,16 @@ index 0000000..90f7f15
 +#endif
 diff --git a/cl_dll/chrome/chrome_host.cpp b/cl_dll/chrome/chrome_host.cpp
 new file mode 100644
-index 0000000..7fa44fc
+index 0000000..8b2504e
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_host.cpp
-@@ -0,0 +1,847 @@
+@@ -0,0 +1,841 @@
 +#include "chrome_host.h"
 +#include "chrome_backend.h"
 +#include "chrome_debug.h"
 +#include "chrome_instance.h"
 +#include "chrome_motd_input.h"
-+#include "chrome_motd_text.h"
++#include "chrome_motd_utf.h"
 +#include "chrome_runtime.h"
 +
 +#include <algorithm>
@@ -980,6 +981,10 @@ index 0000000..7fa44fc
 +#include "draw_util.h"
 +#include "render_api.h"
 +#include "triangleapi.h"
++
++// MOTD_text_gdi.cpp
++bool MOTD_RenderText( const char *utf8, int pixelHeight, bool bold, int maxWidth,
++					  std::vector<unsigned char> &alpha, int &width, int &height, int &ascent );
 +
 +namespace
 +{
@@ -998,7 +1003,17 @@ index 0000000..7fa44fc
 +int g_motd_id = -1;
 +std::chrono::steady_clock::time_point g_motd_shown_at;
 +MotdInput g_motd_input;
-+int g_motd_font_tex = -1; // texture with the glyphs: -1 not made yet, 0 could not be made
++
++// Text of the MOTD window as a texture (drawn by Windows fonts, see MOTD_text_gdi.cpp)
++struct MotdTextSlot
++{
++	int tex = 0;
++	int w = 0, h = 0, ascent = 0;
++	std::string key; // what the picture was made for
++};
++
++MotdTextSlot g_motd_title, g_motd_ok;
++int g_motd_text_counter = 0;
 +std::unordered_map<int, std::pair<int, int>> g_last_mouse_pos; // for the generic SendMouse* functions
 +
 +int s_toggle_sync = -1;
@@ -1277,36 +1292,6 @@ index 0000000..7fa44fc
 +	}
 +}
 +
-+// Rectangle made of 1 pixel rows, the upper and/or the lower corners are rounded
-+void FillRoundedRect( int x, int y, int w, int h, int radius, bool roundTop, bool roundBottom, int r, int g, int b, int a )
-+{
-+	if( w <= 0 || h <= 0 )
-+		return;
-+
-+	radius = std::max( 0, std::min( radius, std::min( w, h ) / 2 ));
-+
-+	const int rt = roundTop ? radius : 0;
-+	const int rb = roundBottom ? radius : 0;
-+
-+	FillRGBABlend( x, y + rt, w, h - rt - rb, r, g, b, a );
-+
-+	for( int i = 0; i < rt; ++i )
-+	{
-+		const float dy = rt - i - 0.5f;
-+		const int inset = rt - (int)( std::sqrt( (float)( rt * rt ) - dy * dy ) + 0.5f );
-+
-+		FillRGBABlend( x + inset, y + i, w - inset * 2, 1, r, g, b, a );
-+	}
-+
-+	for( int i = 0; i < rb; ++i )
-+	{
-+		const float dy = rb - i - 0.5f;
-+		const int inset = rb - (int)( std::sqrt( (float)( rb * rb ) - dy * dy ) + 0.5f );
-+
-+		FillRGBABlend( x + inset, y + h - 1 - i, w - inset * 2, 1, r, g, b, a );
-+	}
-+}
-+
 +void FillFrame( int x, int y, int w, int h, int r, int g, int b, int a )
 +{
 +	FillRGBABlend( x, y, w, 1, r, g, b, a );
@@ -1315,62 +1300,64 @@ index 0000000..7fa44fc
 +	FillRGBABlend( x + w - 1, y + 1, 1, h - 2, r, g, b, a );
 +}
 +
-+// Texture with the glyphs of the window (see chrome_motd_font_data.h)
-+int GetMotdFontTexture()
++void FreeMotdText( MotdTextSlot& slot )
 +{
-+	if( g_motd_font_tex < 0 )
-+	{
-+		g_motd_font_tex = 0;
++	if( slot.tex > 0 && gRenderAPI.GL_FreeTexture )
++		gRenderAPI.GL_FreeTexture( slot.tex );
 +
-+		std::vector<std::uint8_t> rgba;
-+
-+		if( gRenderAPI.GL_CreateTexture && BuildMotdFontRgba( rgba ))
-+		{
-+			const int tex = gRenderAPI.GL_CreateTexture( "*motd_font", MotdFontData::kAtlasW, MotdFontData::kAtlasH,
-+				rgba.data(), static_cast<texFlags_t>( TF_NOMIPMAP | TF_CLAMP | TF_HAS_ALPHA ));
-+
-+			if( tex > 0 )
-+				g_motd_font_tex = tex;
-+		}
-+	}
-+
-+	return g_motd_font_tex;
++	slot = MotdTextSlot();
 +}
 +
-+// Draws a text glyph by glyph. With scale 1 every texel lands on its own pixel, so the text is sharp.
-+// Returns false if the glyphs are not available.
-+bool DrawMotdText( int face, const std::string& utf8, int x, int baseline, float scale, int r, int g, int b )
++// Makes the picture of a text, or keeps the old one if nothing has changed.
++// Returns false if the text cannot be drawn this way (then the font of the HUD is used).
++bool UpdateMotdText( MotdTextSlot& slot, const std::string& utf8, int pixelHeight, bool bold, int maxWidth )
 +{
-+	const int tex = GetMotdFontTexture();
++	const std::string key = utf8 + "|" + std::to_string( pixelHeight ) + "|" + ( bold ? "b" : "n" ) + "|" + std::to_string( maxWidth );
 +
-+	if( tex <= 0 || !gEngfuncs.pTriAPI )
++	if( slot.key == key )
++		return slot.tex > 0; // also remembers that it did not work, no retries every frame
++
++	FreeMotdText( slot );
++	slot.key = key;
++
++	std::vector<unsigned char> alpha;
++	int w = 0, h = 0, ascent = 0;
++
++	if( !gRenderAPI.GL_CreateTexture || !MOTD_RenderText( utf8.c_str(), pixelHeight, bold, maxWidth, alpha, w, h, ascent ))
 +		return false;
 +
-+	std::vector<MotdGlyphQuad> quads;
-+	MotdLayoutText( face, utf8, x, baseline, scale, quads );
++	// white pixels, the glyphs are in the alpha channel (the colour is set when the text is drawn)
++	std::vector<unsigned char> rgba( (size_t)w * h * 4, 255 );
 +
++	for( size_t i = 0, n = (size_t)w * h; i < n; ++i )
++		rgba[i * 4 + 3] = alpha[i];
++
++	// every picture has its own name: the engine gives back the old texture for a name it already has
++	char name[40];
++	snprintf( name, sizeof( name ), "*motd_text_%d", ++g_motd_text_counter );
++
++	const int tex = gRenderAPI.GL_CreateTexture( name, w, h, rgba.data(), static_cast<texFlags_t>( TF_NOMIPMAP | TF_CLAMP | TF_HAS_ALPHA ));
++
++	if( tex <= 0 )
++		return false;
++
++	slot.tex = tex;
++	slot.w = w;
++	slot.h = h;
++	slot.ascent = ascent;
++	return true;
++}
++
++// The picture of a text with its baseline at (x, baseline). With scale 1 every texel lands on its own pixel.
++void DrawMotdText( const MotdTextSlot& slot, int x, int baseline, int r, int g, int b )
++{
 +	gRenderAPI.GL_SelectTexture( 0 );
-+	gRenderAPI.GL_Bind( 0, tex );
++	gRenderAPI.GL_Bind( 0, slot.tex );
 +	gEngfuncs.pTriAPI->RenderMode( kRenderTransAlpha );
 +	gEngfuncs.pTriAPI->Color4f( r / 255.0f, g / 255.0f, b / 255.0f, 1.0f );
 +
-+	for( const MotdGlyphQuad& q : quads )
-+	{
-+		const float x1 = (float)q.x, y1 = (float)q.y, x2 = (float)( q.x + q.w ), y2 = (float)( q.y + q.h );
-+
-+		gEngfuncs.pTriAPI->Begin( TRI_QUADS );
-+		gEngfuncs.pTriAPI->TexCoord2f( q.u0, q.v0 );
-+		gEngfuncs.pTriAPI->Vertex3f( x1, y1, 0 );
-+		gEngfuncs.pTriAPI->TexCoord2f( q.u0, q.v1 );
-+		gEngfuncs.pTriAPI->Vertex3f( x1, y2, 0 );
-+		gEngfuncs.pTriAPI->TexCoord2f( q.u1, q.v1 );
-+		gEngfuncs.pTriAPI->Vertex3f( x2, y2, 0 );
-+		gEngfuncs.pTriAPI->TexCoord2f( q.u1, q.v0 );
-+		gEngfuncs.pTriAPI->Vertex3f( x2, y1, 0 );
-+		gEngfuncs.pTriAPI->End();
-+	}
-+
-+	return true;
++	const int y = baseline - slot.ascent;
++	DrawUtils::Draw2DQuad( (float)x, (float)y, (float)( x + slot.w ), (float)( y + slot.h ));
 +}
 +
 +// The server MOTD is shown as a window like the one of the Steam version of the game:
@@ -1440,18 +1427,21 @@ index 0000000..7fa44fc
 +	const int cutH = std::max( 1, S( slitH ));
 +	const int upperH = S( slitY );
 +	const int lowerY = panelY + upperH + cutH;
-+	FillRoundedRect( panelX, panelY, S( panelW ), upperH, S( 14 ), true, false, 0, 0, 0, 204 );
-+	FillRoundedRect( panelX, lowerY, S( panelW ), panelY + S( panelH ) - lowerY, S( 14 ), false, true, 0, 0, 0, 204 );
++	DrawUtils::FillRoundedRect( panelX, panelY, S( panelW ), upperH, S( 14 ), true, false, 0, 0, 0, 204 );
++	DrawUtils::FillRoundedRect( panelX, lowerY, S( panelW ), panelY + S( panelH ) - lowerY, S( 14 ), false, true, 0, 0, 0, 204 );
 +
 +	// title: the name of the server, with the same indent as in the Steam version
 +	const std::string title = ToUtf8( gHUD.m_szServerName[0] ? gHUD.m_szServerName : "MOTD" );
 +	const int titleX = panelX + S( 110 );
 +	const int titleBase = panelY + S( 41 );
-+	const float titleMax = ( panelW - 110 - 40 ) * 1.0f;
 +
-+	if( !DrawMotdText( 0, MotdFitText( 0, title, titleMax ), titleX, titleBase, scale, 255, 176, 0 ))
++	if( UpdateMotdText( g_motd_title, title, std::max( 10, S( 28 )), false, S( panelW - 110 - 40 )))
 +	{
-+		// no glyphs: the font of the HUD
++		DrawMotdText( g_motd_title, titleX, titleBase, 255, 176, 0 );
++	}
++	else
++	{
++		// no Windows fonts: the font of the HUD
 +		const float titleScale = 1.4f * std::max( 0.6f, scale );
 +		const int titleY = panelY + S( 31 ) - (int)( gHUD.GetCharHeight() * titleScale * 0.5f );
 +		DrawUtils::DrawHudString( titleX, titleY, 9999, title.c_str(), 255, 176, 0, titleScale );
@@ -1462,7 +1452,7 @@ index 0000000..7fa44fc
 +	gRenderAPI.GL_Bind( 0, tex );
 +	gEngfuncs.pTriAPI->RenderMode( kRenderTransAlpha );
 +	gEngfuncs.pTriAPI->Color4f( 1.0f, 1.0f, 1.0f, 1.0f );
-+	DrawUtils::Draw2DQuad( (float)pageX, (float)pageY, (float)pageW + pageX, (float)( pageY + pageH ));
++	DrawUtils::Draw2DQuad( (float)pageX, (float)pageY, (float)( pageX + pageW ), (float)( pageY + pageH ));
 +
 +	// OK button
 +	const bool hover = g_motd_input.cursor_over_close();
@@ -1472,12 +1462,14 @@ index 0000000..7fa44fc
 +	else
 +		FillFrame( btnX, btnY, btnW, btnH, 84, 58, 0, 255 );
 +
-+	const int okCap = (int)( MotdFontData::kFaces[1].cap * scale + 0.5f );
-+	const int okW = (int)( MotdTextWidth( 1, "OK" ) * scale + 0.5f );
-+	const int okX = btnX + ( btnW - okW ) / 2;
-+	const int okBase = btnY + ( btnH + okCap ) / 2;
++	const int okHeight = std::max( 8, S( 13 ));
 +
-+	if( !DrawMotdText( 1, "OK", okX, okBase, scale, 255, 176, 0 ))
++	if( UpdateMotdText( g_motd_ok, "OK", okHeight, true, 0 ))
++	{
++		const int cap = (int)( okHeight * 0.72f + 0.5f );
++		DrawMotdText( g_motd_ok, btnX + ( btnW - g_motd_ok.w ) / 2, btnY + ( btnH + cap ) / 2, 255, 176, 0 );
++	}
++	else
 +	{
 +		const float okScale = 0.85f * std::max( 0.6f, scale );
 +		const int fbW = (int)( DrawUtils::HudStringLen( "OK" ) * okScale );
@@ -1742,14 +1734,15 @@ index 0000000..7fa44fc
 +	if( id < 0 )
 +		return false;
 +
++	FreeMotdText( g_motd_title );
++	FreeMotdText( g_motd_ok );
 +	g_motd_id = id;
-+	g_motd_font_tex = -1;
 +	g_motd_shown_at = std::chrono::steady_clock::now();
 +
 +	const RenderExtents ext = VisibleRenderExtents();
 +	g_motd_input.Open( ext.w, ext.h );
 +
-+	gEngfuncs.Con_Printf( "[motd] shown: mouse and keyboard work in the window, ESC / OK button / cl_motd_close close it\n" );
++	gEngfuncs.Con_Printf( "[motd] shown: mouse and keyboard work in the window, ENTER / OK button / cl_motd_close close it\n" );
 +	return true;
 +}
 +
@@ -1761,6 +1754,8 @@ index 0000000..7fa44fc
 +	const int id = g_motd_id;
 +	g_motd_id = -1;
 +	Chrome::Destroy( id );
++	FreeMotdText( g_motd_title );
++	FreeMotdText( g_motd_ok );
 +	gEngfuncs.Con_Printf( "[motd] window closed\n" );
 +}
 +
@@ -2273,632 +2268,12 @@ index 0000000..4776af8
 +};
 +} // namespace CEF
 +} // namespace iHTMLChrome
-diff --git a/cl_dll/chrome/chrome_motd_font_data.h b/cl_dll/chrome/chrome_motd_font_data.h
-new file mode 100644
-index 0000000..20b13be
---- /dev/null
-+++ b/cl_dll/chrome/chrome_motd_font_data.h
-@@ -0,0 +1,614 @@
-+#pragma once
-+
-+// Generated by a script from DejaVu Sans Condensed (a free font, license: https://dejavu-fonts.github.io/License.html).
-+// Pre-rendered glyphs of the title (27 px) and of the OK button (13 px bold) of the MOTD window.
-+
-+namespace iHTMLChrome {
-+namespace CEF {
-+namespace MotdFontData {
-+
-+constexpr int kAtlasW = 512, kAtlasH = 256; // size of the texture
-+constexpr int kAtlasDataH = 131;           // rows that have glyphs, the rest is empty
-+
-+struct Glyph
-+{
-+	unsigned short cp;       // Unicode
-+	unsigned short x, y;     // position in the atlas
-+	unsigned char w, h;      // size in the atlas
-+	signed char xoff, yoff;  // offset of the top left corner from the pen on the baseline
-+	unsigned short adv16;    // advance in 1/16 pixel
-+};
-+
-+struct Face
-+{
-+	int first, count;        // range in kGlyphs (sorted by Unicode)
-+	int ascent, cap;         // pixels above the baseline; height of capital letters
-+};
-+
-+constexpr Face kFaces[2] = {
-+	{ 0, 184, 26, 20 }, // title
-+	{ 184, 95, 13, 10 }, // button
-+};
-+
-+constexpr Glyph kGlyphs[279] = {
-+	{ 0x0020, 0, 0, 0, 0, 0, 0, 128 },
-+	{ 0x0021, 344, 29, 4, 20, 3, -20, 160 },
-+	{ 0x0022, 450, 110, 7, 8, 2, -20, 176 },
-+	{ 0x0023, 349, 29, 18, 20, 1, -20, 320 },
-+	{ 0x0024, 107, 0, 12, 25, 2, -21, 240 },
-+	{ 0x0025, 304, 0, 21, 22, 1, -21, 368 },
-+	{ 0x0026, 326, 0, 18, 22, 1, -21, 304 },
-+	{ 0x0027, 458, 110, 3, 8, 2, -20, 112 },
-+	{ 0x0028, 120, 0, 6, 25, 2, -21, 144 },
-+	{ 0x0029, 127, 0, 6, 25, 2, -21, 144 },
-+	{ 0x002A, 277, 94, 12, 14, 0, -21, 192 },
-+	{ 0x002B, 195, 73, 16, 17, 2, -17, 320 },
-+	{ 0x002C, 462, 110, 5, 8, 1, -4, 128 },
-+	{ 0x002D, 203, 122, 7, 3, 1, -9, 144 },
-+	{ 0x002E, 168, 122, 4, 4, 2, -4, 128 },
-+	{ 0x002F, 284, 0, 9, 23, 0, -20, 128 },
-+	{ 0x0030, 345, 0, 13, 22, 1, -21, 240 },
-+	{ 0x0031, 368, 29, 12, 20, 2, -20, 240 },
-+	{ 0x0032, 188, 29, 13, 21, 1, -21, 240 },
-+	{ 0x0033, 359, 0, 13, 22, 1, -21, 240 },
-+	{ 0x0034, 381, 29, 14, 20, 1, -20, 240 },
-+	{ 0x0035, 202, 29, 13, 21, 1, -20, 240 },
-+	{ 0x0036, 373, 0, 13, 22, 1, -21, 240 },
-+	{ 0x0037, 396, 29, 13, 20, 1, -20, 240 },
-+	{ 0x0038, 387, 0, 13, 22, 1, -21, 240 },
-+	{ 0x0039, 401, 0, 13, 22, 1, -21, 240 },
-+	{ 0x003A, 290, 94, 4, 14, 2, -14, 128 },
-+	{ 0x003B, 189, 73, 5, 18, 1, -14, 128 },
-+	{ 0x003C, 441, 73, 16, 15, 2, -16, 320 },
-+	{ 0x003D, 373, 110, 16, 9, 2, -13, 320 },
-+	{ 0x003E, 458, 73, 16, 15, 2, -16, 320 },
-+	{ 0x003F, 216, 29, 11, 21, 1, -21, 208 },
-+	{ 0x0040, 248, 0, 22, 24, 1, -19, 384 },
-+	{ 0x0041, 410, 29, 17, 20, 0, -20, 272 },
-+	{ 0x0042, 428, 29, 13, 20, 2, -20, 272 },
-+	{ 0x0043, 415, 0, 15, 22, 1, -21, 272 },
-+	{ 0x0044, 442, 29, 16, 20, 2, -20, 304 },
-+	{ 0x0045, 459, 29, 12, 20, 2, -20, 240 },
-+	{ 0x0046, 472, 29, 11, 20, 2, -20, 224 },
-+	{ 0x0047, 431, 0, 16, 22, 1, -21, 304 },
-+	{ 0x0048, 484, 29, 14, 20, 2, -20, 288 },
-+	{ 0x0049, 499, 29, 3, 20, 2, -20, 112 },
-+	{ 0x004A, 26, 0, 7, 26, -2, -20, 112 },
-+	{ 0x004B, 0, 52, 15, 20, 2, -20, 256 },
-+	{ 0x004C, 16, 52, 12, 20, 2, -20, 224 },
-+	{ 0x004D, 29, 52, 17, 20, 2, -20, 336 },
-+	{ 0x004E, 47, 52, 14, 20, 2, -20, 288 },
-+	{ 0x004F, 448, 0, 17, 22, 1, -21, 304 },
-+	{ 0x0050, 62, 52, 12, 20, 2, -20, 240 },
-+	{ 0x0051, 134, 0, 17, 25, 1, -21, 304 },
-+	{ 0x0052, 75, 52, 15, 20, 2, -20, 272 },
-+	{ 0x0053, 466, 0, 14, 22, 1, -21, 240 },
-+	{ 0x0054, 91, 52, 16, 20, -1, -20, 240 },
-+	{ 0x0055, 228, 29, 14, 21, 2, -20, 288 },
-+	{ 0x0056, 108, 52, 17, 20, 0, -20, 272 },
-+	{ 0x0057, 126, 52, 24, 20, 0, -20, 384 },
-+	{ 0x0058, 151, 52, 16, 20, 0, -20, 272 },
-+	{ 0x0059, 168, 52, 15, 20, 0, -20, 240 },
-+	{ 0x005A, 184, 52, 15, 20, 1, -20, 272 },
-+	{ 0x005B, 152, 0, 6, 25, 2, -21, 144 },
-+	{ 0x005C, 294, 0, 9, 23, 0, -20, 128 },
-+	{ 0x005D, 159, 0, 6, 25, 2, -21, 144 },
-+	{ 0x005E, 468, 110, 16, 8, 2, -20, 320 },
-+	{ 0x005F, 211, 122, 14, 3, -1, 4, 192 },
-+	{ 0x0060, 113, 122, 6, 6, 2, -22, 192 },
-+	{ 0x0061, 212, 73, 12, 17, 1, -16, 240 },
-+	{ 0x0062, 481, 0, 13, 22, 2, -21, 240 },
-+	{ 0x0063, 225, 73, 11, 17, 1, -16, 208 },
-+	{ 0x0064, 495, 0, 13, 22, 1, -21, 240 },
-+	{ 0x0065, 237, 73, 13, 17, 1, -16, 240 },
-+	{ 0x0066, 243, 29, 10, 21, 0, -21, 144 },
-+	{ 0x0067, 0, 29, 13, 22, 1, -16, 240 },
-+	{ 0x0068, 254, 29, 12, 21, 2, -21, 240 },
-+	{ 0x0069, 267, 29, 3, 21, 2, -21, 112 },
-+	{ 0x006A, 4, 0, 6, 27, -1, -21, 112 },
-+	{ 0x006B, 271, 29, 12, 21, 2, -21, 224 },
-+	{ 0x006C, 284, 29, 3, 21, 2, -21, 112 },
-+	{ 0x006D, 385, 73, 20, 16, 2, -16, 384 },
-+	{ 0x006E, 406, 73, 12, 16, 2, -16, 240 },
-+	{ 0x006F, 251, 73, 13, 17, 1, -16, 240 },
-+	{ 0x0070, 14, 29, 13, 22, 2, -16, 240 },
-+	{ 0x0071, 28, 29, 13, 22, 1, -16, 240 },
-+	{ 0x0072, 419, 73, 8, 16, 2, -16, 160 },
-+	{ 0x0073, 265, 73, 11, 17, 1, -16, 208 },
-+	{ 0x0074, 116, 73, 9, 19, 0, -19, 160 },
-+	{ 0x0075, 428, 73, 12, 16, 2, -15, 240 },
-+	{ 0x0076, 475, 73, 14, 15, 0, -15, 224 },
-+	{ 0x0077, 490, 73, 18, 15, 1, -15, 320 },
-+	{ 0x0078, 0, 94, 14, 15, 0, -15, 224 },
-+	{ 0x0079, 288, 29, 14, 21, 0, -15, 224 },
-+	{ 0x007A, 15, 94, 11, 15, 1, -15, 208 },
-+	{ 0x007B, 34, 0, 10, 26, 3, -21, 240 },
-+	{ 0x007C, 0, 0, 3, 28, 3, -21, 128 },
-+	{ 0x007D, 45, 0, 10, 26, 3, -21, 240 },
-+	{ 0x007E, 129, 122, 16, 5, 2, -11, 320 },
-+	{ 0x00A0, 0, 0, 0, 0, 0, 0, 128 },
-+	{ 0x00AB, 298, 94, 12, 13, 1, -14, 240 },
-+	{ 0x00B0, 83, 110, 8, 10, 2, -21, 192 },
-+	{ 0x00BB, 311, 94, 11, 13, 2, -14, 240 },
-+	{ 0x0401, 166, 0, 12, 25, 2, -25, 240 },
-+	{ 0x0404, 42, 29, 15, 22, 1, -21, 272 },
-+	{ 0x0406, 200, 52, 3, 20, 2, -20, 112 },
-+	{ 0x0407, 179, 0, 8, 25, 0, -25, 112 },
-+	{ 0x040E, 56, 0, 15, 26, 0, -26, 240 },
-+	{ 0x0410, 204, 52, 17, 20, 0, -20, 272 },
-+	{ 0x0411, 222, 52, 13, 20, 2, -20, 272 },
-+	{ 0x0412, 236, 52, 13, 20, 2, -20, 272 },
-+	{ 0x0413, 250, 52, 12, 20, 2, -20, 240 },
-+	{ 0x0414, 188, 0, 17, 25, 1, -20, 304 },
-+	{ 0x0415, 263, 52, 12, 20, 2, -20, 240 },
-+	{ 0x0416, 276, 52, 26, 20, 0, -20, 416 },
-+	{ 0x0417, 58, 29, 13, 22, 1, -21, 256 },
-+	{ 0x0418, 303, 52, 14, 20, 2, -20, 288 },
-+	{ 0x0419, 72, 0, 14, 26, 2, -26, 288 },
-+	{ 0x041A, 318, 52, 15, 20, 2, -20, 272 },
-+	{ 0x041B, 334, 52, 15, 20, 1, -20, 288 },
-+	{ 0x041C, 350, 52, 17, 20, 2, -20, 336 },
-+	{ 0x041D, 368, 52, 14, 20, 2, -20, 288 },
-+	{ 0x041E, 72, 29, 17, 22, 1, -21, 304 },
-+	{ 0x041F, 383, 52, 14, 20, 2, -20, 288 },
-+	{ 0x0420, 398, 52, 12, 20, 2, -20, 240 },
-+	{ 0x0421, 90, 29, 15, 22, 1, -21, 272 },
-+	{ 0x0422, 411, 52, 16, 20, -1, -20, 240 },
-+	{ 0x0423, 428, 52, 15, 20, 0, -20, 240 },
-+	{ 0x0424, 444, 52, 19, 20, 1, -20, 336 },
-+	{ 0x0425, 464, 52, 16, 20, 0, -20, 272 },
-+	{ 0x0426, 206, 0, 16, 25, 2, -20, 304 },
-+	{ 0x0427, 481, 52, 13, 20, 2, -20, 272 },
-+	{ 0x0428, 0, 73, 22, 20, 2, -20, 416 },
-+	{ 0x0429, 223, 0, 24, 25, 2, -20, 432 },
-+	{ 0x042A, 23, 73, 19, 20, 0, -20, 320 },
-+	{ 0x042B, 43, 73, 18, 20, 2, -20, 336 },
-+	{ 0x042C, 62, 73, 13, 20, 2, -20, 272 },
-+	{ 0x042D, 106, 29, 15, 22, 1, -21, 272 },
-+	{ 0x042E, 122, 29, 23, 22, 2, -21, 416 },
-+	{ 0x042F, 76, 73, 14, 20, 1, -20, 272 },
-+	{ 0x0430, 277, 73, 12, 17, 1, -16, 240 },
-+	{ 0x0431, 146, 29, 13, 22, 1, -21, 240 },
-+	{ 0x0432, 27, 94, 11, 15, 2, -15, 224 },
-+	{ 0x0433, 39, 94, 10, 15, 2, -15, 208 },
-+	{ 0x0434, 126, 73, 15, 19, 1, -15, 272 },
-+	{ 0x0435, 290, 73, 13, 17, 1, -16, 240 },
-+	{ 0x0436, 50, 94, 21, 15, 0, -15, 352 },
-+	{ 0x0437, 304, 73, 11, 17, 1, -16, 208 },
-+	{ 0x0438, 72, 94, 12, 15, 2, -15, 256 },
-+	{ 0x0439, 303, 29, 12, 21, 2, -21, 256 },
-+	{ 0x043A, 85, 94, 12, 15, 2, -15, 240 },
-+	{ 0x043B, 98, 94, 14, 15, 0, -15, 256 },
-+	{ 0x043C, 113, 94, 15, 15, 2, -15, 288 },
-+	{ 0x043D, 129, 94, 12, 15, 2, -15, 256 },
-+	{ 0x043E, 316, 73, 13, 17, 1, -16, 240 },
-+	{ 0x043F, 142, 94, 12, 15, 2, -15, 256 },
-+	{ 0x0440, 160, 29, 13, 22, 2, -16, 240 },
-+	{ 0x0441, 330, 73, 11, 17, 1, -16, 208 },
-+	{ 0x0442, 155, 94, 14, 15, 0, -15, 224 },
-+	{ 0x0443, 316, 29, 14, 21, 0, -15, 224 },
-+	{ 0x0444, 87, 0, 19, 26, 1, -20, 336 },
-+	{ 0x0445, 170, 94, 14, 15, 0, -15, 224 },
-+	{ 0x0446, 142, 73, 14, 19, 2, -15, 272 },
-+	{ 0x0447, 185, 94, 12, 15, 1, -15, 224 },
-+	{ 0x0448, 198, 94, 19, 15, 2, -15, 352 },
-+	{ 0x0449, 157, 73, 20, 19, 2, -15, 368 },
-+	{ 0x044A, 218, 94, 16, 15, 0, -15, 272 },
-+	{ 0x044B, 235, 94, 16, 15, 2, -15, 304 },
-+	{ 0x044C, 252, 94, 11, 15, 2, -15, 224 },
-+	{ 0x044D, 342, 73, 11, 17, 1, -16, 208 },
-+	{ 0x044E, 354, 73, 18, 17, 2, -16, 320 },
-+	{ 0x044F, 264, 94, 12, 15, 1, -15, 240 },
-+	{ 0x0451, 174, 29, 13, 22, 1, -21, 240 },
-+	{ 0x0454, 373, 73, 11, 17, 1, -16, 208 },
-+	{ 0x0456, 331, 29, 3, 21, 2, -21, 112 },
-+	{ 0x0457, 335, 29, 8, 21, -1, -21, 112 },
-+	{ 0x045E, 11, 0, 14, 27, 0, -21, 224 },
-+	{ 0x0490, 271, 0, 12, 24, 2, -24, 240 },
-+	{ 0x0491, 178, 73, 10, 19, 2, -19, 208 },
-+	{ 0x2013, 226, 122, 10, 3, 1, -9, 192 },
-+	{ 0x2014, 237, 122, 23, 3, 1, -9, 384 },
-+	{ 0x2018, 76, 122, 4, 7, 2, -20, 128 },
-+	{ 0x2019, 81, 122, 4, 7, 2, -20, 128 },
-+	{ 0x201C, 86, 122, 9, 7, 2, -20, 208 },
-+	{ 0x201D, 96, 122, 9, 7, 2, -20, 208 },
-+	{ 0x2022, 485, 110, 8, 8, 3, -14, 224 },
-+	{ 0x2026, 173, 122, 20, 4, 2, -4, 384 },
-+	{ 0x2116, 91, 73, 24, 20, 0, -20, 400 },
-+	{ 0x0020, 0, 0, 0, 0, 0, 0, 64 },
-+	{ 0x0021, 92, 110, 3, 10, 1, -10, 80 },
-+	{ 0x0022, 146, 122, 4, 5, 1, -10, 96 },
-+	{ 0x0023, 96, 110, 9, 10, 0, -10, 160 },
-+	{ 0x0024, 361, 94, 8, 12, 0, -10, 128 },
-+	{ 0x0025, 415, 94, 12, 11, 0, -10, 192 },
-+	{ 0x0026, 428, 94, 10, 11, 0, -10, 160 },
-+	{ 0x0027, 151, 122, 2, 5, 1, -10, 64 },
-+	{ 0x0028, 370, 94, 4, 12, 1, -10, 80 },
-+	{ 0x0029, 375, 94, 5, 12, 0, -10, 80 },
-+	{ 0x002A, 106, 122, 6, 7, 0, -10, 96 },
-+	{ 0x002B, 390, 110, 8, 9, 1, -9, 160 },
-+	{ 0x002C, 154, 122, 4, 5, 0, -3, 64 },
-+	{ 0x002D, 261, 122, 5, 3, 0, -5, 80 },
-+	{ 0x002E, 267, 122, 3, 3, 1, -3, 64 },
-+	{ 0x002F, 381, 94, 5, 12, 0, -10, 64 },
-+	{ 0x0030, 439, 94, 8, 11, 0, -10, 128 },
-+	{ 0x0031, 106, 110, 7, 10, 1, -10, 128 },
-+	{ 0x0032, 114, 110, 8, 10, 0, -10, 128 },
-+	{ 0x0033, 448, 94, 8, 11, 0, -10, 128 },
-+	{ 0x0034, 123, 110, 8, 10, 0, -10, 128 },
-+	{ 0x0035, 457, 94, 8, 11, 0, -10, 128 },
-+	{ 0x0036, 466, 94, 8, 11, 0, -10, 128 },
-+	{ 0x0037, 132, 110, 8, 10, 0, -10, 128 },
-+	{ 0x0038, 475, 94, 8, 11, 0, -10, 128 },
-+	{ 0x0039, 484, 94, 8, 11, 0, -10, 128 },
-+	{ 0x003A, 494, 110, 3, 8, 1, -8, 80 },
-+	{ 0x003B, 141, 110, 4, 10, 0, -8, 80 },
-+	{ 0x003C, 498, 110, 8, 8, 1, -8, 160 },
-+	{ 0x003D, 120, 122, 8, 6, 1, -7, 160 },
-+	{ 0x003E, 0, 122, 8, 8, 1, -8, 160 },
-+	{ 0x003F, 146, 110, 7, 10, 0, -10, 112 },
-+	{ 0x0040, 323, 94, 11, 13, 0, -10, 192 },
-+	{ 0x0041, 154, 110, 9, 10, 0, -10, 144 },
-+	{ 0x0042, 164, 110, 8, 10, 1, -10, 144 },
-+	{ 0x0043, 493, 94, 8, 11, 0, -10, 144 },
-+	{ 0x0044, 173, 110, 9, 10, 1, -10, 160 },
-+	{ 0x0045, 183, 110, 7, 10, 1, -10, 128 },
-+	{ 0x0046, 191, 110, 7, 10, 1, -10, 128 },
-+	{ 0x0047, 502, 94, 9, 11, 0, -10, 160 },
-+	{ 0x0048, 199, 110, 8, 10, 1, -10, 160 },
-+	{ 0x0049, 208, 110, 3, 10, 1, -10, 64 },
-+	{ 0x004A, 335, 94, 5, 13, -1, -10, 64 },
-+	{ 0x004B, 212, 110, 9, 10, 1, -10, 144 },
-+	{ 0x004C, 222, 110, 7, 10, 1, -10, 112 },
-+	{ 0x004D, 230, 110, 10, 10, 1, -10, 192 },
-+	{ 0x004E, 241, 110, 8, 10, 1, -10, 160 },
-+	{ 0x004F, 0, 110, 10, 11, 0, -10, 160 },
-+	{ 0x0050, 250, 110, 8, 10, 1, -10, 144 },
-+	{ 0x0051, 387, 94, 10, 12, 0, -10, 160 },
-+	{ 0x0052, 259, 110, 8, 10, 1, -10, 144 },
-+	{ 0x0053, 11, 110, 8, 11, 0, -10, 128 },
-+	{ 0x0054, 268, 110, 8, 10, 0, -10, 128 },
-+	{ 0x0055, 20, 110, 8, 11, 1, -10, 160 },
-+	{ 0x0056, 277, 110, 9, 10, 0, -10, 144 },
-+	{ 0x0057, 287, 110, 13, 10, 0, -10, 208 },
-+	{ 0x0058, 301, 110, 9, 10, 0, -10, 144 },
-+	{ 0x0059, 311, 110, 10, 10, -1, -10, 128 },
-+	{ 0x005A, 322, 110, 8, 10, 0, -10, 128 },
-+	{ 0x005B, 398, 94, 4, 12, 1, -10, 80 },
-+	{ 0x005C, 403, 94, 5, 12, 0, -10, 64 },
-+	{ 0x005D, 409, 94, 5, 12, 0, -10, 80 },
-+	{ 0x005E, 159, 122, 8, 5, 1, -10, 160 },
-+	{ 0x005F, 271, 122, 6, 3, 0, 1, 96 },
-+	{ 0x0060, 278, 122, 4, 3, 0, -11, 96 },
-+	{ 0x0061, 399, 110, 7, 9, 0, -8, 128 },
-+	{ 0x0062, 29, 110, 8, 11, 0, -10, 128 },
-+	{ 0x0063, 407, 110, 7, 9, 0, -8, 112 },
-+	{ 0x0064, 38, 110, 8, 11, 0, -10, 128 },
-+	{ 0x0065, 415, 110, 8, 9, 0, -8, 128 },
-+	{ 0x0066, 331, 110, 6, 10, 0, -10, 80 },
-+	{ 0x0067, 47, 110, 8, 11, 0, -8, 128 },
-+	{ 0x0068, 338, 110, 8, 10, 0, -10, 128 },
-+	{ 0x0069, 347, 110, 4, 10, 0, -10, 64 },
-+	{ 0x006A, 341, 94, 5, 13, -1, -10, 64 },
-+	{ 0x006B, 352, 110, 8, 10, 0, -10, 128 },
-+	{ 0x006C, 361, 110, 4, 10, 0, -10, 64 },
-+	{ 0x006D, 9, 122, 12, 8, 0, -8, 192 },
-+	{ 0x006E, 22, 122, 8, 8, 0, -8, 128 },
-+	{ 0x006F, 424, 110, 8, 9, 0, -8, 128 },
-+	{ 0x0070, 56, 110, 8, 11, 0, -8, 128 },
-+	{ 0x0071, 65, 110, 8, 11, 0, -8, 128 },
-+	{ 0x0072, 31, 122, 6, 8, 0, -8, 96 },
-+	{ 0x0073, 433, 110, 7, 9, 0, -8, 112 },
-+	{ 0x0074, 366, 110, 6, 10, 0, -10, 96 },
-+	{ 0x0075, 441, 110, 8, 9, 0, -8, 128 },
-+	{ 0x0076, 38, 122, 8, 8, 0, -8, 128 },
-+	{ 0x0077, 47, 122, 11, 8, 0, -8, 176 },
-+	{ 0x0078, 59, 122, 8, 8, 0, -8, 128 },
-+	{ 0x0079, 74, 110, 8, 11, 0, -8, 128 },
-+	{ 0x007A, 68, 122, 7, 8, 0, -8, 112 },
-+	{ 0x007B, 347, 94, 6, 13, 1, -10, 128 },
-+	{ 0x007C, 295, 94, 2, 14, 1, -10, 64 },
-+	{ 0x007D, 354, 94, 6, 13, 1, -10, 128 },
-+	{ 0x007E, 194, 122, 8, 4, 1, -6, 160 },
-+};
-+
-+// Alpha channel of the atlas (kAtlasW x kAtlasDataH bytes): raw deflate, base64, in short pieces
-+// (a compiler can refuse one very long string)
-+constexpr unsigned kAtlasRawSize = 67072;
-+constexpr int kAtlasChunkCount = 290;
-+constexpr const char* kAtlasDeflateB64[kAtlasChunkCount] = {
-+	"7X0HfBVF2++ck14gCSW0AKH3XhVQqhTpNUgRpYiCKEWaERCpioJSRAhNUFHaQZAmKCX00FvooYcQQno75bnzzMzuzu45CUW/7773",
-+	"vszvl5yts7PPf3bm6TN/ZRCh5a1pr+NPker4vyj7j2WoZQ7fyNt5zJQGZPKng6oRtfiUdaf/fdl/dnMR9r8wkcqnlh5EVyaHqJuN",
-+	"w+uR0Z+Y5LMe6taEabQEku74U4fuD9+9lBDLbqxtw+4+pO7u3QXYdTMsSplB94ZZZisVvGWJkA+UsVhK8a05lqHaA+vOinpoT4ma",
-+	"XZkYysc72omtHzcFkhWW/C5bSXz9XTdfKe7yjslw3uQm7XiacqvJ7Ga41XiB075yw/vT6hFXZfI0hkQ8sB8LhOPPO/ai9P+Og8pF",
-+	"iyGK/bZNBoDhJJP+32BWTpaBsbQhy9M9xf78OFpV6JM58lO28nq1ktlQ2XK7nB1ClkBPtTt9FJkIqSc/45SOp4+CULIGfwbR/QVw",
-+	"npBEGMNOhZM2wNtNIkEpkXQvAo4o1U2Du/KBugA1+VYULFauKbeF3pcZZwNwLMujb2cEiF5SCa4Ssh7CVESnxUHMB2Kniu1PrTvv",
-+	"zHDc3/mOn1ZH4Jw7jtRdzfiVE3bcyoIn2zsqJwtMv5xtvbWmLdtptz0JbBdpf2elza40iF9dUSVUX0us3RG3pb+XwL7nr3etkHL0",
-+	"y6ouKUdLj51PAOL+HFOFve5Ql/hnQkNn/MtYj3dt8R1MM+BvuglXJ75bkfT74CeA7moVB+DcthsaNRvY0vb8lZFV4xnxfxtWEVLB",
-+	"cUH0p/rXBY6P2vN2fTlggD9pMmDAbYb/l4mHCLmVOJxuXk8cQ1okJhYV+F+ch+XiC+DfLg0uDC9LIS33WQzcqOoa/49hPiGDYIVy",
-+	"4nuI/SMRPuI7Wxy1lePdbbz5ndUqilxjB+xDeX2irODv2+gB32XN+0qciymJezP5TmorXk3l08qtN9gYXeGE2uU3FXNBOeK5Sb3g",
-+	"mfEfOI8/bRLedT6PAf/SAJVVQBeqVRT+8TE8+NJH3e90KivzeCuSC/7lw6yzO5TnI9o1wJ7yhxgA6iZB9oLmFRpNS4bsjqxdLcU9",
-+	"pxn+OZVIWMl+Vz4//l2t1o+Vwcx3vuNOMZf4bwdK1eJwXxyv6LgdTCqmpubFndfgJ+X6PAlw8Y2ClUdd0/D/C5IHFKv3J2Tj/LX0",
-+	"5Kz+zd74iEI1klXzBOInt2w2aN1+utMZIKpNSM2ZVthH9/oAbK0f/PphSGA9vNojgN/7NajdaXESrKX71en+jsGNq7ccfxJggAvK",
-+	"kbkA+3rVrth6xvVnx18tDSbM6OtJDPg3gQzlyOewOcf5jYIqT2J+QQL/gqLC6odFN8d+3BIu4LF+sIsNYVcgqQGfVe5AQqFnx//Q",
-+	"C+NfOimjvVTRODjphvyCKDGCbN7pWTiiXwTB+HwCn7GnsVHwSFYp5fbOYA1lBMmnHGkB2HOI5wXYgsTgB/0vww383QfXivCxm3Wx",
-+	"e6w7fQZQgZhvwBGcu31v4cBDvC5CmuBECq2l+PtcgtQ3le/tzgAXlAvMhiViouj2/Pjri8C/NcQrR8bAn+SZSpGtDogsQfFvdh0y",
-+	"v8UeUD4J7n5nXbE+BvrSvdXwOV4WkMVYjnEAXRSWzI7t1+OvwmKxDNazeVGw/AXx3wNvOY/46jANgmxvwF/8m/pEuaoTmxQm4pAP",
-+	"89S7R0C0gQBr4Dj77QOOQtrRjwDyYueHV7Vjd2EB+y0O0A0b2lHUmOyB9AaNg25MyFh5hgmu7YJy7QBKS81g+JsLeUm8Y0FfJ/xn",
-+	"RPYnxSIjQ8UlSyMHy/i3kfHfzX47WizB4lBDi6UaheRTheG0oNAQeBUgGS7thpVp1nTKNZqQIEfzsPm/GeVIfdKgFrt8J4yiTboO",
-+	"ByTC0dFVj78EywI9zGfh+xfD/1X4A396nsx+/EvogL0VSFBiNF7/YJ4oHKCvkcnFL2C30rjmOF3CF/RTv5JUQG10H0gwsOBxwCmS",
-+	"xw79tKPdAajIsAoOS1fGwGQ+1iC2AwF4rfUAmiFh9usG2Ju8P2pgOlHubYA8evwLrMwA+3bBT7pPjgM41d4V/3damaxLOKD2U/Av",
-+	"5YDR4tBPEOdBCbeV7wUkAd60AOKak8o3HeDYU8B9iB16EfIAumr83+uQweeOL3B4rAYwWG1xKySDEX8Vlm56mC+Lb/C58f8ZKqFY",
-+	"CZCVBAm/QF1CFtErpAp4Oc+4FOKTkenL9r9jksAEnMU/YIOAKIWymGyilWIArZUqvtYOz4Sb9P99+FS6dBv8yn7rAJQnoyFTcFdA",
-+	"KUwJ865cK91/mxgOGCjXBeB1Hf5jr0BWCv0amVRv3gxgSwLHWy7wH6mMYRP43Kzi3xYeKdWNhj18428UyBjg6fh+Kv7hgPjnyUSw",
-+	"SZUMuI4S8jdwjJB0/HQU/MfBUb7RBfvWIHxzVaa2wwwn/I/oh+oj2lc264XwNz3CLzA00zHSizS6DYh/V/jACf9i8MAkhql2QmpZ",
-+	"Rv/vhSbEP/aer3TlfMhuIt/5mvpKWyWWqXUGDKPjNkDbKusfZ1/9ugAnrw1v9dkNO+jcBsCrrQK0oZQw5eRa6X5ZYjhgoFxRO1ys",
-+	"IeP/OO1td/L6LbjozmYVmOxPKh5KtDnjH2xFMrAeO16Hf2+4rVQ3TMxqlHEDrlh4H6Cqhr/vIzrsR1FaPmas9R+MXSJVAYqQq8jQ",
-+	"KPivhwi+QWWLMmQGZJu1Jt+gjO6z4m8Vw9Dz4l+FCblT4Uc+vuGLV4GZTvi/i0IqllHwLe/tCVm9AkfBJRPlhGW+NOAIQHx56UBX",
-+	"ACHOL2dNI/4REb+dAdtMPrQPT2Oz2X0mV01w2H75dO4NOFuITd+1lQrWI2F0eqHpYNXtu6AcJQXAmW97FlRel48g1W3I77g/hO+Y",
-+	"auI+uJD/t/DBtBY4Sujwn6tNQu0hjbOyvkli5j2O37aK/8eQ9D296XMxTQj5z5QJbehID791yGqo8O2zhGYRoDEdeuOldzpJv4Nn",
-+	"xD8AxOT6vPi3ZtzfHvpsTre6qM/6zgn/3xQmsQpcFuOVlZI3qS4plHqRsunlOzdiijb3Q3D8HlznLNFn82qw78Ob37EITjOFD1MG",
-+	"jPfkokFq5oQK5T9Jh4uMMWuXgifX4w2BmYKj/ZvKefTex7r2LFT2Q9tgaeSCcsT3V9a1HH835697i3eQdTgMtQB7ITH+usC/Ozx0",
-+	"Y6P13xL/756/fzoMV+XcR7Cuohf2wSXwxJt/2kM1/D3vwMxZ9KZl/MNS5f+bMJB472RKjOWt+Lwthhhio3PWEoiV3uIoff4z4l8L",
-+	"oMUL4d+XdkhCLgCXwnYh/k2oRGJ4kDnBobB4d0Awx1Xn/DS1OOqBOhLPX+gLRZdnotuD4JrJcJQN3SlQn5ABAJ7KzHCOicMLFqw9",
-+	"BXC6EBtv+ODRj0/nX9rhwsY96XAZGfelYKMzuhtqYnYZCEO0/TEM4/NOlGOzc6MV99npyex1I5Sh7AHO7FFCFneFv1cCtKWPvq/y",
-+	"HIh/JkCCpMSpdYCpggl5BaA3GxvSAzT8B0F6MOK/VsigCv4XUWNm7vVnBjbr72BkBoeJChMpCb6CNOktLlGW8Bnxp+x0sRfCvyfj",
-+	"T85BCfGt1cW29zY+qKEy22FN7+k0WVb6vG/h5LDVcNmTeCfAO3RMscLvbjijZfrhAxQ2fKlUZ8v7+G1R3iCGcb/mK7CBkImQjTJd",
-+	"wX1wy4eQoMsAdw/GQUwkHf/1hEFNYbqQsmJjY1Mp/kbKbRRbpfpvo5Ruh687TgiP2CEXwy9EkTVc6H8XoULrDcjIK+F/ORGyl2h6",
-+	"nlbXIftuf47pn4R4xMEaouLvhnM84v+jUJgq+F8X4rRn5lI6IR3A73+cOoN3xt4crH10qbDQCf+4CFFK62CeDEnkhfBvzhq0Ddhg",
-+	"ZLqL+B/NLmTEf7KmCu+hkpaVDVSAD8pKCiLkd9pt2gITD6jstoiQwTgI4zdenIiBd5d2Hz3cgNQEwfFTOl0heRKBqzOKp8GH2A9+",
-+	"QVXy7uJH6QRLCVNQfuwYRTrEMovib6TcIu3aLg6UFaNAGCtqAOSnEuISlewu8G8Aaf60Tb/q9T9NEmCSciRfKszzU1Rh9hKkGzCB",
-+	"WODfG7JLMPznMqWXhn+iosWg/N8EVH4chpliQgHKSzcFaKe2mzK+7+Us/zfUwbxDUUc9L/6hjBBjeTN7IP8XhvOuAf9DoPL0QbYk",
-+	"d3lg2Ii80BrGpy2lXPE1IczSbn2AqbQrALzCrz0MPxAZoqH4znMUfi6OvKpw0nQY4pTP1/zNssScQpGjhGkrN6gZwBs6/JsZKDdQ",
-+	"ung9qm2jUL/CsaWCRYSYl4mby++fREM/3xRob9D/TdOo0gWSFD1HYSvtFn/ATZOKv+kM0hDxH8zVnAr+xZiMoNh/bsP7ZCOlGmdk",
-+	"UMLxSxVMD//ooLQT/o9WilJGRtUnSRGkn1v+vxmDn1oizC9T4K0EO3T9wno9yIi/DvPDIMl3+60VUPKZxliQ7WS4Yh9YBY55cANv",
-+	"8sgSEwbFcaRU532kyB0mRbIB9xb2viLKaHBQu5AKCbWIb6pypdCpp6kfMMefHtBRTpYOxyPiUYqSsickI1X2qmKXK/wnwM634JGH",
-+	"Af8ejJasfCgR6He4UcwmdFcM/w5gL8/xL8PJHXiXf58j4L5Zw/8U/QQ+hUP8QEd4QjvQMshUVOkBcThFPtv8PwWEFvH58V8IHRRu",
-+	"Hi4vRPtxEWLEXzfmS3MBbfRiJvl+wcbVHXT8B65e89gNqMTl+uV13NIHUF2yCdtgiNJadtHffErgvYp2JUn3Hs0YvkwN0jxIqLRS",
-+	"Mv5UujRQTitTwYqvG6WwofuRX0r1FnoMl/iH2G3Hmd2B6PV/kv5ntzbBAGwHR0kN/0PwG+H406HsWBDx+oNSg1KtcjxSqp3Av1Qm",
-+	"/ZJaQJpZkBXfuVwGHOKGRPN6pr96FvxrzKYccGNetsHZxtXpiQtiv/EqiGtcXztAp+YBfCsaLI0pScvaTuJnWuen0/sn5fnoeERb",
-+	"o2bByPNJvKDbhVTsLJ2YcqAT/UKpMLyVy+VFMsBaVehFMhlpfkHJ0cOkdkvUO74pemNlB0xARd933B0hE2ZohjgrdhRSJg1OBik2",
-+	"JsrJl0uH40Ey/uVlyjma0klAMdV6RqNkHiV6V2ACakryZvBXMh11jT/5kyJWX8L/eA76X9bZ4+jFfxIV/2b8rRj+NTMgfuP1Jyfg",
-+	"Lzi2LROuUY7SuqdrAMl8rd1lOGcm/pliRtjKBcGPAE6ixr0KFRLnkmfDPwr05YjMJ2CJNR5QCopEK+AbZ6uV/kGqzMdA12TBQTAV",
-+	"fwpaE/xRRdAfx03YSAURU7MztPbbTCTxiYXDBYlpGKBoUPHkAJS7S80D1t1NJ+EMrTokChILom7RNoJ+DKVPgJ32jeaTy5iIz8An",
-+	"cIx9IEMAbr5FOS5zkw3M/juUyg5vo8Tl2+MKU8HKlJvPHBHWtkClQp2/kY+iRLJepQOE/3ZIyM+GveRGtLJv7A7X+PcFypGqZSWz",
-+	"SOeEP/kGuAwo8N8N24iCP2kTD5Dcis7/Y+30K8Ux7DGA4xHQAfdWBcYVM+25X7ojVPU8iD15m/7/3u1/Bf+8V7lukpei+Zzxr6zo",
-+	"fBRdkHhX33txeYRkd7D/IrhJPz/zrwD2s4djAS50eAJnmPzU2g5ph24CbKHffkX60Mc3KQXgGvOPq5QM1mNHs8GGUmhZevzJ4dOU",
-+	"60eTaBhAxp0sgOuCKfiQHs+6cTmVUo9ZGIbRfdvtczfpT1J/PeWYb0l39GmKPo3P2uyGRPomPXPHJrrLNFn5roLjwPoY+CrTNf6+",
-+	"GTJVdqJ4ihKhqoX6RBZmqgLXAXH86wHXpnH8iV/7LkGM/yvVsynryX79frmcDk8OjgvgisRTnCtRVIuvHXQwbHoK/69nwb+hdLCx",
-+	"0XQTYtCdqGUoV4lUuQ/rhJ7T3OfRZmf8R4lxWZSBii54IhPTkFhbaXtvsnHM9FEsNj5+ih9pmgW7GQfVioIPWQvxYwxayjUySfMC",
-+	"RN86grtXuLdM6T/Yq99hOqGGV3A7IyJQeW7139HvDrItgkuotC6d1XVnWmEd5c5yz6yAEQes/PwYN27/a3yL7j0RRsgS+7CuuW56",
-+	"/H9X1HG0o6r8BeqDvuCkzVLmry9gk0YROogvUiHZauGDhYK/a/8vmwKZ+11muFjPfFjEN9iqzyg7rP7fwp+EnofMTYNb1u8w4yrY",
-+	"ppid8N8piVayLajL2yqDXDOspeIt41avR/f6ejdNc8NebRXx3VSh5Vtd60g24kpde9RUdfnBbfp0q6Eo8su26d0iQK7Hv0mPnq9J",
-+	"joXer3Tp3bqUdEHRVr3blpGkhPrd+3SsqBkK3BqFtdLctKr1fFNzSBD471O0BDMlc7L3MuGmEAIqpfdKPg9UyhMGIyTcNYcweOaK",
-+	"f7YK2QdoPwi13dCbzUcDt6PGw+fdu/uSet2732T4q3xdjX8Pf+IxMk5MCFtru5j/x03x1bdtSgD5/61w/H2eCDV6QLxqX651mQ4j",
-+	"exQTdvySqfVJ+Oz9wPTmbKRoOSyOj+GKf+MJ8nT8s1TIPG9lBJNvkTnSlWVgb+Pk/ytN41H/Iv70y2g2ZemvC4aWdM3//RcUxL/G",
-+	"ZyfgMZ2lvIeOOQ23PVV6AmwT3mwNbiv+37ZvNe0S5Ujayvh3ewb8EzXhos28RuSL2QYPQuL5SThaBqahr0c+0hd/GuaAf43GsqNL",
-+	"3sbVDTU1ru/6nQs3LkteFg3/4RTWMGGhzGqjUum9Xprrgblu78FVyKABbTVt9Hrbo11vSlMyXDI74/9hxJsvafyfjn+zxZ9V4h4K",
-+	"S8LLvCTJf1UJG+D7kggvy8vyX1xMwboxwIWzuFzcdFGLhrhEFyGQutBFN7cc2qC/z6PV1J//OHCtlosWdRwfRtzGj1fjUN1V97fm",
-+	"aoyAUplgZSMsqqf/55axnFns/em0aWZ9cGTfaU2cDzg5xVdmKqMqaNs3nMPL84wfX4q8On4EecViUZnT4gPQEhwmFDDl+n9vUVQ5",
-+	"vIzkUQ3ErEU5WJor91osXyrX8SiIDcs/KavurYv4sm9Z3WkRJKHtDDRGxUq7TMkzk8paJ9uSPZGVSURkJ5fO4niOwdfv94d2x8Pf",
-+	"+1HKenT4PioJHA+39FAUDU5xiPrQRe8BW+Mc9tiNvTliYRYlps59yJ4ESD8/Q41E6XWb8/pTiVOLyFrYjc4rTGvk0+e3uw77ze95",
-+	"vMMAVUZAnWTQ2GNZ8PhHBOiuZrnbDevx5xXUjoK7PjgGLRFOB5yc4jej6BGY8QlXTcnn8PIQlI/DIR61sKqjxlg0ABeAM7jd4pEh",
-+	"SpCQStk8qoG4Sxrqrqq+FWyFJBmLu/bNM8uhKpHt9KexOm1nntEqqpdxPffQJySCvTcqBJ/iLF75jBSK2FB9wn4OuDEO0RC62PKW",
-+	"snOc9dgpinhe7pw4njxAfeeUnya827Ghv5P7ug7/fE/EjantOf6PRIyAOzM5svK4ogv8TVfg+twpU8zPgr/RKX4ELG3VMZJ7bOjP",
-+	"5Yj/JrTAcZMxavcd1/T4/wnpHH+zEuNwGtKVuHIM9hym4n93ypQpM39OBtTR8725a5Gs80yE6IMktJ0uueM/CexjfEmZ3cwhPHdn",
-+	"8WqPwLqiW706XZelwlqK/7nRzeo1CvvRDofwi3aKQzSELlogeUmX2vV6/miD++Ul/EveBceK1hUbTowDBxsGmzpgg2LiNLaIkNJ1",
-+	"yxNT3brY5QqDzTL49fbfWCGtNMP/tPZaLeHs0Or159jRBcoJ/6pgKyZql+AePK+FC/yNTvGeLIiRa0H05/B+j7p185IidWvo8I/N",
-+	"8ESpmCnWXvm8bVCgDv9usPm0CABTyjlmR2eqYIBVqkZWAa5ANCS6azC2uggwwai7kndyw987icfh+V4Dhn8uzuJeFyFO+FAU3biW",
-+	"FGssqviI+Sg5xSEaQxcta8U4Vi8BTrir+Jv+hkyuNy50FjIrsi6/RlNd61ukL8ErufmmDR8/dfg3HMrqmAuO/M74d1TiGZyCI53x",
-+	"d3KKd+s5LbypuMLJYV4tEv6lGIAHtDgNHf4+MVllDfhX1UL6PoNjVcARYsCxL7qbaDDmPQPWki+IfwfIyivU8Qz/XJzFx0i+ZybJ",
-+	"F8qcBlNcxCEaQxe1OzqyIU3g30Mb30qkoRNJTXicl3gX9VYAkVvEnxccaCD2TmYI1+Gv8IQA1Zzx76WM2wxuU7Bfbvg7OcXrUM7p",
-+	"nIT/W0A5OM8MzU9fh/9UetaA/3RIUvjd8zCGXFAi7VTgGuFbSTDWAvjqBfGforiclef45+wsbrpuCD1Uy3WKv3McojF0USqH4aKK",
-+	"/yG4qsoEs9CjdBz83PGwHeBEHw6I3CJa6ljSAW596iXXNxvicsC/FzgKGvEPi4yG9MjIyB4Mbp9vkgAO4/Q2O7KPin/fyANNBf46",
-+	"p/iISK7x7hkZOdJ4Du8nPJRWxX9zbGxsCiTFxsaBlW6OccK/VEZsXiP+10VMO4vuC6WEOmbA8W1wBOhgPIgfwAvhv1TYW4kHxz9n",
-+	"Z3Gn0EOlBNmgm4s4RGPoos4AQwdDjn+wAwcPhRMGeJ8sgjto/wZgDJO+RbQb0J6RaQP420eqbyFz1BgACScyMy59IwW0e55AC5YB",
-+	"/zGCa/wYa/+I5yRIq6Hj/96xo4lfuCbJTvFRXPDwvi1YdvmcuFwJpWH4R+r9TqY44b8ZPXb1+NdXI0fpSHCMefWW1uFY7DrGLssw",
-+	"Tgd73hfDX+8Qnpuz+CCAkq7A9NsMV91dxCEaQxelUhGjtjj+nYX/OC+PYAVl8AE2liJFIlj/0beINLbDLxWJZ+8kkNIMmW+waANF",
-+	"/ktRTQ6m1ZBezQn/vKEfwvXQ0NC8WPu95PfyebSLR5d9Df8hDsdQDVDZKV7gP1YEouvOGfFnLGpoaDXHbfqw7dCN/g804t8aTpiN",
-+	"+M+FR4pR7Bozhl8Qgcacp1+0NQMuG6b7tzhDIAVJRMCjNaxMJ/KJU0b8lygpTLz495+zs/gMSDcZcKwTEbFyexJcLO0qDtEYuigV",
-+	"dytMFvh/rDo/Y9kPe8nPVKB142LTPTdDiyhvyD1ye0KGmmgDwy5w/B5wdmqf5r2oeJFeXZ0X7D1cyf9h2vzPWZreYAvU8B/msL8r",
-+	"ASo7xXP8gygHKyCTzunw78Di/Lkkgm57d6y+LuZ/z8vMqVyHv/me6lRTD5gD4hQ4qxfwDxQ3fOHtMNhAFySh7pwmeic4A/7hyuRS",
-+	"leOfs7P4InAkKqWnyuTQcrIsGwiNcYjG0EVC+qn3O+hzpoAjNTU1Sw2TxPI7be4yJaSvGg4N+hbVBBGwZYqGPspNoYl8nhJcXOts",
-+	"ntmBZdJ5nzwFf+6y5G2FRir+H4O9P5Hxl5ziOf5fwqYFAjLpnA7/18FhUgTsD9EX4SRxgf84PnLo8G8GaqDB1xycKsxnGHF8uHjx",
-+	"4h/W3YPMjnr8W+E9uiAJfi0tnxL5xBkj/q3AFqwoXRrm6iy+ROpEfflVNRcsWPJHEtjeIS7iEJc4uV8MkmpYiL77vEgeABvgAu03",
-+	"qYIhjGGAyC0agcnYWPkFOV4uQB2HO3J2PoqOnY2zVHzluapyw/9zvnELOin4jwVbb6LDX3KKZ/gXz7BVVPCXzunwrw0pqnBSB6Wc",
-+	"hS7wL5qSXsIJ/yVwR/Qc0x2RU+ICb6YCnPsCsJbXwdjdIBA8+/zvHsdHm/wPhPyfo7P4V5DaXilyqiy/CHDUcxGHaAxdpHRT78+G",
-+	"6RT/hDZt2tCxKUhWhR0i81Q2fidtmr5F8+GhxbJ58++/b7muZGQzb4SUmvpZSSTAqK3kCLyjudX/zTQrEv5C9oyGXgL/U5Ddnejx",
-+	"l5ziGf4rYClR8JfO6fAvixFBAeNpSYLw8eN3g4VuBhrwX8X9yHX4e8SrrE0TgIEtsfzGHZFV4Lxu0xbIMFJ+pPCL4U8+BJhfLqD5",
-+	"mfuc/8vZWXwMy1zkynx0Eta5iEM0hi5KpRDQMZHP/32VdAesXKX9ZpYqNq6jsom+RT9KI4iQTb4FWzuDWkhoz9tAttIbVael4yyc",
-+	"Kkwn/3P8wwT+2XAvxIi/5hSP+Fe1pxfV8NfO6fAPXDuPxbbpSlkD/qfh9jUsWZB47ZpQF7wJOF4IsUYrtXQ4boIzOhjXY7DTi+Fv",
-+	"+oXVn9Eqiz43N2fxpnLooa5Mgmsu4hCNoYtS6YzsCsefsh1DNEnSAZ+S8QpHQgm6xNCipbCzrlJKK9PWEEPtZYT81F7JpLMPflfO",
-+	"8XQxueEffgkuFTDgrznFI/5bcThR8dfO6fDn7zNnzpy/Yd+cOfPhMd2ck98Jf6kUVgQyZYpzewgZqbzYWISwBtwqyltJMObPhJ9f",
-+	"FH9iGnoq/ZGljgeKa7k5i/umioQfTmUEJLqIQzSGLkplJSR6Kfqfu1JAAWXkG5H+TJnDlV9fGFo0VckapAo+DilkiiiaIi541t8h",
-+	"YJ8HcYKjqACYiCpX/IeGxMCJvHr8Nad4in8TiA+Q8NfOOePPid8eFXYbiIv5v11fXm7Brr59OavlkyLmBMbUVRCbX7CsURpwh+kX",
-+	"J8G4grGML4i/qmqyejN6uHIWZ/a/JZBaVD0ue17Oh0uu4hANoYvaHSUzcEAW+IeDQ3HT9LiMuFQV3C4JtkMXQ4vaacZQrt7Ngp8U",
-+	"IdNNbAReF7HHamkBwBl6yltmBD0Nf1IuFvb56PDXnOIp/oeZRKrir53T4R8SFsa9Dy6iHmCMmizNSf9rmP97KG+PntAXJAVvQwlH",
-+	"OtiukoKgFwALvv9n+E9D9+1ck0WWSYOdinNwz+WkhjJNFknA5jvFIRpDF1cr7+y9FxKLq/gHPoBoIcp/B5hczXRdqJ2mQ6q/oUVe",
-+	"sVq6YZw8EuFvNVlp6MkBlAMxNzunaCJLhoVx0cJ0HNL6003/qcClydzxJ9WfwB8eEv6SU3wUbIEYLwl/6Zwr/R+d0qIJzxYhSqPG",
-+	"jdsATGjcWHJelvDfyN0E8GsQwTdCJTwPcTxbk5ZmU5LBVlPsNen1bRzAhSAGsxQk8cz4e3Ef+ibp6KSQe7LQIQBHW1HCuLXYBmvJ",
-+	"oNSZOMzmGRgDaaHEOQ7RGLpogc0YB+bZ5gQ4+kj23/Z2uPIG/XZL/wo8YppypKjzC7PipGdo0XsAX6NexdxqexlS4DYkthdvbGLM",
-+	"VnwMJlJaqXJmQgVTgQo3SafPZQEc8X0G/MmrqfCLWQCqd4rHkEM2EzH89edc4t+OTYv3s1Qlh02XycKIf95MNS9SB5kzngP3zJIe",
-+	"J7OfrNXJXupn8P+Ienb8A+Ho9PdHb7DBJe+nJosdQRufdvVKGgtFRGk++VYC/tdyR0txiMQQuvipAyD18rV0AOtAnf/HO/Sq+FMY",
-+	"K7eFWXXcdlGWest5YNmUjC1aTCvZa9mfhBxGQ4l78iZBW5J5dmGFH9TwJyXWspC4lC+5Eu5p+JM3spDXYYDqneIp/mfMKv76cy7x",
-+	"/wITPZWUKJ47/gNADTleAzHaa78C0FQBOPX8/PIK3LbHVzeOKUrIi+OfJ0M4ERUlT8Wf1NiSxTrcBjplF/ma+/ukL1cmAn0cIjMc",
-+	"yqGLr25mIGRurER0+JNaf9pZMORAMYP7fItPsUYEuGrROzHsqecm+hjwJ8S9Rpu3OlXS3Pc0/OlrNg/r8YrypT4Vf9LNRgUFBqje",
-+	"KT5KEWoY/vpzrvm///ji237C3PkTG3FtcMTrLq/5PkJJKZz3tR49myiq7OAWYT0bSepbYxwiMYQu+r3Wq0cTfxf1F2zZu30laT/v",
-+	"G2+1yZdTi6p16dMulLwsL8vL8o+L5gw81GLpRfTOwcMslk3K5xq0yWIZikdmKtYcyxzuZbxpNV88iO+smdVWzP7eFl35kUy0SImQ",
-+	"S1os9UiwxSKEv9YWi/AarWWxFKMzh8WihBbXsFjqkHkWVYdv+sEykYzQ1V1LarezxzQrk1z6T/PSWu87bZpr+VWogPKrzfBYYvnR",
-+	"35jmXHuqz3LLOm7IHK3WtMQlAQ2+2FKJ0NPTiX7GnOtK+dwyQaOrkXA/WjrxvcJIJqeiMgOUs97g5iREgup1N5A5ZNAjjmqKs06U",
-+	"xnLsLyzxH+e52sJfr/yMJ0PBrtl6x6GPqylBpI9Cvk4o9MdDihtT2h3n/ch0CA6bUGXYQjUj2WqzJLdaaSO126XHNOZSzdF/ms75",
-+	"+gTzVZNhP+cVQkBJhhYB9g7EmOZcfarZAkok81q1phiXBDTwYgbTrERPJ/oZc65rRi2LhKiBcPFKXvKyWui2C/z7OeAPT2clgk31",
-+	"uttFtxn+iuKd448+yMsp737cTewsvUSlPsYgeHL/43twif1OIwWsSuIMZiJGYW8by5VIyxlQkq1s5kHnVa2CFRsIdpSDtkA0hyTf",
-+	"IxQv35qnliTIkq1hzh7TrPR19p+WUv0bEsxTmXSZHv+RwFaAMKQ5V5+6AJSOTPGPYfUcZ/g7E9CAv/rco2xXoqcT/Yw519mw1O67",
-+	"P1Mhaefc1ooZ1UC4Z8O/qw3+8ibO+B/IzOQ5DwpYU46w5ieDrayEP7vaZx2mbRE77ouE2V2USJ4gFMsOJe0ZIeX4QlLhkMiY/jz2",
-+	"+5eAq8cfCrXHN/C4AIebmU5LpQsvmMUQG2BQCYyU2u3SY1q/Z/Cfdr6Q+a6OkvFvY+NaBUOac+W2saDputeKLj2L4e9MwJxkMWmX",
-+	"09OZfoac6+i4EqOOD+rKQ3rCPRP+bbPgoB9xgf/WzUJ1+h78tJc1/4/zInOjhD8pmE7Jo+z4PhGZ75zaP0B1ZabAp6C2sDlAFe4k",
-+	"s2EFp3QZRcLKe5+5fv4Acdxs+hmkof9ZXbvifcBL5XTYZpLa7dpjWr9n8J92gT9ZAba2Gv4VEyHSU8ZfpDkXt4U5YIfqxfCbSOLH",
-+	"8Xcm4DPgz+npTD9DznV0cAL7ns8uwsnJ+6joLZaj0BPuWfBvlg5RAcQl/n3EC++BTrz5W/tCVjEj/uQU7Nd2DulWN5HaH5CpeHOR",
-+	"c/yon40nwv4MxrwH0zk2jiDFfcfRgNS3KwmCvK7gNGc+qjglCSbzLDwIltvt2mNav9coV3cJ7pl1AJIqK/jnuwoxBYmEv5LmnN/2",
-+	"eiacyiP5sGyV8Xci4LPgz+jpTD9DznUcD05UFvN/7Usqq6Ij3CNl5aKc8W+YAufyE9f458nIxl4UbEvyEvi7XWcJ+vT474Oj2s4R",
-+	"HURy+y2K/a6S0tiTfODcBo1rcCf6hZrVYx+c8IiCg4qB5w2AN8kQyNat1bkAHK3kdufgMa3fc/KfdmETKXgTruXn+LvvgZRqRMZf",
-+	"SXPObqv8BG5JPoxbRIYsgb8TAZ8J/32aoVOmnz7nuvstlldR8H+FYnmeeQPhbin2xBzxr/UErhQmOeBPuzPytR/Aj0TgT9n4tAIG",
-+	"/E0P6HF1/E/UBi9D+8MU9eYUSPAU+F3E+xOyfdxSmd/XCSUxMONk9oJNW8vkN7gR8hh0wasdAb7Utdu1x7T+3Zz9p13ZxKgQsNeD",
-+	"4b+Isf4S/mqac7ytSAw8kbvknyKJs8DfiYDPgj+jpwv66XOuNxEe9oL/H6uaDmXCHVYY0Jzwv/0IbhYnOeLfk7Ez++inp+DvdY/5",
-+	"08n49wf4VOb/2uSAv18aX06LXFL4pbfYcF8JUduL9g5fq5QRCvNLSin4iqXAfbgt5UEjxeLhmIeu3UaPafSC/P6r4ZX5Xk7+08YE",
-+	"82yMvwawBPEfDpBWVIe/muac1uF/EuCMHNV+RKQJVPA3EjAnX2wZf0ZPV/jrcq6PFosfCPxrqmZumXBzIbN8rviDJlm7wt831Zqf",
-+	"FLE/8VTxp899klfB/0ThwoXrTcmCjKJCeFlC56GfTTngT5ljliSsOoBYJzSUsXvvYmtnodj2uub0wNKGJ8m8/mgpMJpJ3X9Dchld",
-+	"u3PymIZtRXLznzYmmOcKChvAVwDzrHRjlYy/luY8AqJ2gMMhibVoSpirw99IwJx8sTn+Ej1d0U+Xc30W2E0S/vlBVQ9IhKtmh/tj",
-+	"unTu3HloDvg/yoLL+XPGn/wKg8kIfGEVf7/HaOnQ6X+ye2s0zBqmy+mla39n7gQ3ncfNYbmP89NSnNY644XjIV7rPHNBv5aZ+w19",
-+	"SFk4qEvriXbn6DENF/xy8Z82JphHSifDJ6tFXtkuqo+KIc05e+XRP0Ci5JUSL+w/Cv5GAubki61TB2X3dk0/Xc716eBwk/AvxEKa",
-+	"nAg3UVaTuZr/ezngsG/O+HelU04ketSp+JPJ8NBHxv/xr7XZ1QkWy7bLAH/55Ii/VyIb2K5q7tAbcEY7jz5UhdBvZ7M28eE0Fgfn",
-+	"3HOqi7xiVYLXlHbn6DG9EL+NnP2nXcz/K+CqpxcLDrtbmLKnh00aRbQ05/j+81HSXq0JJIpDooq/gYC5z/8SPV2+s5xz/UNcOk3D",
-+	"vyF3bnMiXMdd9zHmIjlH/v9jgC1uOeLvnWyr5Yh3l/EPSobh2vhfKI/u1nZp8noXxvavxJG5DsBr2piebA6wM1NwDBQiD6VFFffD",
-+	"8WpWZalt57oCKIeeRw9gzh7Td2QB1cl/2hn/ug5chrXwbYD0OoRUyBZKB0Oac4qXxcw8DtX3qYzLdurwNxAwd/wlerqkn5xzvbYY",
-+	"8AX+s9QVZ5wJl7v8/yWoGTGd8Sdr4BzzyNLwJ1/BLY9ZBi8DdecDcNTOsf1tcGT+Eu6aJJGmemsuMq2FLmXQz0GU/jjqzoXE4Bzq",
-+	"+hWy6xkenpvH9L1c/Ked8T/IidxI6JK/gbt+CkWkNOcRLPk3MR2E88rX1gugqB5/AwGfSf7LkX5yznXTaXgUquJfNVXJ1uqCcLnj",
-+	"b1oNipToAv8O9Ikt9fgXzoB3csTf7ZqcI9rQfvdHdPK6KaXe98yE96bwIN+P4cu+oMbJBcQi0fI+UOxCxroGgZAltIfn4jG9Uucx",
-+	"bfCfdsa/D1iryPrfgDiulTakOVduq2FTWa+5cIcY8NcT8B/iL+VcJ81s8KCHmeHv1j8BMmrlSLin6H89doJY6sIF/p5PuP+0hD8V",
-+	"iaO/zAl/8j44yufY/sVwsYG8xAT90lbu5MNnQ4hcqOUO/Y6rsWlnbuiqroppsMtkeHiuHtPROftPO+Hve0e4MKr2nyGQEUqc0pyr",
-+	"t82DFB4T5fNAUX5o+OsJ+A/xl3KuU+JkAjxcfxuub4wHSO2YM+GeZv/xjwJbpxzwJ5UbsuRbMv6hVriSI/6+8TIHYGh/U4BdOgft",
-+	"r+BqIv/oPTMzzqvyPv2kmI7TFAlRZue6vE5BXGHje+TqMb08J/9pF/h/AY/z6fE3n2JGDUOac/W2vPe51sfjZ3UxHw1/PQH/If5S",
-+	"znWkEl85AG3aGyvmQrin2n+Dr0F6I6JzIi6sWTuJEX8WiZUT/pR8GQVzar+ZymLK2m8KR6tkDsc1EcLE3HZQaX1Nm7YKj1bXPIBp",
-+	"jdVSij08V49pe20n/2ld2+UE8yUzlAVPNfv/a4zHM6Q51+rozYb4oedVNwYZfx0B/wn++pzrrBR9Z84DuP1lf0UCdU24p+JPyjyE",
-+	"x5WcvCJyxL+SIxf8C2UqcbXO+CNyIK1PjWKr4v6Kp0QipXfQhsHLQojP51RXrM43gue4y81j2jqUOPlPu9b/RGHgocLOafiT3+CU",
-+	"2ZjmXKpjD/on0M/wB7f/Qfz1Oddd+n+4JtzT8Sd1UuBWsWfGn8rtOeNPB+JHPjnhT8XUS7oD19V48jBQFpoLjNNy9Ac9UgPPcsc/",
-+	"Z4/pSz9U00BW/adzwv81VTsp418ynQr2hjTnUh0Vs6jkeuMHzcXqfwR/Xc51V/jnQLgc8X9Z/ruL6o9YxmIR8XtzLEPRCZOVxq4u",
-+	"5d+XxeJnTCWLX/ekVRvZnWHsDtVblHj0XaJm7CDbU0comxUiRcFuGxEpnBUHR86QdvdGMra+RGSkGu1FKsTSK8pnZqqK0r/jq8py",
-+	"ZuECEvNjyq+ljNOnj/MpolVJ8hT1yaEC+SZzweJeOVQgPcivkDHVsSl/AZNuV0t8YAoW841XIbN0UDZ1FQgk2yPF6CLoIZUq75Om",
-+	"nQ1LaRSPjFQSNv0QOYRsimTr0faIjGSgdo1cpBu09QtkthGDYRjJiUfuDhDoNF4V3KVLdSV5i5ItwEKvlZFwjKpokxf2UOMxprEh",
-+	"Tdm1cZa3opwrpioyDRVBcwY6DWoaiBKTjmYBJK8VUmjN9Zg/dgvrS/r0cf1PAtgP8GHRY+xV2orErT2dK5BvWnjGRrmJfS2dK5Ae",
-+	"VH/lI4DsP9lxkRauaMQTKrkvUdi0Gr/RS1PopbSP512cCtk/U475tUg7xI3mHV/LS4dXLEwCG0lUdGM2WQQgxLtfJMVhONybqs9C",
-+	"eUWhciE7vEosPPvYT8CzoaziZqoc8K+IHocLnxd/M2Xg766aOmUK5bAF/oq3aAsKcJcc8K9Ky9R/E/8FGJaEq60x/eBgO4AtA9gS",
-+	"zbr0caYIkWhuAvdNoeinAnNR1Fegu4lK3ChyOXo5VSA9aC1FH2OYvjYpYUHlHtBzVoBYLqW9a1MujYKRp3j/9+zIgqt4HKaUly4K",
-+	"Rp3FJ+aAf8VvMJn1OtIjm3bFLe2lUWe64gYzDG6byGiuHrwFXH9xnVtSc14glzkgPx/+3QC2c3f3uwJ/1Vt0LNxzJ67wbwCAP0Nf",
-+	"CP+AQYPKuMD/m2Ut/Ume9pcZr9bcAZGNzaTY0O3G9HHvASwpTEr/zgzgb4D94zyEFBvyg7EC/U3fdCrm7tsqmmmwdRXID1owuZKJ",
-+	"lJ4PahZBcxQk9PRw6/IIzqO/wusO2FLTRIoP20Hf8UFCP3/fDx3wyeO/armH7oRkf31eOnpFxvjSBd90hb9X770Y17gU9WmFxuEA",
-+	"dnuSmpynuuJtsw+9hRtAGkWgOByPw3TERUS+ln8V/wg1xYmCv85bVCktIpPgJp3xWeKH13GR4ufBP4KzCycNOZNl/EVPK5GEuJyH",
-+	"Q+p0rUsf5/aA+6l6MG/KmcpI5VSBq5xz1ZB8+gp0D+JlKaQEcPx7cA0waeJgXnln4AD/Tk0YUcj0SWuAO7jnz2BZD6S8dFFKDIET",
-+	"/uW+wmzyxwcrISam5mvpEGKzKBE4l7iGvIgddVIeaah1fQu+3oTB6D1F1pp/Ff8/IYno8dd5i0peYFwQw53WmNftefCPkgI1csBf",
-+	"sxBNJrKyWZ8+roWiLe6ACUPm6DILSBW4zDlXCmyehgr0Wm1WiqTTF2D4b1IyBG/DdCf1JHthlHCW7amkV/2LPlOXly5K8frX4+/R",
-+	"YzediBIX1tA9ssDoS7gm6USmG/2cE/1DpgunFVPW4nvoMhqtLfOFA9a/jH+yEX/ZW1T1Ags9AtNDQ0MZWfvyvL7Pg/+kqqwUyQV/",
-+	"U9lWXbt33wgryBi4pR7Vp4+bqOx5ZlNgB0FaF7OrClzlnCu3D8mnr0B+kFJ2wE8c/1jFPvQ+PEGbt5YaL0pEcjRQ0qWugPn6vHRR",
-+	"wqFIj3+rhxTngwN8nDvta6spY2Gdy23RpZg5mPlITkWanoOC9VEpcUq42f3b4385A/6ytyghtSZ1NM7/Y7g+9XnwH2R43wWsPIK1",
-+	"7JcS2vS+EhaxgSxSskESY/q4xapy5jJMJH53AB6s6stHeLkCp5xzO2MSIGmuJzFUID+IlN/Nym1Kn63wJCZGVSM1wyxqi+AJP98W",
-+	"X2eEMjZ5CgPZUn1euijFrUeH/3CAh81yEOoL/Q0cmPP4qRe184xirSDeFOS4RNzTnpjz2sRM/RT8/1y8ePH8qd39NWcqxZlS4C8f",
-+	"Qm/c7X4G/CVvUdIiWwQpSPgv4cbif4D/cOMq4OjPcO/3pQsWHKO1rJbmdX36uDWYNIuV42iQqLCPaYYX4QvIFTjlnDuPeS5meBFD",
-+	"BfKDNKn2EtnKN8SAXwd9NlcrZwdp71iT88GIf4Q+L4G6o+Jvp/Ron4x5GNqandGv8FUclRaYFnASflwj4DqH0waV26NpeA9Ub6OM",
-+	"QE/BX5SkD4nRmVLgLx/C+RLurpTlP523KDmZPvk6Gw0k/I9zZ7Z/gP8ba1l5AjvY7xektA1GME3LDFrLEkk5qk8ft1TwdYjoJFb/",
-+	"yG105KRfsa4Cp5xzRUPrDL6JjLm+AvlBxJdfv5TSfyvMDi2n5s5rDJCP3hjJzxd4LvwfiTWx8zAToP97Jyndb00uriOGT7/9GCs6",
-+	"h4/DFdBDLFIxt52AIbPQYfJz+GAaXwfpmb7/ZXusIsROdqaUvn/lEB03P3ii1//ovEXL0omsC+N/NfwL2Lj38YvhnycsrKTz/P++",
-+	"wmuspLVMVqMijOnjpimWNFOKmkMw7zxMTairwCnnHNOtJUNzQwXyg5TyE2zh83+CYorrC5luZAoLelCo/cz4XxPers0UE3D9ZWlU",
-+	"5t/WVQ0FrjEf6b+/jyqHnIEJxRwKYebB6oPIELSEX/Yp3mHPNP+XvQspgQZnSt38zw8x3u4oJFkslgwNf81btBUMpH1gig7/URDr",
-+	"/uL4u9b/TBXxh6YbtJY2YFe/EH36uG5gzae8uqpPMd2iUOoqMOacU2wuHxsqkB8kChUQwzn+u5Q068uwN7VTMtM+H/5bRD52i9be",
-+	"gOG4eFbsbJaJa/Axup3wrRyM8imc+ljJT0ohu5uJ9jU/6/10Jcnos/F/fdDvXu9Mqef/2CGmc7CzEL+7Ev6qt+gr8CGpzpBX8W+a",
-+	"LAanF8a/jzP+40QONSpSWYhnrGYQ06ePy5PGh336lcaYJaXp+/oKDDnnhKbzOv2g9RXIDxJlCDjKcfyHQQaTdoqloa7Q65Hm//wc",
-+	"+H8A1jfpzV9lO2T9X6MfUQO5nHTE1GeHDQJBWYAbqlNEIYWDOQ48x8Iz418So9/1zpQG/h8PcRHwmqcBf9VbNF/2bjr0tZHwt2BO",
-+	"MJYRPh1siSj3pvME8ZlgTRys7tLmCg/mxD91+LeD7BBn/Jtyp81midnYi4YBzMLxsPxkQ/o48jVkoy1/NMs3t3gMMiamoQDVDRXo",
-+	"bmrIcrPn/QEcFQ0VyA/6AF1pzIMyMG6E4Z/nPkRRDin4CPfNGgkwA12eKkx5Hvx9qRhxLjIRRhv0//lGXmL6/6RF1Z06KvIIaqaQ",
-+	"q7yhGB6wizwP/oGYMUHvTGnAfyXP9t9erAKlw1/xFiWr4J7jipn1knFiFJXLLE23A2y9+ShwKkd0+E+XIg01/E2HAM6uPw735iN8",
-+	"pjUAT3Ztucj0/3L6OOJ/gtKTSnWw2YyDqu3Uhs3X8EsyVKC7aTjc2bdubxKwD1hXgfygtXB3+x+UKToZqOj/W2dDxu5daWBlUfrm",
-+	"9bQr79oSzfT/z4w/qYSiR+poo/0Hu/wE0nawnwtRcJzsbbEcOzfa/kAMXM+KfwN0D5XdJy8Z8T/MHuN+SSiudPgr3qKkwBG4V4/7",
-+	"0nwj8HeXRKZZcsM7Ky5YupKpx3+vo4or/Q/Kv3QsLD2FwWcezVb7fMSGQSl9HO3WyzEjXcZsHLHeiWKedElT3Z0qkG968y7bfDiW",
-+	"zRhyBfKD+t/gsiTGYIm0cM0vsRx3wm7oPoExyvFfPBf+xNygd5uAf9X+/2z4WzBNg+w+udSAPzuEorijjoT/T4KPEt6iOP95CLbk",
-+	"TpMAb69/ir972pYc9H/VenWuKKnzX+3ZsZbCJOvSx+Vv+1ZLRXtesFH3sMY+LiuQbyrfuk+3Wu6uKpAeZKrStncLQ6a7Gt27Sy30",
-+	"aNSrU23P/+v+H6rj40CAAXwrWsJ/XM2aNV/tFynSJ6nuk9aqCv7yIRLwSBmPEf9CQ1KVhTd+FPZ9pZRM4/r/f4i/W9kA8rL8Q/xd",
-+	"FCf9D5wqqHOf7Ouk/8FDZA6kFdPw7wuQJhwSuLdobRb2yGLU6m6Os1H8v9xtllSmA+WGvbq7k4vmbvvOWf/zsvzP4m+L2z3Ukxjd",
-+	"J2X8xaHSWepafoh/n6TdqvsY8xbtzC6e85LoL8vL8p9SxkZu5TzPgMi/gskUxRszcjZ3tNhnmYx8T4RyeCQhZfbyBeeLCXfMfpE7",
-+	"C+oXRhU7bksjf+IcTh/l9sFYk7BtlaP7hfUun+pjIulOg0iphBlbWjmSRzt6RkaWcOkoWpffqKXJVJ/Er3DTHUC3lO+278c7RPO8",
-+	"BCvIfEw/FSG3ZTFpXb4h5CM8OVALcjEVUlIojAovTd88hi0SUPTXy5Fk4o39gunvwUObP7xWk5j28uA173A01Of9cFnEB8gtxsTE",
-+	"TCSjWeqCanS7AyEdl4yhJKy5gmt0fUYs/06w5M0WLmUOXG/OXvUtW+egfzgtbHINGBkxF6/yfGfRkg8ZE9r9u29f4dTq/33EGDTV",
-+	"ePResHJ6Kzcq6sRz83KpFJQJteSVW1XpO7O7weniQ0iuwnVL6I7VJMvR1bAwqtj5HhJEQprxyu3TsCahbZsF6J+kU/lJAr9F9UFl",
-+	"ZYyxpQ3F6j7emMvNlaKwJb+xsZOmXVzhrs8tbv5JeZSYoBbvlXTM07icU/7ex5TlP7WYbN1NO8C88yLC1m00fe3r7zNE41HB5ZaZ",
-+	"6cVsm6c+I+3XwyMuQyz5swPtMT5xGKQWDiylUOs0el1FJlPG0H4D2XPak13MWh8y5zSVvlo6Zt6bT+VkkdF2I2Rm8AiJQZyaKCEC",
-+	"l70iOWqEFI8RvjUbISsNotzYSiw2B/aIkAt40UXaM8+yVx3BvHHsjdky7CdpLwrhrhWt0tjSa5OqVq377nVI8qXbUyWni0Vwo6CC",
-+	"f+lHzPtRtzAq3/kUMhoRBf99ePN2hn86N2O53U9zgb94zA90x59tAbTFn/zGlj4Vfz+8LeuZ8afc6rq21atW3ZIL/hXuQy9S4AxM",
-+	"JkvhL18yDi4wy4BpXcw7pYq+fXeRij8JCeFmbvb0e2wpgMksNS56YKHupTxPyzT3D9awU42bXcKkaQy2UWcVRUAYmRdNZseQ1gnc",
-+	"VdyUDaFmZvT3fgId62TYitNPOzTPNLbWYCR07ty5IVPFLgvw70w7mh0qBKVQwb0yxAU1gIfu6AJ0v0fVXqvQBPygX5VWC5jZaz1c",
-+	"9aXfdJamPHTfD5f8FUa7DFrE9Gn43f+EA54c/7wXeO4L3cKobKc/2NVcPeHABPW1DP/V3GzeHn50gb9O/49FdSk0tPSp+HN58Znx",
-+	"/014aK1B/CcU4vj7T3HnPqYM/4oP4DNS8Cz8aCbeO+FvP9NSuIjD97BrwZ71AkMrPHxdwd+dNyCSqySicW0vt8yb47+r/i7ayNlX",
-+	"cScLR4hLHzLNTzVmGC7N8a8sEggg/l9dJ3Ovmk6NUXUcIm6iBTob7RZmyzdZ3FMkdGqPrQmwZRaqizOTewoU8npiDyG9cOH2bIpi",
-+	"FWWx5SpyzqfgRzCvTJq8asHXkFpZNbR4W6G6cRmGwGhYwfB32w4HvTT8xcKouPNGtpqFFy3OGzX8h17OCGSjU9PnxV9uKaVann8T",
-+	"/z1C/YD4F0mM74X4v34jS8TSIf6VHtCRruA5WI7Tl/cO2OdnWgyX6IB4s5PPyexriW0m/mzA/wb3DzyF3cDTlvjTYhM7yFYX24re",
-+	"giXQX6o/uoQRs5XOCNwl8ta7Kv51rb8kTup7S7xN7TjIbkx6W6qRIWhG/JHlOPh8a/Kd5mL8T++PgW+pT8COY0yvxw9upn2Ejj+3",
-+	"PcuiE2k/Xj/hG9VbtqwlzFyOSxDlLhlGmd6P4+85F256OC3DUS4BxiL+38GtYKLiryyMSndqJcvqHOFcK/Afj5UVzD4Z+Lz4yy3N",
-+	"B9Dx38R/lUhayb7/Qj/CuvVHv3XsUvIYUPwDY9Gb9gxE8CAer23wBzEthGhSPM39naTC3aFN8zM6/DtshQvMyvYFXJjErAgQ+z4h",
-+	"GXxVyhVAmc/30DPnPZ4xIhG6CfyX/KbiT2qN6+p1s3/PmAcUR48Y62KIK7EWCpLhcBDV+cgPbUyGbNQwf/1xz/WQlh/5nvXD0jD6",
-+	"fXzm/Ru2+Sxz6u0ETJU1RBjp+IYFYLcy9kGWFjxVPokH4UfBxd27I+MdR6o7L8MSkgr2UQAfAdzPo+GvLIwaBVMeaAmxGSe4TMK/",
-+	"iO0YGv6HC/wvcV+4m8+Av9zSSLgXVrFs2cpPwf/47t07f51UkTWRPmnXhpkNNPy1AxiGLs//Tc4A3NYWsqH4B2da22O6MiWtzjf4",
-+	"CQ6FBFL7Opl5iARAmzYHdfiPTxP2+l7pdjzTYnOczVGRpNmESpTWthGtSJ0gy5OZ2BoK/LsmuKn4o7HwTFDajPftZUgjOo5/D+cy",
-+	"TyETcQaJ8Zmw64s1nN3RX70eTiTrKMNcyhHv53YGB/qiSw5+f5lyXW+CPUDMGPa8pPn3Cv69ADRFuu85OCzWuuapyDZUdMZ/HVzC",
-+	"9Hg22xVhydEtjBpFz0VDpqZAX8sHA4E/+YMyJecygwT+Esv/VPylllaPV+7LFX+hw/pMkmGWuyn4awcIme2Q+f+gH+iTSsj4k9YZ",
-+	"WR1J1TjhjTkXrhUnHzge1yKlE00jYr0aQpt1M/XjP+WGWA1H0CbqnocMmDOfjvGX+cJQu+ik4J6EQ1i+TJzHw5FB4/gHWF+R8A+I",
-+	"b1MbmhSho119uOzmsY+F8VaANB9TNLQlXiY2FFYm3kXZgs2vEL9MKEM2wHuUo4gmlNTcq7xYRnpekjeFoVUPN+YiP83xD6Dyh6Op",
-+	"8qprIC5EQPpF3boNu2+HxLJG/FtCSrGvkVYf17BZqyr4qwujUsKeyrMZ9qnhjoc40RT8u8HX9WAtEfjP4L5wy54Bf11LQ77eHxUV",
-+	"deIp+A+sW/fVPkeQ32FPatBtK0a2C/y1A7RUPQ/3IiPjEH/TO3HXDkYfS5vgKeFPWqVndyFVHjJPp3lwNYSOwvE16MUPGxeIvXot",
-+	"7eHhPIb5/zBPdHAJ03QWSFptOXQzO5Ss5KxXXIo7eS3Ln88Ptt+345K5An9y4HMJ/xl/kcL2QU2hFvGKgb+mRHMX2n2w+ze45kEa",
-+	"Xl04/Qw8cCeFM9bOOAUxPjgtWEalp4eSfOkwa1yWg47eaz8Pv87WSaXjddTqE9F8sb4VJwT+K+C2BW4I6/EwsLdU5kvG/1F5a4UB",
-+	"f89oOhWatzK5cz63+OoWRo3ChMghyWIdRua52FrG3+PRwwh4gzz//K9rKXl2/t/nOltKmOdF+YsOo/L8zw4gR2m11eLzf8FDjgV+",
-+	"i/e6Tcy6XFnCn7RItzYnlWLpe30OV4pRLuoRk5k+P+pV5O0KA99AvpAtlYv4I1d8gKfrvwFUnPBeejU7K6oTyj0ozNfBqP4Zf3Gx",
-+	"bgLajdFBUOD/6VEN/6Kp9JWmWzPRsFbrHGUhJqc4qHAXchTgMhUbKmMYwLE6hOQ5QMevU8jQ5d0G8BAHlh6xAMkfsc4CWXPZnDL4",
-+	"HkDmXLEBR7txJxp4o8BDEU5TP0vNPKsYWj6jc40e//FwyYM5l1IkAh4yFyzdwqhR2Jfp1/FEOM5VAEewjD/9ehy3zM+Pv66lz4M/",
-+	"RXWbelE4XNHzf+HMQ858jEViIP5ufzTj8l+1PYHcx1Tof5qnfYxi4GKy9TIdbufFceWi95FDr5g8w3D506rfQnYQLkGewrmVNW1I",
-+	"lRH2LO5sNZDNLO43UP/1Fa7Ye1JJYOZW6mu2MinYdiDN69jzk3I7bjP887EeGCzsakVKqGNqybJs01S8kogj968gFi0iRUpxDZtb",
-+	"idLc6h1SWQ0RCy3nJTbKcwVn4D30Ce/Gx9UCt2GLyYD/ajilx794KtPgCP3fALif17AwKhcGzYdFJmzyg3ChVfGvDhjg8rz461r6",
-+	"fPgfhZ/Vi1bBMT3+q1j43odwy0/h/3PS/5GmOKRVmETmoB5sguJ84v99VpYtcaIb059OpdPjeR7U0CCWSuZzwCoy8PfiTjfdd1Qn",
-+	"pp9RWVRbM1+bf7vTgZAdOxj+prr+FP8dO17/3zAArIRbeRk21+nrb4cbQUSHf+BoB6WIDv/1LP+pgr/pEPISuoVRhTKwajZbE776",
-+	"KmW9YxV/Urmq//Pjr2vp8+Bf6BtcnYlfFDDSTqdCCX9+gBRL5iE6ueNPzPyfWd3mJW/DeoxVGDwVRfEuUSs4Q24uEkKCSnj9J9t/",
-+	"3hTJbvi4mgqZ3AEzcS33vkSn0kv5dPi3gtTiEv6klt1aTb8wqsCfokg/qRBaw3RiwF/xKnwe/PUtNeBvdBRV8U9B31Iq6bpr73Mx",
-+	"SMFfO0A2iYgIFf/K9SX8vf3/PzX/0TFV5OrriuNqqpP9Jzkq3F8n/3leFksUK/iThbBfvzCqgr/XZTo0FLu1thH5F/A3tNSAv7HI",
-+	"8p/jyYEP3InufST5jx/oBElF9fi/LC/Lf0NB4/NQNqGawhYs+7ydMGH3D6+vmLFFmR+D1uXQVzzyhfgyC1flVxhfK44UCqG8ZlAI",
-+	"r4mdqBregwlf3fMUpXJPYLsJ4WgOMb02adk8kcSsSDgeKhbOCmVx89N6vHp+u3Qof+yw8FHcpB4+rn9htjFxVK9gcYgWk/RLm9w4",
-+	"vDfbYDsDwgeIN2GXj6VcbcXw8FZ0szO2DK8Mn/h2cVF9P2Sdx/B2jCIfhCPTXTZ8JHkz/DU63oS/QWWP8Cbk9XAMmn4nvCkxfxJO",
-+	"RTv6vwGpzO8aQt9m7eWYyhrR2IZ+jxQNxb2QlrrChMSSXFbyqtGsGuMkPKs0KcgPNOJ8ulfNOnyjSrMa9ApzCKOXDxlraUxKWL5l",
-+	"v3JAXO1NlpGqe8In0fdXF+b05YN4T2XhBG58vl6ScA01jotMhREJHytqDHX0pvzgSAdc/Jtu0FNLgK0b8LE4shIl2NMo8eb7KcP6",
-+	"ewk0qbJBvEW2z4RjPHfhINWrbLKoEg+JdbwboEp6ABp2gEdLFXfw1eGYoi+rqdjIHK8cYk2VmhwOO9gG/n0CCVUUYyy7/HWMvaJC",
-+	"VjwkBtCW7eC3pncWdaXWQA28WGgzgnn3z4Z1ZBSKMGdhJwbR90QesQlpwtifmXDRnQyChAJKNovzaGY/E1FcIxpzAlD3+MZ5tryI",
-+	"c8QyIUcWKC2FW1SKb4WaLjrztaXyfRzGDuNGQhdCfI9y634ByEAjUhilaxipSh+Pv1JAXMkHIJYHYgY9WqL9GH2xZ8+OY+ogohmf",
-+	"/0R7cVq7Sh1Xu+nxFx95mSaeiH/RTJgzFzj+Bz+6AyNJoQxxpDHlAkpgkIXHMTj2t53KEQL/icfIViohvDNgH8Pfb1PDwG8hkYnT",
-+	"kICHgjp37hwOT3w5/uUnhLSGdBRCR4KVORTGwwf19qAFKR6+HrmLyRl0a8CAASbpV4//2460V4gO/1XEP4XjDxMF/pO67ITbeHJS",
-+	"2FVkKd8aMBLgowFhpDXcN2G0TE/SCG4SP5s9gbinQUls0Tmfcyx2ye8OjMgTi+E0pWgDPrHTgwUPwzshHOiK9dyFEwCDPV9Ifr5R",
-+	"KBo60E92SKqu/CXhv6BHi/mwixR8Aj8PXFGOFEzMGjTQFuNNghMdMz+3pxYjnWF987fXIv5prvHnAXFBF+DxQbDyVMUhNhFQg/TF",
-+	"vCGpK5oI+FXjcygpDskhRHVhEPiLj5wKgdH4kfeBQ4Qc4/hXIe/BbvIW5i85gTBGO0oMx1izvrjiXHcqBzP8w++mpt+1JqLXikX1",
-+	"3K0FDjqEeVzcoR76gdmyGoexHIQNuUXsEMxmCZ2xPV/CBtGwX/CYBqz0q+E/32p9U3/6fFqed+E8//7jfPuKKxsA+LONOTzJJpVV",
-+	"cJ5xfwyvkuqQ7kd8rBD8OvwO5WrBQ/ykT0OUWFgjDB4vgdMii89O+MPEshdTjCllFgLsNXHE8V+91JSGfI8563R3OQ0L/Au/P30x",
-+	"fVQfEUzcB6K6d79Khdi+SPjdMJB0gPOftPJC/FNd4K8ExHnuhce1fHZDck3OMAMfVJG+u+DwQE2akYzP5htgPz0rVI8//8gLK5/9",
-+	"Ryj6b+L456VPO0c+xiMbEcaxMH4X0IkzIhEFwagDpAs6ejSbYF8+H6aM1+E/mWmex2WWVQ7lTZGXfbrBzAXFHal+j4CN4tfP2x83",
-+	"FA1rzTG7f+3aOqL/faziD45+hu4xCgYfjJ3F8J8BH3H8uxWcgwmL4uHTblf4eqsCfzpTfE2mMIHwJHQYC29An6Hc7vSKAxzCovy3",
-+	"5lw2Ee5Q/uG92/DzNHekzLkv0qG5in+1uPSmYiD4KA5WTKviDP6P58+nPz5/fhwpnQRXTkMmpSWXRsdy5PrSjV9Rsz+JeGyisyId",
-+	"XNn3v8OIvwiIM/1M4acj+m64hxwOd7wW1shVcPsLNWmaZnym718VXQiSS+vwN3zknSHa7H6T41+bjKATY09MMXEOYSxkvZKFFvCf",
-+	"WI27o0h9li+nKhR9l/usqfj3tD0shTbkKeqhYTw5XacxSJy/uHw/ktJgJU4AFNybNutwAWcDTL0VD3abLZLof+0a/vaeBvyr3L0O",
-+	"X01j+Fe9ceddZf5HXyy2wTUUCv6tIYa+U09muf5i/TX39G9XcK+T4BRIFWnnq6qrDzW22Zpwi3QbPtHXJr/DYBX/O9ltDfO/U/li",
-+	"/frH19avH0C/r3V04MkkvYDFSdLf3QUKFCjqS4ebE2hPwOk7/xtRFGo/sPu43THiLwLiZsFj9uH77IJzARSZbPaugzl9qy9MdOx9",
-+	"WzCCHSHbm0ni7A2KvfOAzo4P0LPiOJ3bnD9ynwdw8oyV439+5mMYQvKlwJpfOGe3CZhmYCJ6toSkriDBp/uRSlFX7VEPUqLaSvi/",
-+	"ZWN2k0/ss6ZEw+/Mi+McHxUZf2I6HBXEh/9t4ZuUwb4dRiwzOIdCqtvTxv99kNVCf7ridIBKHP+K78NedmXUtmVd2cnvFkFGJRl/",
-+	"OgGE4fCP2u1dd34mkYcv8gQeqyFDieQn14R9Pv8dYTJR8fcjP9HJVsEfbhUw4N8/Rlc2aeP/QIgZfJDin/cB7Pp0SwUS+NAxu//0",
-+	"e4GY13n5D/CkIHnjt2F9z6Be9S7s/AsM+IuAuKEQLyLNvHfCX55oYcQYHi+F//N996iSUyofS3UfDok+xLcdG/km0/k9HBfx7ODq",
-+	"I3/tatqSP6A3nvrCDluoyDcgCw5tZ8i25/kGiybFjx9xw1qLFG5ZnRSfd/ncvOQ/59XR8O9vf1hNcgrGoPkmcJ9NqjuATtumli1x",
-+	"Wg0R9vjKDMU6SFXcqHuPc4K54t9mMSTX1uNfxnGQCPy97oO4Ur3XAmtl/CkZ4vgIXAnS4SPydaaDrUrcFJLrJYn1nRT8TVthl1mP",
-+	"vzdZI+G/FNAyxPE/zZz/cub/KXdvnY6ejfXOAqRRaja8AGDDxKONrtKO1JyQV3F2+4kSqJ8Vdv1FmzBiTUMSsmYm++UBcUXW/KIm",
-+	"hfOevxb7+NCjFxcEEQV/Wmq0VoYesG/ZzlY7LwBXf1tvhVZkDGStOwePfF195FQkCYqFGux1CnLhOqgcFw0p9Q5y58RHAEk9Ffnv",
-+	"7Mg8duTFR1gewCkqowba4W5UVFQRUpKKvgfha/zwfub5zkwJ+zkBkT/5GA7RC3bT/hgPe9fdwx4YD3eoFHS3GNuKjo4ukSP+5o3w",
-+	"sKx8WUVSobCCP67ubsC/EViLy/ij7znzpTclovtrT2DriXlepLzQCLjkKePfn7aIPuREjvj77YINZoH/VohaGUzK99WV1hL/Zy6t",
-+	"5JgsUIELjgXLiaG6KOfOTSGVeI7pgNL/hvrH9Cl9w8eoKfDdlE6lazrfus/OojxMXeLqI7dc3ROPxi0XqoHvrirrz/m2bJ2XCPzz",
-+	"2Bu2YK6uK0VC6QK804dKLEHBLBt7tzKXqmn4H2QBoG/TCQB7/MONZRApR2r0wiKq/F82R/yJ1164UVi6rCLXKnP8/R8b8afM+1cy",
-+	"/h6P+fCPqQroBFkS2Fw/Ec64E7coke5X4D9eTWaZA/7egZfocznBXrls1/kz/ScUj3JlRTIQ9xJledd2L6uuCKp95Jx123rUgut7",
-+	"mrdu9ZCCiLbS2XH9kfEvtakvy8vy/1IZp+aQDAkhNatSxqC62FF1WJVqkeAQT9Tt+5PAED+SJ8SL/vqSfCF5cFLyID4hWOgYX2RT",
-+	"JyrLWoaKrdoWOu//ZulH8lssOMe9gaqpUYtZVEhdrvpm/tU1Bw16VTidmMPI8FerT6T/6MQ6Bqdkz094FEpYmA8JCgtj84RPWFgZ",
-+	"fnUYZh2oiyN1YTKI6eFbkxLTpFKHtA4TpYe2qSs+pMn69evLseeVxVKChAwK+S/BfxdcYYmP0I5KZ+hpywF9bGQd1lwq/y9DRedx",
-+	"aExGw2wqEg8h26E5ZfdPu7eDMx4YCg5s3c7ZyBrHY/g429qAyeYyYRZOq0NJy/LD5xTpTKqmppQmIloN9bGkLiq04fY0nBYr7TlC",
-+	"YsYPsNF/yCs3ZeoK5lY2FFOm1RXKsxDhsemNaQZHZkHq8uG/zqXX8wDFxjJvPUgcRsOBtqkrIRj7ReUyfB47cI2Yft1r+u/A373z",
-+	"79asX5oyWh6dB47o6XZHMZ0O6/EPU0lz2ENKQIyJ1Ie95BSsMCXgin0/wuSYbCpoVpk2bR1kVyQBSVY/4pYOn/Gtcvb79BPNprul",
-+	"UGff78Hxs7GfoOJ0vxmXxGOlJMYJJR2+hArq85ujAH7V8I8G+nGH2z9dae+QG/4bRrX56iGcqkvmsnVnBpPgAVIpR0bOEWWmtqkr",
-+	"ASSoZs2avgz/QCx0WPPaO/y/ZgooPPYyzEBaViGpVP4+A010Oizkac33bAVGYqY+97TUvNZz0ZWYQ1/QfRAJH4JvQH/MNXUcVfvp",
-+	"BfnWD5j9pzpYS5KukEA5+u52niNyLhpQ2nJ46pPhicMoX1xo1HnGRE92V/EPtK+h7GYSxX50Uq1c8Gcrefi/nMlfuNRd9MQ2Emnp",
-+	"S2KhAh3mW+p0WAHcgDgwkuWR2wMfwUDHJ9xJ5juxErnPUdYPYnC5seFoO8Ut7wxM8vY+qsvmoHp1yqU1W45gAm33fZmVtfG/jSIO",
-+	"1Xo//C2UfX093P3oP9LoLBX0/JnJ29/nJUr/QyV41Dm4PSWEfUveFH8M9WhpkGEJuqtH2VlY8hS4FpPPgWnpCamWlcYCzs0bMM8h",
-+	"GhHodP6LrTTfCgS04qzB2MeDmVSqDvUcPsfMwC7YvRYpHMpKvpcI/N8tB2xbO7iJsTQX/Mkl4CkbWwCsJZfBQXlG95Pw5l4MLxoM",
-+	"9p9WrqxI/o6inNrHGMeAW/5RUb0JWb+c9o9Ingascv2X9P5PK72VnMVPwf8zcLBYNj8r/apXsvzVk2hPKJ/xpKjQgDV9ScyX5WX5",
-+	"f6z8Hw==",
-+};
-+
-+} // namespace MotdFontData
-+} // namespace CEF
-+} // namespace iHTMLChrome
 diff --git a/cl_dll/chrome/chrome_motd_input.h b/cl_dll/chrome/chrome_motd_input.h
 new file mode 100644
-index 0000000..5d23a0b
+index 0000000..1a5d9d8
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_motd_input.h
-@@ -0,0 +1,397 @@
+@@ -0,0 +1,398 @@
 +#pragma once
 +
 +// Input logic of the server MOTD window shown by the embedded browser.
@@ -3132,7 +2507,7 @@ index 0000000..5d23a0b
 +					out.Add( e );
 +				}
 +			}
-+			else if( key != MotdKey::WheelUp && key != MotdKey::WheelDown && key != MotdKey::Escape )
++			else if( key != MotdKey::WheelUp && key != MotdKey::WheelDown && key != MotdKey::Enter && key != MotdKey::KpEnter )
 +			{
 +				AddKey( out, false, key );
 +			}
@@ -3142,7 +2517,8 @@ index 0000000..5d23a0b
 +
 +		// ---- key pressed ----
 +
-+		if( key == MotdKey::Escape )
++		// Enter closes the window, like the default OK button (Esc is left to the engine)
++		if( key == MotdKey::Enter || key == MotdKey::KpEnter )
 +		{
 +			swallowed_[key] = true;
 +			out.consumed = true;
@@ -3296,415 +2672,21 @@ index 0000000..5d23a0b
 +
 +} // namespace CEF
 +} // namespace iHTMLChrome
-diff --git a/cl_dll/chrome/chrome_motd_text.h b/cl_dll/chrome/chrome_motd_text.h
+diff --git a/cl_dll/chrome/chrome_motd_utf.h b/cl_dll/chrome/chrome_motd_utf.h
 new file mode 100644
-index 0000000..9a1fb67
+index 0000000..8318043
 --- /dev/null
-+++ b/cl_dll/chrome/chrome_motd_text.h
-@@ -0,0 +1,634 @@
++++ b/cl_dll/chrome/chrome_motd_utf.h
+@@ -0,0 +1,90 @@
 +#pragma once
 +
-+// Crisp text for the server MOTD window.
-+//
-+// The client has no font renderer that can draw a 27 pixel title without blur, so the glyphs are pre-rendered
-+// (see chrome_motd_font_data.h) and drawn one by one, every texel on its own pixel.
-+// This file has no dependencies on the engine: it unpacks the atlas, converts the text and lays the glyphs out.
++// Text helpers of the server MOTD window: server names come in UTF-8 or in the Windows-1251 code page.
++// This file has no dependencies on the engine.
 +
-+#include <algorithm>
-+#include <cmath>
-+#include <cstddef>
-+#include <cstdint>
 +#include <string>
-+#include <vector>
-+
-+#include "chrome_motd_font_data.h"
 +
 +namespace iHTMLChrome {
 +namespace CEF {
-+
-+// ---------------------------------------------------------------------------------------------
-+// base64 and deflate (the atlas is stored compressed)
-+// ---------------------------------------------------------------------------------------------
-+
-+inline bool Base64Decode( const char* in, std::vector<std::uint8_t>& out )
-+{
-+	out.clear();
-+
-+	unsigned int acc = 0;
-+	int bits = 0;
-+
-+	for( ; *in; ++in )
-+	{
-+		const char c = *in;
-+		int v;
-+
-+		if( c >= 'A' && c <= 'Z' ) v = c - 'A';
-+		else if( c >= 'a' && c <= 'z' ) v = c - 'a' + 26;
-+		else if( c >= '0' && c <= '9' ) v = c - '0' + 52;
-+		else if( c == '+' ) v = 62;
-+		else if( c == '/' ) v = 63;
-+		else if( c == '=' || c == '\n' || c == '\r' || c == ' ' ) continue;
-+		else return false;
-+
-+		acc = ( acc << 6 ) | (unsigned int)v;
-+		bits += 6;
-+
-+		if( bits >= 8 )
-+		{
-+			bits -= 8;
-+			out.push_back( (std::uint8_t)( acc >> bits ));
-+			acc &= ( 1u << bits ) - 1u;
-+		}
-+	}
-+
-+	return true;
-+}
-+
-+namespace inflate_detail {
-+struct Huffman
-+{
-+	short count[16];
-+	short symbol[288];
-+};
-+
-+struct State
-+{
-+	const std::uint8_t* in;
-+	size_t inLen, inPos;
-+	unsigned int bitBuf;
-+	int bitCnt;
-+	std::uint8_t* out;
-+	size_t outCap, outPos;
-+	bool error;
-+};
-+
-+inline int Bits( State& s, int need )
-+{
-+	unsigned int val = s.bitBuf;
-+
-+	while( s.bitCnt < need )
-+	{
-+		if( s.inPos >= s.inLen )
-+		{
-+			s.error = true;
-+			return 0;
-+		}
-+
-+		val |= (unsigned int)s.in[s.inPos++] << s.bitCnt;
-+		s.bitCnt += 8;
-+	}
-+
-+	s.bitBuf = val >> need;
-+	s.bitCnt -= need;
-+	return (int)( val & (( 1u << need ) - 1 ));
-+}
-+
-+// returns false if the code is over-subscribed
-+inline bool Construct( Huffman& h, const short* length, int n )
-+{
-+	for( int len = 0; len <= 15; ++len )
-+		h.count[len] = 0;
-+
-+	for( int sym = 0; sym < n; ++sym )
-+		h.count[length[sym]]++;
-+
-+	int left = 1;
-+
-+	for( int len = 1; len <= 15; ++len )
-+	{
-+		left <<= 1;
-+		left -= h.count[len];
-+
-+		if( left < 0 )
-+			return false;
-+	}
-+
-+	short offs[16];
-+	offs[1] = 0;
-+
-+	for( int len = 1; len < 15; ++len )
-+		offs[len + 1] = (short)( offs[len] + h.count[len] );
-+
-+	for( int sym = 0; sym < n; ++sym )
-+		if( length[sym] != 0 )
-+			h.symbol[offs[length[sym]]++] = (short)sym;
-+
-+	return true;
-+}
-+
-+inline int Decode( State& s, const Huffman& h )
-+{
-+	int code = 0, first = 0, index = 0;
-+
-+	for( int len = 1; len <= 15; ++len )
-+	{
-+		code |= Bits( s, 1 );
-+
-+		if( s.error )
-+			return -1;
-+
-+		const int count = h.count[len];
-+
-+		if( code - count < first )
-+			return h.symbol[index + ( code - first )];
-+
-+		index += count;
-+		first += count;
-+		first <<= 1;
-+		code <<= 1;
-+	}
-+
-+	s.error = true; // ran out of codes
-+	return -1;
-+}
-+
-+inline bool Codes( State& s, const Huffman& lencode, const Huffman& distcode )
-+{
-+	static const short lens[29] = { 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258 };
-+	static const short lext[29] = { 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0 };
-+	static const short dists[30] = { 1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577 };
-+	static const short dext[30] = { 0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13 };
-+
-+	for( ;; )
-+	{
-+		int symbol = Decode( s, lencode );
-+
-+		if( s.error )
-+			return false;
-+
-+		if( symbol < 256 )
-+		{
-+			if( s.outPos >= s.outCap )
-+				return false;
-+
-+			s.out[s.outPos++] = (std::uint8_t)symbol;
-+		}
-+		else if( symbol == 256 )
-+		{
-+			return true;
-+		}
-+		else
-+		{
-+			symbol -= 257;
-+
-+			if( symbol >= 29 )
-+				return false;
-+
-+			const int len = lens[symbol] + Bits( s, lext[symbol] );
-+			symbol = Decode( s, distcode );
-+
-+			if( s.error || symbol < 0 || symbol >= 30 )
-+				return false;
-+
-+			const size_t dist = (size_t)dists[symbol] + (size_t)Bits( s, dext[symbol] );
-+
-+			if( s.error || dist > s.outPos || s.outPos + (size_t)len > s.outCap )
-+				return false;
-+
-+			for( int i = 0; i < len; ++i, ++s.outPos )
-+				s.out[s.outPos] = s.out[s.outPos - dist];
-+		}
-+	}
-+}
-+
-+inline bool Stored( State& s )
-+{
-+	s.bitBuf = 0;
-+	s.bitCnt = 0;
-+
-+	if( s.inPos + 4 > s.inLen )
-+		return false;
-+
-+	const unsigned len = s.in[s.inPos] | ( (unsigned)s.in[s.inPos + 1] << 8 );
-+	const unsigned nlen = s.in[s.inPos + 2] | ( (unsigned)s.in[s.inPos + 3] << 8 );
-+	s.inPos += 4;
-+
-+	if( len != ( ~nlen & 0xFFFFu ) || s.inPos + len > s.inLen || s.outPos + len > s.outCap )
-+		return false;
-+
-+	for( unsigned i = 0; i < len; ++i )
-+		s.out[s.outPos++] = s.in[s.inPos++];
-+
-+	return true;
-+}
-+
-+inline bool Fixed( State& s )
-+{
-+	Huffman lencode, distcode;
-+	short lengths[288];
-+
-+	int sym = 0;
-+	for( ; sym < 144; ++sym ) lengths[sym] = 8;
-+	for( ; sym < 256; ++sym ) lengths[sym] = 9;
-+	for( ; sym < 280; ++sym ) lengths[sym] = 7;
-+	for( ; sym < 288; ++sym ) lengths[sym] = 8;
-+	Construct( lencode, lengths, 288 );
-+
-+	for( sym = 0; sym < 30; ++sym )
-+		lengths[sym] = 5;
-+	Construct( distcode, lengths, 30 );
-+
-+	return Codes( s, lencode, distcode );
-+}
-+
-+inline bool Dynamic( State& s )
-+{
-+	static const short order[19] = { 16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15 };
-+
-+	const int nlen = Bits( s, 5 ) + 257;
-+	const int ndist = Bits( s, 5 ) + 1;
-+	const int ncode = Bits( s, 4 ) + 4;
-+
-+	if( s.error || nlen > 286 || ndist > 30 )
-+		return false;
-+
-+	short lengths[320];
-+	int index;
-+
-+	for( index = 0; index < ncode; ++index )
-+		lengths[order[index]] = (short)Bits( s, 3 );
-+
-+	for( ; index < 19; ++index )
-+		lengths[order[index]] = 0;
-+
-+	Huffman lencode, distcode;
-+
-+	if( s.error || !Construct( lencode, lengths, 19 ))
-+		return false;
-+
-+	index = 0;
-+
-+	while( index < nlen + ndist )
-+	{
-+		int symbol = Decode( s, lencode );
-+
-+		if( s.error )
-+			return false;
-+
-+		if( symbol < 16 )
-+		{
-+			lengths[index++] = (short)symbol;
-+		}
-+		else
-+		{
-+			int len = 0, rep;
-+
-+			if( symbol == 16 )
-+			{
-+				if( index == 0 )
-+					return false;
-+
-+				len = lengths[index - 1];
-+				rep = 3 + Bits( s, 2 );
-+			}
-+			else if( symbol == 17 )
-+			{
-+				rep = 3 + Bits( s, 3 );
-+			}
-+			else
-+			{
-+				rep = 11 + Bits( s, 7 );
-+			}
-+
-+			if( s.error || index + rep > nlen + ndist )
-+				return false;
-+
-+			while( rep-- )
-+				lengths[index++] = (short)len;
-+		}
-+	}
-+
-+	if( lengths[256] == 0 ) // there must be an end of block code
-+		return false;
-+
-+	if( !Construct( lencode, lengths, nlen ) || !Construct( distcode, lengths + nlen, ndist ))
-+		return false;
-+
-+	return Codes( s, lencode, distcode );
-+}
-+} // namespace inflate_detail
-+
-+// Raw deflate (RFC 1951) without the zlib header. Returns false on any error.
-+inline bool InflateRaw( const std::uint8_t* in, size_t inLen, std::uint8_t* out, size_t outCap, size_t* outLen )
-+{
-+	using namespace inflate_detail;
-+
-+	State s;
-+	s.in = in;
-+	s.inLen = inLen;
-+	s.inPos = 0;
-+	s.bitBuf = 0;
-+	s.bitCnt = 0;
-+	s.out = out;
-+	s.outCap = outCap;
-+	s.outPos = 0;
-+	s.error = false;
-+
-+	int last;
-+
-+	do
-+	{
-+		last = Bits( s, 1 );
-+		const int type = Bits( s, 2 );
-+
-+		if( s.error )
-+			return false;
-+
-+		bool ok;
-+
-+		if( type == 0 ) ok = Stored( s );
-+		else if( type == 1 ) ok = Fixed( s );
-+		else if( type == 2 ) ok = Dynamic( s );
-+		else ok = false;
-+
-+		if( !ok || s.error )
-+			return false;
-+	}
-+	while( !last );
-+
-+	if( outLen )
-+		*outLen = s.outPos;
-+
-+	return true;
-+}
-+
-+// The atlas as a texture image: white pixels, the glyphs are in the alpha channel (RGBA, kAtlasW x kAtlasH).
-+inline bool BuildMotdFontRgba( std::vector<std::uint8_t>& rgba )
-+{
-+	using namespace MotdFontData;
-+
-+	std::vector<std::uint8_t> packed;
-+
-+	for( int i = 0; i < kAtlasChunkCount; ++i )
-+	{
-+		std::vector<std::uint8_t> part;
-+
-+		if( !Base64Decode( kAtlasDeflateB64[i], part ))
-+			return false;
-+
-+		packed.insert( packed.end(), part.begin(), part.end() );
-+	}
-+
-+	std::vector<std::uint8_t> raw( kAtlasRawSize );
-+	size_t rawLen = 0;
-+
-+	if( !InflateRaw( packed.data(), packed.size(), raw.data(), raw.size(), &rawLen ) || rawLen != kAtlasRawSize )
-+		return false;
-+
-+	if( kAtlasRawSize != (unsigned)( kAtlasW * kAtlasDataH ))
-+		return false;
-+
-+	rgba.assign( (size_t)kAtlasW * kAtlasH * 4, 255 );
-+
-+	for( int i = 0; i < kAtlasW * kAtlasH; ++i )
-+		rgba[(size_t)i * 4 + 3] = i < kAtlasW * kAtlasDataH ? raw[(size_t)i] : 0;
-+
-+	return true;
-+}
-+
-+// ---------------------------------------------------------------------------------------------
-+// text
-+// ---------------------------------------------------------------------------------------------
 +
 +inline bool IsValidUtf8( const char* s )
 +{
@@ -3754,8 +2736,7 @@ index 0000000..9a1fb67
 +	}
 +}
 +
-+// Server names usually come in UTF-8 or in the Windows-1251 code page. Anything that is not valid UTF-8
-+// is taken as Windows-1251.
++// Anything that is not valid UTF-8 is taken as Windows-1251
 +inline std::string ToUtf8( const char* s )
 +{
 +	if( !s )
@@ -3783,155 +2764,6 @@ index 0000000..9a1fb67
 +	}
 +
 +	return out;
-+}
-+
-+// next code point of a valid UTF-8 text (anything else gives U+FFFD)
-+inline unsigned int NextCodePoint( const char*& p )
-+{
-+	const unsigned char* s = reinterpret_cast<const unsigned char*>( p );
-+	unsigned int cp;
-+	int n;
-+
-+	if( *s < 0x80 ) { cp = *s; n = 0; }
-+	else if(( *s & 0xE0 ) == 0xC0 ) { cp = *s & 0x1F; n = 1; }
-+	else if(( *s & 0xF0 ) == 0xE0 ) { cp = *s & 0x0F; n = 2; }
-+	else if(( *s & 0xF8 ) == 0xF0 ) { cp = *s & 0x07; n = 3; }
-+	else { p += 1; return 0xFFFD; }
-+
-+	for( int i = 1; i <= n; ++i )
-+	{
-+		if(( s[i] & 0xC0 ) != 0x80 )
-+		{
-+			p += i;
-+			return 0xFFFD;
-+		}
-+
-+		cp = ( cp << 6 ) | ( s[i] & 0x3F );
-+	}
-+
-+	p += n + 1;
-+	return cp;
-+}
-+
-+inline const MotdFontData::Glyph* FindGlyph( int face, unsigned int cp )
-+{
-+	using namespace MotdFontData;
-+
-+	if( face < 0 || face >= (int)( sizeof( kFaces ) / sizeof( kFaces[0] )))
-+		return nullptr;
-+
-+	int lo = kFaces[face].first, hi = kFaces[face].first + kFaces[face].count - 1;
-+
-+	while( lo <= hi )
-+	{
-+		const int mid = ( lo + hi ) / 2;
-+
-+		if( kGlyphs[mid].cp == cp )
-+			return &kGlyphs[mid];
-+
-+		if( kGlyphs[mid].cp < cp )
-+			lo = mid + 1;
-+		else
-+			hi = mid - 1;
-+	}
-+
-+	return nullptr;
-+}
-+
-+// A glyph on the screen with the texture coordinates
-+struct MotdGlyphQuad
-+{
-+	int x, y, w, h;
-+	float u0, v0, u1, v1;
-+};
-+
-+// Width of a text in pixels (scale 1)
-+inline float MotdTextWidth( int face, const std::string& utf8 )
-+{
-+	float width = 0.f;
-+
-+	for( const char* p = utf8.c_str(); *p; )
-+	{
-+		const unsigned int cp = NextCodePoint( p );
-+		const MotdFontData::Glyph* g = FindGlyph( face, cp );
-+
-+		if( !g )
-+			g = FindGlyph( face, '?' );
-+
-+		if( g )
-+			width += g->adv16 / 16.0f;
-+	}
-+
-+	return width;
-+}
-+
-+// Cuts a text that is too wide and puts "..." in the end
-+inline std::string MotdFitText( int face, const std::string& utf8, float maxWidth )
-+{
-+	if( MotdTextWidth( face, utf8 ) <= maxWidth )
-+		return utf8;
-+
-+	const std::string dots = "\xE2\x80\xA6"; // U+2026
-+	std::string out;
-+	float used = 0.f;
-+	const float limit = maxWidth - MotdTextWidth( face, dots );
-+
-+	for( const char* p = utf8.c_str(); *p; )
-+	{
-+		const char* start = p;
-+		const unsigned int cp = NextCodePoint( p );
-+		const MotdFontData::Glyph* g = FindGlyph( face, cp );
-+
-+		if( !g )
-+			g = FindGlyph( face, '?' );
-+
-+		const float adv = g ? g->adv16 / 16.0f : 0.f;
-+
-+		if( used + adv > limit )
-+			break;
-+
-+		used += adv;
-+		out.append( start, p - start );
-+	}
-+
-+	return out + dots;
-+}
-+
-+// Places the glyphs of a text. (x, baseline) is the start of the baseline in pixels.
-+// With scale 1 every glyph lands on a whole pixel, so it is as sharp as it was drawn.
-+inline void MotdLayoutText( int face, const std::string& utf8, int x, int baseline, float scale, std::vector<MotdGlyphQuad>& out )
-+{
-+	using namespace MotdFontData;
-+
-+	long pen16 = 0;
-+
-+	for( const char* p = utf8.c_str(); *p; )
-+	{
-+		const unsigned int cp = NextCodePoint( p );
-+		const Glyph* g = FindGlyph( face, cp );
-+
-+		if( !g )
-+			g = FindGlyph( face, '?' );
-+
-+		if( !g )
-+			continue;
-+
-+		if( g->w && g->h )
-+		{
-+			MotdGlyphQuad q;
-+			q.x = x + (int)std::lround(( pen16 / 16.0f + g->xoff ) * scale );
-+			q.y = baseline + (int)std::lround( g->yoff * scale );
-+			q.w = std::max( 1, (int)std::lround( g->w * scale ));
-+			q.h = std::max( 1, (int)std::lround( g->h * scale ));
-+			q.u0 = (float)g->x / kAtlasW;
-+			q.v0 = (float)g->y / kAtlasH;
-+			q.u1 = (float)( g->x + g->w ) / kAtlasW;
-+			q.v1 = (float)( g->y + g->h ) / kAtlasH;
-+			out.push_back( q );
-+		}
-+
-+		pen16 += g->adv16;
-+	}
 +}
 +
 +} // namespace CEF
@@ -4724,6 +3556,103 @@ index 0000000..e5e0e81
 +};
 +} // namespace CEF
 +} // namespace iHTMLChrome
+diff --git a/cl_dll/draw_util.cpp b/cl_dll/draw_util.cpp
+index c585f3c..7c66a65 100644
+--- a/cl_dll/draw_util.cpp
++++ b/cl_dll/draw_util.cpp
+@@ -33,6 +33,7 @@ version.
+ #include "triangleapi.h"
+ #include <string.h>
+ #include <ctype.h>
++#include <math.h>
+ #include "utflib.h"
+ #include "utlvector.h"
+ 
+@@ -368,6 +369,84 @@ int DrawUtils::DrawHudNumber2( int x, int y, int iNumber, int r, int g, int b )
+ 	return ResX;
+ }
+ 
++// How far the rounded corner is from the side of the rectangle in the row i (0 is the outermost row)
++static int RoundedInset( int radius, int i )
++{
++	const float dy = radius - i - 0.5f;
++	return radius - (int)( sqrtf( (float)( radius * radius ) - dy * dy ) + 0.5f );
++}
++
++// Blended rectangle made of 1 pixel rows; the upper and/or the lower corners are rounded
++void DrawUtils::FillRoundedRect( int x, int y, int wide, int tall, int radius, bool roundTop, bool roundBottom,
++								 int r, int g, int b, int a )
++{
++	if( wide <= 0 || tall <= 0 )
++		return;
++
++	if( radius > wide / 2 ) radius = wide / 2;
++	if( radius > tall / 2 ) radius = tall / 2;
++	if( radius < 0 ) radius = 0;
++
++	const int rt = roundTop ? radius : 0;
++	const int rb = roundBottom ? radius : 0;
++
++	FillRGBABlend( x, y + rt, wide, tall - rt - rb, r, g, b, a );
++
++	for( int i = 0; i < rt; ++i )
++	{
++		const int inset = RoundedInset( rt, i );
++		FillRGBABlend( x + inset, y + i, wide - inset * 2, 1, r, g, b, a );
++	}
++
++	for( int i = 0; i < rb; ++i )
++	{
++		const int inset = RoundedInset( rb, i );
++		FillRGBABlend( x + inset, y + tall - 1 - i, wide - inset * 2, 1, r, g, b, a );
++	}
++}
++
++// Outline of a rectangle with rounded corners, 1 pixel thick, drawn without blending
++void DrawUtils::DrawRoundedFrame( int x, int y, int wide, int tall, int radius, int r, int g, int b, int a )
++{
++	if( wide <= 1 || tall <= 1 )
++		return;
++
++	if( radius > wide / 2 ) radius = wide / 2;
++	if( radius > tall / 2 ) radius = tall / 2;
++	if( radius < 0 ) radius = 0;
++
++	// straight sides between the corners
++	FillRGBA( x + radius, y,            wide - radius * 2, 1, r, g, b, a );
++	FillRGBA( x + radius, y + tall - 1, wide - radius * 2, 1, r, g, b, a );
++	FillRGBA( x,            y + radius, 1, tall - radius * 2, r, g, b, a );
++	FillRGBA( x + wide - 1, y + radius, 1, tall - radius * 2, r, g, b, a );
++
++	// corners: in every row a short piece, so the line has no gaps
++	int prevInset = radius;
++
++	for( int i = 0; i < radius; ++i )
++	{
++		const int inset = RoundedInset( radius, i );
++		const int runEnd = ( prevInset - 1 > inset ) ? prevInset - 1 : inset;
++		const int len = runEnd - inset + 1;
++
++		FillRGBA( x + inset,                y + i,                len, 1, r, g, b, a );
++		FillRGBA( x + wide - 1 - runEnd,    y + i,                len, 1, r, g, b, a );
++		FillRGBA( x + inset,                y + tall - 1 - i,     len, 1, r, g, b, a );
++		FillRGBA( x + wide - 1 - runEnd,    y + tall - 1 - i,     len, 1, r, g, b, a );
++
++		prevInset = inset;
++	}
++}
++
++void DrawUtils::DrawRoundedRectangle( int x, int y, int wide, int tall, int radius, int r, int g, int b, int a, bool drawStroke )
++{
++	FillRoundedRect( x, y, wide, tall, radius, true, true, r, g, b, a );
++
++	if( drawStroke )
++		DrawRoundedFrame( x, y, wide, tall, radius, 255, 140, 0, 255 ); // the colour of the stroke of DrawRectangle
++}
++
+ void DrawUtils::Draw2DQuad( float x1, float y1, float x2, float y2 )
+ {
+ 	// REMOVE WHEN NANOGL BUG WILL BE FIXED
 diff --git a/cl_dll/hud.cpp b/cl_dll/hud.cpp
 index 9ae956c..15e785d 100644
 --- a/cl_dll/hud.cpp
@@ -5189,6 +4118,223 @@ index 0000000..fad4296
 +}
 +
 +#endif
+diff --git a/cl_dll/hud/MOTD_text_gdi.cpp b/cl_dll/hud/MOTD_text_gdi.cpp
+new file mode 100644
+index 0000000..668a375
+--- /dev/null
++++ b/cl_dll/hud/MOTD_text_gdi.cpp
+@@ -0,0 +1,160 @@
++//
++// MOTD_text_gdi.cpp
++//
++// Text of the server MOTD window, drawn with the fonts of Windows (GDI): the same families that
++// the Steam version uses, any size, any characters. The result is a picture with the coverage of
++// the glyphs that the client shows as a texture, one pixel on one pixel.
++// Kept in a separate file because <windows.h> conflicts with engine headers.
++//
++
++#include <string.h>
++#include <string>
++#include <vector>
++
++// utf8        - the text
++// pixelHeight - height of the font in pixels
++// maxWidth    - the text is cut with "..." if it is wider (0 - no limit)
++// alpha       - width * height bytes: how much of every pixel is covered by the glyphs
++// ascent      - distance from the top of the picture to the baseline
++bool MOTD_RenderText( const char *utf8, int pixelHeight, bool bold, int maxWidth,
++					  std::vector<unsigned char> &alpha, int &width, int &height, int &ascent );
++
++#if defined( _WIN32 )
++
++#define WIN32_LEAN_AND_MEAN
++#ifndef NOMINMAX
++#define NOMINMAX
++#endif
++#include <windows.h>
++#include <wchar.h>
++
++// a font the system really has is searched in this order
++static HFONT CreateUiFont( HDC dc, int pixelHeight, bool bold )
++{
++	static const wchar_t *faces[] = { L"Trebuchet MS", L"Tahoma", L"Segoe UI", L"Verdana", L"Arial" };
++
++	for( const wchar_t *face : faces )
++	{
++		HFONT font = CreateFontW( -pixelHeight, 0, 0, 0, bold ? FW_BOLD : FW_NORMAL, FALSE, FALSE, FALSE,
++			DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_SWISS, face );
++
++		if( !font )
++			continue;
++
++		HGDIOBJ old = SelectObject( dc, font );
++		wchar_t actual[LF_FACESIZE] = {};
++		GetTextFaceW( dc, LF_FACESIZE, actual );
++		SelectObject( dc, old );
++
++		if( _wcsicmp( actual, face ) == 0 )
++			return font;
++
++		DeleteObject( font ); // the system gave another font instead
++	}
++
++	// none of them: whatever the system has
++	return CreateFontW( -pixelHeight, 0, 0, 0, bold ? FW_BOLD : FW_NORMAL, FALSE, FALSE, FALSE,
++		DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Arial" );
++}
++
++bool MOTD_RenderText( const char *utf8, int pixelHeight, bool bold, int maxWidth,
++					  std::vector<unsigned char> &alpha, int &width, int &height, int &ascent )
++{
++	if( !utf8 || !utf8[0] || pixelHeight < 4 )
++		return false;
++
++	const int wlen = MultiByteToWideChar( CP_UTF8, 0, utf8, -1, nullptr, 0 );
++
++	if( wlen <= 1 )
++		return false;
++
++	std::wstring text( (size_t)wlen, L'\0' );
++	MultiByteToWideChar( CP_UTF8, 0, utf8, -1, &text[0], wlen );
++	text.resize( (size_t)wlen - 1 );
++
++	HDC screen = GetDC( nullptr );
++	HDC dc = CreateCompatibleDC( screen );
++	ReleaseDC( nullptr, screen );
++
++	if( !dc )
++		return false;
++
++	bool ok = false;
++	HFONT font = CreateUiFont( dc, pixelHeight, bold );
++	HGDIOBJ oldFont = font ? SelectObject( dc, font ) : nullptr;
++
++	TEXTMETRICW tm = {};
++	SIZE size = {};
++
++	if( font && GetTextMetricsW( dc, &tm ) && GetTextExtentPoint32W( dc, text.c_str(), (int)text.size(), &size ))
++	{
++		int w = size.cx + 2; // a little room for glyphs that stick out
++		const int h = tm.tmHeight;
++
++		if( maxWidth > 0 && w > maxWidth )
++			w = maxWidth;
++
++		BITMAPINFO bi = {};
++		bi.bmiHeader.biSize = sizeof( BITMAPINFOHEADER );
++		bi.bmiHeader.biWidth = w;
++		bi.bmiHeader.biHeight = -h; // from the top to the bottom
++		bi.bmiHeader.biPlanes = 1;
++		bi.bmiHeader.biBitCount = 32;
++		bi.bmiHeader.biCompression = BI_RGB;
++
++		void *bits = nullptr;
++		HBITMAP bitmap = ( w > 0 && h > 0 ) ? CreateDIBSection( dc, &bi, DIB_RGB_COLORS, &bits, nullptr, 0 ) : nullptr;
++
++		if( bitmap && bits )
++		{
++			HGDIOBJ oldBitmap = SelectObject( dc, bitmap );
++
++			memset( bits, 0, (size_t)w * h * 4 );
++			SetBkColor( dc, RGB( 0, 0, 0 ));
++			SetTextColor( dc, RGB( 255, 255, 255 ));
++			SetBkMode( dc, OPAQUE );
++
++			RECT rc = { 0, 0, w, h };
++			DrawTextW( dc, text.c_str(), (int)text.size(), &rc, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS );
++			GdiFlush();
++
++			// white text on black: the brightness of a pixel is how much of it the glyph covers
++			alpha.resize( (size_t)w * h );
++
++			const unsigned char *p = static_cast<const unsigned char *>( bits );
++
++			for( size_t i = 0, n = (size_t)w * h; i < n; ++i, p += 4 )
++			{
++				unsigned char m = p[0] > p[1] ? p[0] : p[1];
++				alpha[i] = m > p[2] ? m : p[2];
++			}
++
++			width = w;
++			height = h;
++			ascent = tm.tmAscent;
++			ok = true;
++
++			SelectObject( dc, oldBitmap );
++		}
++
++		if( bitmap )
++			DeleteObject( bitmap );
++	}
++
++	if( oldFont )
++		SelectObject( dc, oldFont );
++	if( font )
++		DeleteObject( font );
++
++	DeleteDC( dc );
++	return ok;
++}
++
++#else // not implemented on other platforms: the font of the HUD is used there
++
++bool MOTD_RenderText( const char *, int, bool, int, std::vector<unsigned char> &, int &, int &, int & )
++{
++	return false;
++}
++
++#endif
+diff --git a/cl_dll/hud/scoreboard.cpp b/cl_dll/hud/scoreboard.cpp
+index cdbde46..9610599 100644
+--- a/cl_dll/hud/scoreboard.cpp
++++ b/cl_dll/hud/scoreboard.cpp
+@@ -163,6 +163,18 @@ bool CHudScoreboard :: ShouldDrawScoreboard() const
+ 	return false;
+ }
+ 
++// Localize() gives the key itself if the strings of the game have no such record
++// (then the table shows "#Cstrike_HEALTH"), so a plain default is used in that case
++static const char *LocalizeOrDefault( const char *key, const char *fallback )
++{
++	const char *text = Localize( key );
++
++	if( !text || text == key || text[0] == '#' )
++		return fallback;
++
++	return text;
++}
++
+ // Y positions
+ #define ROW_GAP  15
+ 
+@@ -212,10 +224,10 @@ int CHudScoreboard :: DrawScoreboard( float fTime )
+ 	g_Columns[COL_KILLS] = Column( g_Columns[COL_DEATHS].end - 10, Localize( "#PlayerScore" ) );
+ 	g_Columns[COL_KILLS].end = min( g_Columns[COL_KILLS].end, g_Columns[COL_KILLS].start - DrawUtils::HudStringLen( "9999" ) );
+ 
+-	g_Columns[COL_MONEY] = Column( g_Columns[COL_KILLS].end - 10, Localize( "#Cstrike_ACCOUNT" ) );
++	g_Columns[COL_MONEY] = Column( g_Columns[COL_KILLS].end - 10, LocalizeOrDefault( "#Cstrike_ACCOUNT", "Money" ) );
+ 	g_Columns[COL_MONEY].end = min( g_Columns[COL_MONEY].end, g_Columns[COL_MONEY].start - DrawUtils::HudStringLen( "$999999" ) );
+ 
+-	g_Columns[COL_HP] = Column( g_Columns[COL_MONEY].end - 10, Localize( "#Cstrike_HEALTH" ) );
++	g_Columns[COL_HP] = Column( g_Columns[COL_MONEY].end - 10, LocalizeOrDefault( "#Cstrike_HEALTH", "HP" ) );
+ 	g_Columns[COL_HP].end = min( g_Columns[COL_HP].end, g_Columns[COL_HP].start - DrawUtils::HudStringLen( "999999" ) );
+ 
+ 	g_Columns[COL_ATTRIB] = Column( g_Columns[COL_HP].end - 10 );
+@@ -226,7 +238,13 @@ int CHudScoreboard :: DrawScoreboard( float fTime )
+ 
+ 	// print the heading line
+ 
+-	DrawUtils::DrawRectangle(xstart, ystart, xend - xstart, yend - ystart,
++	// the frame has rounded corners, the same as the MOTD window: 14 pixels on a big screen
++	// (as measured on the Steam version), smaller on a small one, like in the Steam version
++	int cornerRadius = (int)( 14.0f * min( 1.0f, ScreenHeight / 1017.0f ) + 0.5f );
++	if( cornerRadius < 6 )
++		cornerRadius = 6;
++
++	DrawUtils::DrawRoundedRectangle(xstart, ystart, xend - xstart, yend - ystart, cornerRadius,
+ 		m_colors.r, m_colors.g, m_colors.b, m_colors.a, m_bDrawStroke);
+ 
+ 	int ypos = ystart + (list_slot * ROW_GAP) + 5;
 diff --git a/cl_dll/hud_redraw.cpp b/cl_dll/hud_redraw.cpp
 index 1f2ad59..271e0b3 100644
 --- a/cl_dll/hud_redraw.cpp
@@ -5222,6 +4368,24 @@ index 718d0ff..e34c6d0 100644
  }
  
  
+diff --git a/cl_dll/include/draw_util.h b/cl_dll/include/draw_util.h
+index 1fa2af1..7904cf5 100644
+--- a/cl_dll/include/draw_util.h
++++ b/cl_dll/include/draw_util.h
+@@ -184,6 +184,13 @@ public:
+ 		}
+ 	}
+ 
++	// Rectangles with rounded corners (the same rounding is used by all windows of the client)
++	static void FillRoundedRect( int x, int y, int wide, int tall, int radius, bool roundTop, bool roundBottom,
++								 int r, int g, int b, int a );
++	static void DrawRoundedFrame( int x, int y, int wide, int tall, int radius, int r, int g, int b, int a );
++	static void DrawRoundedRectangle( int x, int y, int wide, int tall, int radius,
++									  int r = 0, int g = 0, int b = 0, int a = 153, bool drawStroke = true );
++
+ 	static void Draw2DQuad( float x1, float y1, float x2, float y2 );
+ 	static void DrawStretchPic( float x, float y, float w, float h,
+ 								float s1 = 0, float t1 = 0, float s2 = 1, float t2 = 1);
 diff --git a/cl_dll/input.cpp b/cl_dll/input.cpp
 index c6579ca..aa51abf 100644
 --- a/cl_dll/input.cpp
