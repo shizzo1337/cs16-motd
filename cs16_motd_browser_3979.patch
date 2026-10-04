@@ -161,16 +161,16 @@ index f23bb7c..34d6d0a 100644
  
  
 diff --git a/cl_dll/hud/MOTD.cpp b/cl_dll/hud/MOTD.cpp
-index 83208f5..447d6c5 100644
+index 83208f5..2b914d9 100644
 --- a/cl_dll/hud/MOTD.cpp
 +++ b/cl_dll/hud/MOTD.cpp
 @@ -39,6 +39,12 @@ int CHudMOTD :: Init( void )
  	HOOK_MESSAGE( gHUD.m_MOTD, MOTD );
  
  	cl_hide_motd = CVAR_CREATE("cl_hide_motd", "0", FCVAR_ARCHIVE); // hide motd
-+	// 0 - show MOTD inside the game as text, 2 - open URL and HTML MOTD in the system browser
-+	// (1 is not a separate mode any more, it works like 2, so a value saved in a config keeps working)
-+	cl_motd_browser = CVAR_CREATE("cl_motd_browser", "2", FCVAR_ARCHIVE);
++	// 0 - show MOTD inside the game as text, 1 - open URL and HTML MOTD in the system browser
++	// (a value above 1 works like 1, so the values 2 and 3 that older builds saved in a config keep working)
++	cl_motd_browser = CVAR_CREATE("cl_motd_browser", "1", FCVAR_ARCHIVE);
 +	// 1 - if HTML MOTD contains an iframe with an http(s) address, open that address instead of the whole page
 +	cl_motd_browser_iframe = CVAR_CREATE("cl_motd_browser_iframe", "1", FCVAR_ARCHIVE);
 +	ResetBrowserState();
