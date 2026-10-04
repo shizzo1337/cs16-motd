@@ -1,453 +1,77 @@
-diff --git a/cl_dll/CMakeLists.txt b/cl_dll/CMakeLists.txt
-index b0af818..93f3656 100644
---- a/cl_dll/CMakeLists.txt
-+++ b/cl_dll/CMakeLists.txt
-@@ -77,6 +77,10 @@ add_library(${CLIENT_LIB} SHARED ${CS_CLIENT_SRC})
- 
- set_target_postfix(${CLIENT_LIB})
- 
-+if(WIN32)
-+	target_link_libraries(${CLIENT_LIB} shell32)
-+endif()
-+
- install(TARGETS ${CLIENT_LIB}
- 	DESTINATION "${GAME_DIR}/${CLIENT_INSTALL_DIR}/"
- 	PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
-diff --git a/cl_dll/hud.cpp b/cl_dll/hud.cpp
-index 9ae956c..15e785d 100644
---- a/cl_dll/hud.cpp
-+++ b/cl_dll/hud.cpp
-@@ -363,7 +363,11 @@ void CHud :: Init( void )
- 		cl_fog_b = CVAR_CREATE( "cl_fog_b", "0", 0 );
- 	}
- 
--	CVAR_CREATE( "cscl_ver", Q_buildnum(), 1<<14 | FCVAR_USERINFO ); // init and userinfo
-+	// this is a modified build: the version that is sent to the server, shown in the scoreboard
-+	// and printed to the console gets a suffix, so it is not mistaken for the original build
-+	static char cscl_ver[32];
-+	snprintf( cscl_ver, sizeof( cscl_ver ), "%s-motd", Q_buildnum() );
-+	CVAR_CREATE( "cscl_ver", cscl_ver, 1<<14 | FCVAR_USERINFO ); // init and userinfo
- 
- 	m_iLogo = 0;
- 	m_iFOV = 0;
-diff --git a/cl_dll/hud.h b/cl_dll/hud.h
-index f23bb7c..34d6d0a 100644
---- a/cl_dll/hud.h
-+++ b/cl_dll/hud.h
-@@ -347,14 +347,26 @@ public:
- 	float scroll;
- 	bool m_bShow;
- 	cvar_t *cl_hide_motd;
-+	cvar_t *cl_motd_browser;
-+	cvar_t *cl_motd_browser_iframe;
- 
- protected:
- 	static int MOTD_DISPLAY_TIME;
-+	bool HandleBrowserMOTD( const char *chunk, bool finished );
-+	void ResetBrowserState( void );
-+
- 	CUtlString m_szMOTD;
- 	
- 	int m_iLines;
- 	int m_iMaxLength;
- 	bool ignoreThisMotd;
-+
-+	// MOTD in system browser (Windows)
-+	enum { BROWSER_NONE = 0, BROWSER_URL, BROWSER_HTML };
-+	bool m_bMotdStarted;
-+	int m_iBrowserMode;
-+	int m_iBrowserLen;
-+	char m_szBrowserMOTD[16384];
- };
- 
- 
-diff --git a/cl_dll/hud/MOTD.cpp b/cl_dll/hud/MOTD.cpp
-index 83208f5..dd23576 100644
---- a/cl_dll/hud/MOTD.cpp
-+++ b/cl_dll/hud/MOTD.cpp
-@@ -39,6 +39,11 @@ int CHudMOTD :: Init( void )
- 	HOOK_MESSAGE( gHUD.m_MOTD, MOTD );
- 
- 	cl_hide_motd = CVAR_CREATE("cl_hide_motd", "0", FCVAR_ARCHIVE); // hide motd
-+	// 0 - show MOTD inside the game, 1 - open URL MOTD in system browser, 2 - open URL and HTML MOTD in system browser
-+	cl_motd_browser = CVAR_CREATE("cl_motd_browser", "2", FCVAR_ARCHIVE);
-+	// 1 - if HTML MOTD contains an iframe with an http(s) address, open that address instead of the whole page
-+	cl_motd_browser_iframe = CVAR_CREATE("cl_motd_browser_iframe", "1", FCVAR_ARCHIVE);
-+	ResetBrowserState();
- 	Reset();
- 
- 	return 1;
-@@ -47,9 +52,279 @@ int CHudMOTD :: Init( void )
- int CHudMOTD :: VidInit( void )
- {
- 	// Load sprites here
-+	ResetBrowserState();
- 	return 1;
- }
- 
-+static bool StartsWithNoCase( const char *s, const char *prefix )
-+{
-+	while( *prefix )
-+	{
-+		char a = *s++;
-+		char b = *prefix++;
-+
-+		if( a >= 'A' && a <= 'Z' )
-+			a += 'a' - 'A';
-+
-+		if( a != b )
-+			return false;
-+	}
-+
-+	return true;
-+}
-+
-+#if XASH_WIN32 == 1
-+bool MOTD_OpenInBrowser( const char *target );
-+bool MOTD_SaveTempHtml( const char *html, size_t len, char *outPath, size_t outSize );
-+#endif
-+
-+static bool IsBlank( char c )
-+{
-+	return (unsigned char)c <= ' ';
-+}
-+
-+static const char *FindNoCase( const char *s, const char *what )
-+{
-+	for( ; *s; s++ )
-+		if( StartsWithNoCase( s, what ))
-+			return s;
-+
-+	return NULL;
-+}
-+
-+// Finds the first <iframe ... src="http(s)://..."> in HTML and copies its address to out.
-+// Returns false if there is no such iframe or the address looks wrong.
-+// The attributes of a tag are read the way a browser reads them: with quotes or without, '>' can be inside quotes,
-+// "src" inside the value of another attribute is not an attribute, the first src of a tag is the one that counts.
-+static bool ExtractIframeSrc( const char *html, char *out, size_t outSize )
-+{
-+	const char *tag = html;
-+
-+	while(( tag = FindNoCase( tag, "<iframe" )) != NULL )
-+	{
-+		const char *p = tag + 7;
-+		tag = p; // the search for the next iframe goes on from here
-+
-+		if( !IsBlank( *p ) && *p != '/' ) // not "<iframe", e.g. "<iframes"
-+			continue;
-+
-+		for( ;; )
-+		{
-+			while( *p && ( IsBlank( *p ) || *p == '/' ))
-+				p++;
-+
-+			if( !*p )
-+				return false; // the tag is not closed, a browser drops it too
-+
-+			if( *p == '>' )
-+				break; // the end of the tag, there was no usable src
-+
-+			// name of the attribute
-+			const char *name = p;
-+
-+			while( *p && !IsBlank( *p ) && *p != '=' && *p != '>' && *p != '/' )
-+				p++;
-+
-+			const size_t nameLen = (size_t)( p - name );
-+
-+			while( *p && IsBlank( *p ))
-+				p++;
-+
-+			if( *p != '=' )
-+				continue; // an attribute without a value
-+
-+			p++;
-+
-+			while( *p && IsBlank( *p ))
-+				p++;
-+
-+			// the value
-+			char quote = 0;
-+
-+			if( *p == '"' || *p == '\'' )
-+				quote = *p++;
-+
-+			const char *value = p;
-+
-+			while( *p && ( quote ? ( *p != quote ) : ( !IsBlank( *p ) && *p != '>' )))
-+				p++;
-+
-+			if( !*p )
-+				return false; // an unclosed quote or tag swallows the rest of the page
-+
-+			const char *valueEnd = p;
-+
-+			if( quote )
-+				p++; // the closing quote
-+
-+			if( nameLen != 3 || !StartsWithNoCase( name, "src" ))
-+				continue;
-+
-+			// blanks around the address are not a part of it
-+			while( value < valueEnd && IsBlank( *value ))
-+				value++;
-+
-+			while( valueEnd > value && IsBlank( valueEnd[-1] ))
-+				valueEnd--;
-+
-+			size_t len = 0;
-+			bool ok = true;
-+
-+			for( const char *q = value; q < valueEnd; q++ )
-+			{
-+				if( IsBlank( *q )) // an address never contains blanks or control characters
-+				{
-+					ok = false;
-+					break;
-+				}
-+
-+				if( valueEnd - q >= 5 && !strncmp( q, "&amp;", 5 )) // HTML escaping of '&'
-+				{
-+					if( len + 1 >= outSize ) { ok = false; break; }
-+					out[len++] = '&';
-+					q += 4;
-+					continue;
-+				}
-+
-+				if( len + 1 >= outSize )
-+				{
-+					ok = false;
-+					break;
-+				}
-+
-+				out[len++] = *q;
-+			}
-+
-+			if( ok )
-+			{
-+				out[len] = 0;
-+
-+				// only http(s) addresses are opened
-+				if( StartsWithNoCase( out, "http://" ) || StartsWithNoCase( out, "https://" ))
-+					return true;
-+			}
-+
-+			break; // the first src of a tag decides, look at the next iframe
-+		}
-+
-+		tag = p;
-+	}
-+
-+	return false;
-+}
-+
-+void CHudMOTD :: ResetBrowserState( void )
-+{
-+	m_bMotdStarted = false;
-+	m_iBrowserMode = BROWSER_NONE;
-+	m_iBrowserLen = 0;
-+	m_szBrowserMOTD[0] = 0;
-+}
-+
-+// Returns true if this MOTD chunk was consumed and must not be shown in game.
-+// MOTD comes in chunks, so we decide what to do at the first chunk:
-+//  - text starting with http:// or https:// is opened in the browser as a link
-+//  - text starting with '<' is HTML, it is saved to a file and opened in the browser
-+//  - anything else is shown in game as usual
-+bool CHudMOTD :: HandleBrowserMOTD( const char *chunk, bool finished )
-+{
-+#if XASH_WIN32 == 1
-+	int mode = (int)cl_motd_browser->value;
-+
-+	if( mode < 1 )
-+	{
-+		m_bMotdStarted = false;
-+		return false;
-+	}
-+
-+	if( !m_bMotdStarted )
-+	{
-+		const char *p = chunk;
-+
-+		ResetBrowserState();
-+		m_bMotdStarted = true;
-+
-+		while( *p && (unsigned char)*p <= ' ' )
-+			p++;
-+
-+		if( StartsWithNoCase( p, "http://" ) || StartsWithNoCase( p, "https://" ))
-+			m_iBrowserMode = BROWSER_URL;
-+		else if( mode >= 2 && *p == '<' )
-+			m_iBrowserMode = BROWSER_HTML;
-+	}
-+
-+	if( m_iBrowserMode == BROWSER_NONE )
-+	{
-+		if( finished )
-+			m_bMotdStarted = false;
-+
-+		return false; // usual text MOTD, show it in game
-+	}
-+
-+	// accumulate
-+	int chunkLen = (int)strlen( chunk );
-+	int room = (int)sizeof( m_szBrowserMOTD ) - 1 - m_iBrowserLen;
-+
-+	if( chunkLen > room )
-+		chunkLen = room;
-+
-+	if( chunkLen > 0 )
-+	{
-+		memcpy( m_szBrowserMOTD + m_iBrowserLen, chunk, chunkLen );
-+		m_iBrowserLen += chunkLen;
-+		m_szBrowserMOTD[m_iBrowserLen] = 0;
-+	}
-+
-+	if( !finished )
-+		return true;
-+
-+	// whole MOTD received
-+	if( m_iBrowserMode == BROWSER_URL )
-+	{
-+		char *url = m_szBrowserMOTD;
-+		char *end;
-+
-+		while( *url && (unsigned char)*url <= ' ' )
-+			url++;
-+
-+		// URL ends on the first whitespace
-+		for( end = url; *end && (unsigned char)*end > ' '; end++ );
-+		*end = 0;
-+
-+		// only http(s) links, never pass anything else from the server to the system
-+		if( StartsWithNoCase( url, "http://" ) || StartsWithNoCase( url, "https://" ))
-+		{
-+			gEngfuncs.Con_Printf( "Opening MOTD in browser: %s\n", url );
-+			MOTD_OpenInBrowser( url );
-+		}
-+	}
-+	else if( m_iBrowserMode == BROWSER_HTML )
-+	{
-+		char iframeUrl[2048];
-+		char path[512];
-+
-+		if( cl_motd_browser_iframe->value != 0 && ExtractIframeSrc( m_szBrowserMOTD, iframeUrl, sizeof( iframeUrl )))
-+		{
-+			// the page is only a wrapper around an iframe, open the iframe address directly
-+			gEngfuncs.Con_Printf( "Opening MOTD iframe in browser: %s\n", iframeUrl );
-+			MOTD_OpenInBrowser( iframeUrl );
-+		}
-+		else if( MOTD_SaveTempHtml( m_szBrowserMOTD, m_iBrowserLen, path, sizeof( path )))
-+		{
-+			gEngfuncs.Con_Printf( "Opening MOTD in browser: %s\n", path );
-+			MOTD_OpenInBrowser( path );
-+		}
-+		else gEngfuncs.Con_Printf( "Can't save MOTD to a temporary file\n" );
-+	}
-+
-+	ResetBrowserState();
-+	return true;
-+#else
-+	(void)chunk; (void)finished;
-+	return false;
-+#endif
-+}
-+
- void CHudMOTD :: Reset( void )
- {
- 	m_iFlags &= ~HUD_DRAW;  // start out inactive
-@@ -137,13 +412,19 @@ int CHudMOTD :: MsgFunc_MOTD( const char *pszName, int iSize, void *pbuf )
- 		Reset(); // clear the current MOTD in prep for this one
- 	}
- 
--	if( ignoreThisMotd )
--		return 1;
--
- 	BufferReader reader( pszName, pbuf, iSize );
- 
- 	int is_finished = reader.ReadByte();
--	m_szMOTD.Append( reader.ReadString() );
-+	const char *motd_chunk = reader.ReadString();
-+
-+	// URL or HTML MOTD goes to the system browser
-+	if( HandleBrowserMOTD( motd_chunk, is_finished != 0 ))
-+		return 1;
-+
-+	if( ignoreThisMotd )
-+		return 1;
-+
-+	m_szMOTD.Append( motd_chunk );
- 
- 	// we still don't support html tags in motd :(
- 	if( strcasestr( m_szMOTD.String(), "<!DOCTYPE HTML>" ) )
-diff --git a/cl_dll/hud/MOTD_browser.cpp b/cl_dll/hud/MOTD_browser.cpp
-new file mode 100644
-index 0000000..fad4296
---- /dev/null
-+++ b/cl_dll/hud/MOTD_browser.cpp
-@@ -0,0 +1,64 @@
-+//
-+// MOTD_browser.cpp
-+//
-+// OS specific helpers for opening server MOTD in the system web browser.
-+// Kept in a separate file because <windows.h> conflicts with engine headers.
-+//
-+
-+#include <stddef.h>
-+
-+bool MOTD_OpenInBrowser( const char *target );
-+bool MOTD_SaveTempHtml( const char *html, size_t len, char *outPath, size_t outSize );
-+
-+#if defined( _WIN32 )
-+
-+#define WIN32_LEAN_AND_MEAN
-+#define NOMINMAX
-+#include <windows.h>
-+#include <shellapi.h>
-+#include <stdio.h>
-+
-+bool MOTD_OpenInBrowser( const char *target )
-+{
-+	HINSTANCE result = ShellExecuteA( NULL, "open", target, NULL, NULL, SW_SHOWNORMAL );
-+
-+	return (INT_PTR)result > 32;
-+}
-+
-+bool MOTD_SaveTempHtml( const char *html, size_t len, char *outPath, size_t outSize )
-+{
-+	char dir[MAX_PATH];
-+	DWORD n = GetTempPathA( sizeof( dir ), dir );
-+
-+	if( n == 0 || n >= sizeof( dir ))
-+		return false;
-+
-+	if( snprintf( outPath, outSize, "%scs16_motd.html", dir ) <= 0 )
-+		return false;
-+
-+	FILE *f = fopen( outPath, "wb" );
-+
-+	if( !f )
-+		return false;
-+
-+	size_t written = fwrite( html, 1, len, f );
-+	fclose( f );
-+
-+	return written == len;
-+}
-+
-+#else // not implemented on other platforms yet
-+
-+bool MOTD_OpenInBrowser( const char *target )
-+{
-+	(void)target;
-+	return false;
-+}
-+
-+bool MOTD_SaveTempHtml( const char *html, size_t len, char *outPath, size_t outSize )
-+{
-+	(void)html; (void)len; (void)outPath; (void)outSize;
-+	return false;
-+}
-+
-+#endif
+name: Build cs16-client 3979 (x64) with MOTD in the browser
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Keep line endings as is
+        run: git config --global core.autocrlf false
+
+      - name: Get this repository (contains the patch)
+        uses: actions/checkout@v4
+        with:
+          path: mypatch
+
+      - name: Get cs16-client sources (latest, build 3979)
+        uses: actions/checkout@v4
+        with:
+          repository: Velaron/cs16-client
+          ref: e30e27c3bd890f731ad7921d9c876d171aea4b32
+          submodules: recursive
+          path: cs16
+
+      - name: Apply the MOTD patch
+        working-directory: cs16
+        run: git apply --ignore-whitespace --whitespace=nowarn ../mypatch/cs16_motd_browser_3979.patch
+
+      - name: Setup Visual Studio (64-bit)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: amd64
+
+      - name: Configure
+        working-directory: cs16
+        run: cmake --preset win32-release-amd64 -DBUILD_MAINUI=OFF -DBUILD_SERVER=OFF
+
+      - name: Build client only
+        working-directory: cs16
+        run: cmake --build build --target client
+
+      - name: Collect result
+        working-directory: cs16
+        run: |
+          OUT="$GITHUB_WORKSPACE/result"
+          mkdir -p "$OUT/cstrike/cl_dlls"
+          find build -name "client*.dll" -exec cp -v {} "$OUT/cstrike/cl_dlls/" \;
+          ls -la "$OUT/cstrike/cl_dlls"
+
+      - name: Check result (64-bit client with the MOTD patch)
+        working-directory: result
+        run: |
+          set -eu
+          f=$(ls cstrike/cl_dlls/client*.dll | head -n1)
+          echo "client: $f"
+          python - "$f" <<'PY'
+          import struct, sys
+          d = open(sys.argv[1], 'rb').read(4096)
+          pe = struct.unpack_from('<I', d, 0x3c)[0]
+          machine = struct.unpack_from('<H', d, pe + 4)[0]
+          print('PE machine type:', hex(machine), '(0x8664 = 64-bit x64)')
+          sys.exit(0 if machine == 0x8664 else 1)
+          PY
+          grep -aq "cl_motd_browser_iframe" "$f" || { echo "ERROR: the MOTD patch is not in this client"; exit 1; }
+          grep -aq "ShellExecute" "$f" || { echo "ERROR: the client cannot open the browser"; exit 1; }
+          grep -aq -- "-motd" "$f" || { echo "ERROR: the version mark -motd is missing"; exit 1; }
+          echo "Result looks complete"
+
+      - name: Upload result
+        uses: actions/upload-artifact@v4
+        with:
+          name: cs16-client-3979-motd-x64
+          path: result/*
