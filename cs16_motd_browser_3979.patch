@@ -111,18 +111,20 @@ index c585f3c..7c66a65 100644
  {
  	// REMOVE WHEN NANOGL BUG WILL BE FIXED
 diff --git a/cl_dll/hud.cpp b/cl_dll/hud.cpp
-index 9ae956c..15e785d 100644
+index 9ae956c..aff6b92 100644
 --- a/cl_dll/hud.cpp
 +++ b/cl_dll/hud.cpp
-@@ -363,7 +363,11 @@ void CHud :: Init( void )
+@@ -363,7 +363,13 @@ void CHud :: Init( void )
  		cl_fog_b = CVAR_CREATE( "cl_fog_b", "0", 0 );
  	}
  
 -	CVAR_CREATE( "cscl_ver", Q_buildnum(), 1<<14 | FCVAR_USERINFO ); // init and userinfo
 +	// this is a modified build: the version that is sent to the server, shown in the scoreboard
-+	// and printed to the console gets a suffix, so it is not mistaken for the original build
-+	static char cscl_ver[32];
-+	snprintf( cscl_ver, sizeof( cscl_ver ), "%s-motd", Q_buildnum() );
++	// and printed to the console gets a suffix, so it is not mistaken for the original build.
++	// The number is FIXED, it is the build of the client sources this patch was made for and it does not
++	// depend on the day of compilation. When the patch is moved to another client version change it here
++	// and in CLIENT_BUILD of the workflow (the workflow checks that both are the same).
++	static char cscl_ver[] = "3979-motd";
 +	CVAR_CREATE( "cscl_ver", cscl_ver, 1<<14 | FCVAR_USERINFO ); // init and userinfo
  
  	m_iLogo = 0;
