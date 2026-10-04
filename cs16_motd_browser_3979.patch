@@ -159,14 +159,15 @@ index f23bb7c..34d6d0a 100644
  
  
 diff --git a/cl_dll/hud/MOTD.cpp b/cl_dll/hud/MOTD.cpp
-index 83208f5..dd23576 100644
+index 83208f5..447d6c5 100644
 --- a/cl_dll/hud/MOTD.cpp
 +++ b/cl_dll/hud/MOTD.cpp
-@@ -39,6 +39,11 @@ int CHudMOTD :: Init( void )
+@@ -39,6 +39,12 @@ int CHudMOTD :: Init( void )
  	HOOK_MESSAGE( gHUD.m_MOTD, MOTD );
  
  	cl_hide_motd = CVAR_CREATE("cl_hide_motd", "0", FCVAR_ARCHIVE); // hide motd
-+	// 0 - show MOTD inside the game, 1 - open URL MOTD in system browser, 2 - open URL and HTML MOTD in system browser
++	// 0 - show MOTD inside the game as text, 2 - open URL and HTML MOTD in the system browser
++	// (1 is not a separate mode any more, it works like 2, so a value saved in a config keeps working)
 +	cl_motd_browser = CVAR_CREATE("cl_motd_browser", "2", FCVAR_ARCHIVE);
 +	// 1 - if HTML MOTD contains an iframe with an http(s) address, open that address instead of the whole page
 +	cl_motd_browser_iframe = CVAR_CREATE("cl_motd_browser_iframe", "1", FCVAR_ARCHIVE);
@@ -174,7 +175,7 @@ index 83208f5..dd23576 100644
  	Reset();
  
  	return 1;
-@@ -47,9 +52,279 @@ int CHudMOTD :: Init( void )
+@@ -47,9 +53,279 @@ int CHudMOTD :: Init( void )
  int CHudMOTD :: VidInit( void )
  {
  	// Load sprites here
@@ -375,7 +376,7 @@ index 83208f5..dd23576 100644
 +
 +		if( StartsWithNoCase( p, "http://" ) || StartsWithNoCase( p, "https://" ))
 +			m_iBrowserMode = BROWSER_URL;
-+		else if( mode >= 2 && *p == '<' )
++		else if( *p == '<' )
 +			m_iBrowserMode = BROWSER_HTML;
 +	}
 +
@@ -454,7 +455,7 @@ index 83208f5..dd23576 100644
  void CHudMOTD :: Reset( void )
  {
  	m_iFlags &= ~HUD_DRAW;  // start out inactive
-@@ -137,13 +412,19 @@ int CHudMOTD :: MsgFunc_MOTD( const char *pszName, int iSize, void *pbuf )
+@@ -137,13 +413,19 @@ int CHudMOTD :: MsgFunc_MOTD( const char *pszName, int iSize, void *pbuf )
  		Reset(); // clear the current MOTD in prep for this one
  	}
  
