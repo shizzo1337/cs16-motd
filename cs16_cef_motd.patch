@@ -224,16 +224,15 @@ index 0000000..b1dfb44
 +} // namespace iHTMLChrome
 diff --git a/cl_dll/chrome/chrome_backend_cef.cpp b/cl_dll/chrome/chrome_backend_cef.cpp
 new file mode 100644
-index 0000000..dc932ff
+index 0000000..a540a53
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_backend_cef.cpp
-@@ -0,0 +1,432 @@
+@@ -0,0 +1,405 @@
 +#include "chrome_backend.h"
 +
 +#if defined(CS16CLIENT_ENABLE_CEF)
 +
 +#include "chrome_debug.h"
-+#include "chrome_jslog.h"
 +#include <cmath>
 +#include <cstring>
 +#include <string>
@@ -243,7 +242,6 @@ index 0000000..dc932ff
 +#include "cef_browser.h"
 +#include "cef_client.h"
 +#include "cef_parser.h"
-+#include "cef_display_handler.h"
 +#include "cef_render_handler.h"
 +#include "cef_request.h"
 +#include "cef_request_handler.h"
@@ -300,7 +298,7 @@ index 0000000..dc932ff
 +	return starts( "http://" ) || starts( "https://" ) || starts( "about:blank" ) || starts( "data:text/html" );
 +}
 +
-+class CEFRenderClient final : public CefClient, public CefLifeSpanHandler, public CefRenderHandler, public CefLoadHandler, public CefRequestHandler, public CefDisplayHandler
++class CEFRenderClient final : public CefClient, public CefLifeSpanHandler, public CefRenderHandler, public CefLoadHandler, public CefRequestHandler
 +{
 +public:
 +	explicit CEFRenderClient( ChromeInstance* instance ) : instance_( instance )
@@ -380,17 +378,8 @@ index 0000000..dc932ff
 +	CefRefPtr<CefRenderHandler> GetRenderHandler() override { return this; }
 +	CefRefPtr<CefLoadHandler> GetLoadHandler() override { return this; }
 +	CefRefPtr<CefRequestHandler> GetRequestHandler() override { return this; }
-+	CefRefPtr<CefDisplayHandler> GetDisplayHandler() override { return this; }
 +
-+	// Messages of the page: console.log / warn / error, uncaught exceptions of scripts, rejected promises.
-+	// Called on the thread of the game (we run the loop of CEF ourselves). See chrome_jslog.h.
-+	bool OnConsoleMessage( CefRefPtr<CefBrowser> browser, cef_log_severity_t level, const CefString& message, const CefString& source, int line ) override
-+	{
-+		LogLine( js_.OnConsole( BrowserId( browser ), static_cast<int>( level ), message.ToString(), source.ToString(), line, Chrome_JsLogLevel() ));
-+		return true; // CEF does not print it again
-+	}
-+
-+	bool OnBeforeBrowse( CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>, CefRefPtr<CefRequest> request, bool, bool ) override
++	bool OnBeforeBrowse( CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>, CefRefPtr<CefRequest> request, bool, bool ) override
 +	{
 +		if( !request )
 +			return false;
@@ -399,11 +388,7 @@ index 0000000..dc932ff
 +		if( IsAllowedNavigationUrl( url ))
 +			return false;
 +
-+		if( Chrome_JsLogLevel() > 0 )
-+			LogLine( js_.OnNavigationBlocked( BrowserId( browser ), url, Chrome_JsLogLevel() ));
-+		else
-+			Chrome_Printf( "[chrome] navigation blocked: %s\n", url.c_str() );
-+
++		Chrome_Printf( "[chrome] navigation blocked: %s\n", url.c_str() );
 +		return true; // cancel
 +	}
 +
@@ -456,9 +441,8 @@ index 0000000..dc932ff
 +		}
 +	}
 +
-+	void OnBeforeClose( CefRefPtr<CefBrowser> browser ) override
++	void OnBeforeClose( CefRefPtr<CefBrowser> ) override
 +	{
-+		LogLine( js_.OnClose( BrowserId( browser ), Chrome_JsLogLevel() ));
 +		browser_ = nullptr;
 +	}
 +
@@ -485,11 +469,8 @@ index 0000000..dc932ff
 +
 +	void OnLoadingStateChange( CefRefPtr<CefBrowser>, bool, bool, bool ) override {}
 +
-+	void OnLoadEnd( CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, int httpStatusCode ) override
++	void OnLoadEnd( CefRefPtr<CefBrowser>, CefRefPtr<CefFrame> frame, int ) override
 +	{
-+		if( frame )
-+			LogLine( js_.OnLoadEnd( BrowserId( browser ), frame->IsMain(), httpStatusCode, frame->GetURL().ToString(), Chrome_JsLogLevel() ));
-+
 +		// Chromium resets page zoom on navigation; re-apply cl_chrome_zoom (g_browser_page_scale).
 +		if( !frame || !frame->IsMain() || !browser_ )
 +			return;
@@ -505,25 +486,17 @@ index 0000000..dc932ff
 +		host->Invalidate( PET_VIEW );
 +	}
 +
-+	void OnLoadError( CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, ErrorCode code, const CefString& error_text, const CefString& failed_url ) override
++	void OnLoadError( CefRefPtr<CefBrowser>, CefRefPtr<CefFrame> frame, ErrorCode code, const CefString& error_text, const CefString& failed_url ) override
 +	{
-+		// every frame, an iframe of the MOTD page is the page itself
-+		LogLine( js_.OnLoadError( BrowserId( browser ), frame && frame->IsMain(), static_cast<int>( code ), error_text.ToString(), failed_url.ToString(), Chrome_JsLogLevel() ));
++		if( !frame || !frame->IsMain() )
++			return;
++		if( static_cast<int>( code ) == -3 )
++			return;
++		Chrome_DPrintf( 1.f, "[browser] CEF load: main frame load error code=%d text='%s' url='%s'\n",
++			static_cast<int>( code ), error_text.ToString().c_str(), failed_url.ToString().c_str() );
 +	}
 +
 +private:
-+	static int BrowserId( CefRefPtr<CefBrowser> browser )
-+	{
-+		return browser ? browser->GetIdentifier() : 0;
-+	}
-+
-+	static void LogLine( const std::string& line )
-+	{
-+		if( !line.empty() )
-+			Chrome_JsLog( line.c_str() );
-+	}
-+
-+	iHTMLChrome::CEF::JsLogSession js_; // what the page did: errors, loads (chrome_jslog.h)
 +	ChromeInstance* instance_ = nullptr;
 +	CefRefPtr<CefBrowser> browser_;
 +	std::string pending_url_;
@@ -792,12 +765,11 @@ index 0000000..dd8654f
 +} // namespace iHTMLChrome
 diff --git a/cl_dll/chrome/chrome_debug.cpp b/cl_dll/chrome/chrome_debug.cpp
 new file mode 100644
-index 0000000..d839222
+index 0000000..d5656f7
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_debug.cpp
-@@ -0,0 +1,86 @@
+@@ -0,0 +1,50 @@
 +#include "chrome_debug.h"
-+#include "chrome_jslog.h"
 +
 +#include "hud.h"
 +#include "cl_util.h"
@@ -808,9 +780,6 @@ index 0000000..d839222
 +namespace
 +{
 +cvar_t* cl_chrome_debug = nullptr;
-+cvar_t* cl_chrome_jslog = nullptr;
-+iHTMLChrome::CEF::JsLogFile g_jslog_file;
-+bool g_jslog_file_warned = false;
 +}
 +
 +void Chrome_DInit()
@@ -819,9 +788,6 @@ index 0000000..d839222
 +		return;
 +
 +	cl_chrome_debug = CVAR_CREATE( "cl_chrome_debug", "1", FCVAR_ARCHIVE );
-+	// 0 - off, 1 - JavaScript errors and warnings, loading of pages and iframes, a summary when the window is closed,
-+	// 2 - also all other messages of the page (console.log and so on)
-+	cl_chrome_jslog = CVAR_CREATE( "cl_chrome_jslog", "1", FCVAR_ARCHIVE );
 +}
 +
 +float Chrome_Level()
@@ -853,41 +819,12 @@ index 0000000..d839222
 +
 +	gEngfuncs.Con_Printf( "%s", msg );
 +}
-+
-+int Chrome_JsLogLevel()
-+{
-+	if( !cl_chrome_jslog )
-+		return 0;
-+
-+	const int level = static_cast<int>( cl_chrome_jslog->value );
-+	return level < 0 ? 0 : level;
-+}
-+
-+void Chrome_JsLogSetFile( const char* path )
-+{
-+	g_jslog_file.SetPath( path ? path : "" );
-+	g_jslog_file_warned = false;
-+}
-+
-+void Chrome_JsLog( const char* line )
-+{
-+	if( !line || !line[0] )
-+		return;
-+
-+	gEngfuncs.Con_Printf( "%s\n", line );
-+
-+	if( !g_jslog_file.Write( line ) && !g_jslog_file_warned )
-+	{
-+		g_jslog_file_warned = true;
-+		gEngfuncs.Con_Printf( "[js] the log file can not be written, the console is used only\n" );
-+	}
-+}
 diff --git a/cl_dll/chrome/chrome_debug.h b/cl_dll/chrome/chrome_debug.h
 new file mode 100644
-index 0000000..a359233
+index 0000000..72b1a8e
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_debug.h
-@@ -0,0 +1,19 @@
+@@ -0,0 +1,14 @@
 +#pragma once
 +
 +#if defined(__GNUC__)
@@ -900,11 +837,6 @@ index 0000000..a359233
 +float Chrome_Level();
 +void Chrome_DPrintf( float min_level, const char* fmt, ... ) CHROME_DEBUG_PRINTF_ATTR( 2, 3 );
 +void Chrome_Printf( const char* fmt, ... ) CHROME_DEBUG_PRINTF_ATTR( 1, 2 );
-+
-+// Log of the embedded browser (JavaScript errors, loading of pages), see chrome_jslog.h
-+int Chrome_JsLogLevel();                      // cl_chrome_jslog: 0 - off, 1 - errors and loads (default), 2 - everything
-+void Chrome_JsLogSetFile( const char* path ); // the file of the log: <gamedir>/cef/js_debug.log
-+void Chrome_JsLog( const char* line );        // a line (without a new line): to the console and to the file
 +
 +#undef CHROME_DEBUG_PRINTF_ATTR
 diff --git a/cl_dll/chrome/chrome_environment.cpp b/cl_dll/chrome/chrome_environment.cpp
@@ -2336,384 +2268,6 @@ index 0000000..4776af8
 +};
 +} // namespace CEF
 +} // namespace iHTMLChrome
-diff --git a/cl_dll/chrome/chrome_jslog.h b/cl_dll/chrome/chrome_jslog.h
-new file mode 100644
-index 0000000..4c5a3e6
---- /dev/null
-+++ b/cl_dll/chrome/chrome_jslog.h
-@@ -0,0 +1,372 @@
-+#pragma once
-+
-+// Log of the embedded browser: JavaScript errors, messages of the page, loading of pages and iframes.
-+// It is made to check that the scripts of a MOTD page run correctly.
-+// No dependencies on the engine or on CEF, so it can be tested alone.
-+//
-+// cl_chrome_jslog:
-+//   0 - nothing is logged
-+//   1 - JavaScript errors and warnings, load problems, a line for every loaded page and iframe and a summary
-+//       when the window is closed (default). If a page runs without problems you see "JS errors 0" in the summary
-+//   2 - the same and all other messages of the page (console.log, console.info, console.debug)
-+//
-+// The lines go to the game console and to the file <gamedir>/cef/js_debug.log.
-+
-+#include <algorithm>
-+#include <cstdio>
-+#include <cstring>
-+#include <ctime>
-+#include <string>
-+
-+namespace iHTMLChrome {
-+namespace CEF {
-+
-+namespace JsLog {
-+// the same numbers as in CEF (cef_log_severity_t)
-+enum Severity
-+{
-+	kVerbose = 1,
-+	kInfo = 2,
-+	kWarning = 3,
-+	kError = 4,
-+	kFatal = 5
-+};
-+
-+constexpr size_t kMaxMessage = 400;        // characters of a message in the log
-+constexpr size_t kMaxUrl = 160;            // characters of an address in the log
-+constexpr int kMaxLinesPerWindow = 300;    // a page that writes more is cut (a hostile page can flood the log)
-+constexpr long kMaxFileBytes = 1024 * 1024; // size of the log file
-+} // namespace JsLog
-+
-+// Cuts a text to maxLen bytes without breaking a UTF-8 character and puts "..." in the end
-+inline void JsLogCutUtf8( std::string& s, size_t maxLen )
-+{
-+	if( s.size() <= maxLen )
-+		return;
-+
-+	size_t n = maxLen;
-+
-+	// do not stop in the middle of a character: step back to the first byte of it
-+	while( n > 0 && ( static_cast<unsigned char>( s[n] ) & 0xC0 ) == 0x80 )
-+		n--;
-+
-+	s.resize( n );
-+	s += "...";
-+}
-+
-+// One line of text: control characters (new lines, escape codes, zero bytes) become a blank, so a page can not
-+// write a fake line into the log
-+inline std::string JsLogClean( const std::string& in, size_t maxLen )
-+{
-+	std::string out;
-+	out.reserve( std::min( in.size(), maxLen + 4 ));
-+
-+	for( unsigned char c : in )
-+	{
-+		if( c < 0x20 || c == 0x7F )
-+		{
-+			if( !out.empty() && out.back() != ' ' )
-+				out += ' ';
-+
-+			continue;
-+		}
-+
-+		out += static_cast<char>( c );
-+	}
-+
-+	while( !out.empty() && out.back() == ' ' )
-+		out.pop_back();
-+
-+	JsLogCutUtf8( out, maxLen );
-+	return out;
-+}
-+
-+// An address for the log: a data: address (the whole MOTD page) is only a type and a size
-+inline std::string JsLogShortUrl( const std::string& url )
-+{
-+	if( url.compare( 0, 5, "data:" ) == 0 )
-+	{
-+		const size_t end = url.find_first_of( ";," );
-+		return JsLogClean( url.substr( 0, end == std::string::npos ? 5 : end ), 40 ) + " (" + std::to_string( url.size() ) + " bytes)";
-+	}
-+
-+	return JsLogClean( url, JsLog::kMaxUrl );
-+}
-+
-+inline const char* JsLogSeverityName( int severity )
-+{
-+	if( severity >= JsLog::kFatal )
-+		return "FATAL";
-+	if( severity >= JsLog::kError )
-+		return "ERROR";
-+	if( severity == JsLog::kWarning )
-+		return "warn";
-+	if( severity == JsLog::kVerbose )
-+		return "debug";
-+
-+	return "log";
-+}
-+
-+// Which messages of the page are logged at the given cl_chrome_jslog
-+inline bool JsLogShouldLog( int severity, int level )
-+{
-+	if( level <= 0 )
-+		return false;
-+
-+	if( level == 1 )
-+		return severity >= JsLog::kWarning;
-+
-+	return true;
-+}
-+
-+// The state of one window: counts what happened and makes the lines of the log. Every function returns the line
-+// to write or an empty string.
-+class JsLogSession
-+{
-+public:
-+	// a message of the page (console.log / warn / error, an uncaught exception, a rejected promise)
-+	std::string OnConsole( int browserId, int severity, const std::string& message, const std::string& source, int line, int level )
-+	{
-+		if( severity >= JsLog::kError )
-+			errors_++;
-+		else if( severity == JsLog::kWarning )
-+			warnings_++;
-+		else
-+			messages_++;
-+
-+		if( !JsLogShouldLog( severity, level ))
-+			return std::string();
-+
-+		std::string text = "[js] #" + std::to_string( browserId ) + " " + JsLogSeverityName( severity ) + " ";
-+
-+		if( !source.empty() )
-+		{
-+			text += JsLogShortUrl( source );
-+
-+			if( line > 0 )
-+				text += ":" + std::to_string( line );
-+
-+			text += ": ";
-+		}
-+
-+		text += JsLogClean( message, JsLog::kMaxMessage );
-+		return Limit( text );
-+	}
-+
-+	// a page or an iframe finished loading
-+	std::string OnLoadEnd( int browserId, bool mainFrame, int httpStatus, const std::string& url, int level )
-+	{
-+		if( level <= 0 )
-+			return std::string();
-+
-+		const bool httpError = httpStatus >= 400;
-+
-+		if( httpError )
-+			httpErrors_++;
-+
-+		std::string text = "[js] #" + std::to_string( browserId ) + " loaded " + ( mainFrame ? "main frame" : "iframe" );
-+
-+		if( httpError )
-+			text += " with HTTP error " + std::to_string( httpStatus );
-+		else if( httpStatus > 0 )
-+			text += " (HTTP " + std::to_string( httpStatus ) + ")";
-+
-+		text += ": " + JsLogShortUrl( url );
-+
-+		if( mainFrame )
-+			text += " | JS errors so far: " + std::to_string( errors_ ) + ", warnings: " + std::to_string( warnings_ );
-+
-+		return Limit( text );
-+	}
-+
-+	// a page or an iframe could not be loaded; code -3 (a load that was cancelled, for example by a redirect) is not an error
-+	std::string OnLoadError( int browserId, bool mainFrame, int code, const std::string& errorText, const std::string& url, int level )
-+	{
-+		if( code == -3 )
-+			return std::string();
-+
-+		loadErrors_++;
-+
-+		if( level <= 0 )
-+			return std::string();
-+
-+		return Limit( "[js] #" + std::to_string( browserId ) + " LOAD ERROR " + ( mainFrame ? "main frame" : "iframe" ) + ": " +
-+			JsLogClean( errorText, 80 ) + " (" + std::to_string( code ) + ") " + JsLogShortUrl( url ));
-+	}
-+
-+	// the page tried to go to an address that is not allowed
-+	std::string OnNavigationBlocked( int browserId, const std::string& url, int level )
-+	{
-+		blocked_++;
-+
-+		if( level <= 0 )
-+			return std::string();
-+
-+		return Limit( "[js] #" + std::to_string( browserId ) + " navigation blocked: " + JsLogShortUrl( url ));
-+	}
-+
-+	// the window was closed: the summary is always written (it is not cut by the limit of lines)
-+	std::string OnClose( int browserId, int level ) const
-+	{
-+		if( level <= 0 )
-+			return std::string();
-+
-+		std::string text = "[js] #" + std::to_string( browserId ) + " window closed: JS errors " + std::to_string( errors_ ) +
-+			", warnings " + std::to_string( warnings_ ) + ", other messages " + std::to_string( messages_ ) +
-+			", load errors " + std::to_string( loadErrors_ ) + ", HTTP errors " + std::to_string( httpErrors_ ) +
-+			", blocked navigations " + std::to_string( blocked_ );
-+
-+		if( dropped_ > 0 )
-+			text += ", " + std::to_string( dropped_ ) + " lines were not logged (too many)";
-+
-+		return text;
-+	}
-+
-+	int errors() const { return errors_; }
-+	int warnings() const { return warnings_; }
-+	int messages() const { return messages_; }
-+	int loadErrors() const { return loadErrors_; }
-+	int httpErrors() const { return httpErrors_; }
-+	int blocked() const { return blocked_; }
-+	int dropped() const { return dropped_; }
-+
-+private:
-+	std::string Limit( const std::string& line )
-+	{
-+		if( lines_ < JsLog::kMaxLinesPerWindow )
-+		{
-+			lines_++;
-+			return line;
-+		}
-+
-+		dropped_++;
-+
-+		if( dropped_ == 1 )
-+			return "[js] too many messages from this page (more than " + std::to_string( JsLog::kMaxLinesPerWindow ) +
-+				"), the rest is counted but not logged";
-+
-+		return std::string();
-+	}
-+
-+	int errors_ = 0, warnings_ = 0, messages_ = 0, loadErrors_ = 0, httpErrors_ = 0, blocked_ = 0;
-+	int lines_ = 0, dropped_ = 0;
-+};
-+
-+// The log file: lines are added with the time, the size is limited
-+class JsLogFile
-+{
-+public:
-+	~JsLogFile()
-+	{
-+		Close();
-+	}
-+
-+	void SetPath( const std::string& path )
-+	{
-+		Close();
-+		path_ = path;
-+		failed_ = false;
-+		full_ = false;
-+		written_ = 0;
-+	}
-+
-+	// Returns false if the file can not be written (the caller tells the user about it once)
-+	bool Write( const std::string& line )
-+	{
-+		if( path_.empty() || failed_ )
-+			return false;
-+
-+		if( full_ )
-+			return true;
-+
-+		if( !f_ && !Open() )
-+			return false;
-+
-+		std::string text = Timestamp() + line + "\n";
-+
-+		if( written_ + static_cast<long>( text.size() ) > JsLog::kMaxFileBytes )
-+		{
-+			full_ = true;
-+			text = Timestamp() + "[js] the log file is full, further lines are not written\n";
-+		}
-+
-+		if( fputs( text.c_str(), f_ ) < 0 )
-+		{
-+			failed_ = true;
-+			return false;
-+		}
-+
-+		fflush( f_ );
-+		written_ += static_cast<long>( text.size() );
-+		return true;
-+	}
-+
-+private:
-+	bool Open()
-+	{
-+		f_ = fopen( path_.c_str(), "ab" );
-+
-+		if( !f_ )
-+		{
-+			failed_ = true;
-+			return false;
-+		}
-+
-+		fseek( f_, 0, SEEK_END );
-+		long size = ftell( f_ );
-+
-+		if( size > JsLog::kMaxFileBytes / 2 )
-+		{
-+			// an old big log: start a new one
-+			fclose( f_ );
-+			f_ = fopen( path_.c_str(), "wb" );
-+
-+			if( !f_ )
-+			{
-+				failed_ = true;
-+				return false;
-+			}
-+
-+			size = 0;
-+		}
-+
-+		written_ = size > 0 ? size : 0;
-+
-+		const std::string header = Timestamp() + "===== the log of the embedded browser started =====\n";
-+		fputs( header.c_str(), f_ );
-+		written_ += static_cast<long>( header.size() );
-+		return true;
-+	}
-+
-+	void Close()
-+	{
-+		if( f_ )
-+		{
-+			fclose( f_ );
-+			f_ = nullptr;
-+		}
-+	}
-+
-+	static std::string Timestamp()
-+	{
-+		const std::time_t now = std::time( nullptr );
-+		std::tm tmv = {};
-+#if defined( _WIN32 )
-+		localtime_s( &tmv, &now );
-+#else
-+		localtime_r( &now, &tmv );
-+#endif
-+		char buf[32];
-+		const size_t n = std::strftime( buf, sizeof( buf ), "%Y-%m-%d %H:%M:%S ", &tmv );
-+		return std::string( buf, n );
-+	}
-+
-+	std::string path_;
-+	FILE* f_ = nullptr;
-+	bool failed_ = false;
-+	bool full_ = false;
-+	long written_ = 0;
-+};
-+
-+} // namespace CEF
-+} // namespace iHTMLChrome
 diff --git a/cl_dll/chrome/chrome_motd_input.h b/cl_dll/chrome/chrome_motd_input.h
 new file mode 100644
 index 0000000..1a5d9d8
@@ -3503,10 +3057,10 @@ index 0000000..2c81df4
 +#endif
 diff --git a/cl_dll/chrome/chrome_runtime.cpp b/cl_dll/chrome/chrome_runtime.cpp
 new file mode 100644
-index 0000000..9cc6263
+index 0000000..824dd9d
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_runtime.cpp
-@@ -0,0 +1,155 @@
+@@ -0,0 +1,152 @@
 +#include "chrome_runtime.h" // also needed without CEF, see the end of the file
 +
 +#if defined(CS16CLIENT_ENABLE_CEF)
@@ -3568,9 +3122,6 @@ index 0000000..9cc6263
 +
 +	if( !CefInstallation_Validate( env ) )
 +		return false;
-+
-+	// the log of JavaScript errors of the pages: next to the files of CEF
-+	Chrome_JsLogSetFile(( std::filesystem::path( env.cefDir ) / "js_debug.log" ).generic_string().c_str() );
 +
 +#if defined( _WIN32 )
 +	// Normal multi-process mode: a separate helper executable runs the renderer and the other
@@ -4103,20 +3654,21 @@ index c585f3c..7c66a65 100644
  {
  	// REMOVE WHEN NANOGL BUG WILL BE FIXED
 diff --git a/cl_dll/hud.cpp b/cl_dll/hud.cpp
-index 9ae956c..aff6b92 100644
+index 9ae956c..a4e8446 100644
 --- a/cl_dll/hud.cpp
 +++ b/cl_dll/hud.cpp
-@@ -363,7 +363,13 @@ void CHud :: Init( void )
+@@ -363,7 +363,14 @@ void CHud :: Init( void )
  		cl_fog_b = CVAR_CREATE( "cl_fog_b", "0", 0 );
  	}
  
 -	CVAR_CREATE( "cscl_ver", Q_buildnum(), 1<<14 | FCVAR_USERINFO ); // init and userinfo
 +	// this is a modified build: the version that is sent to the server, shown in the scoreboard
 +	// and printed to the console gets a suffix, so it is not mistaken for the original build.
-+	// The number is FIXED, it is the build of the client sources this patch was made for and it does not
-+	// depend on the day of compilation. When the patch is moved to another client version change it here
-+	// and in CLIENT_BUILD of the workflow (the workflow checks that both are the same).
-+	static char cscl_ver[] = "3979-motd";
++	// The suffix of this patch (with the built-in browser) is CEF. The number is FIXED, it is the build of
++	// the client sources this patch was made for and it does not depend on the day of compilation.
++	// When the patch is moved to another client version change it here and in CLIENT_BUILD of the
++	// workflow (the workflow checks that both are the same).
++	static char cscl_ver[] = "3979-CEF";
 +	CVAR_CREATE( "cscl_ver", cscl_ver, 1<<14 | FCVAR_USERINFO ); // init and userinfo
  
  	m_iLogo = 0;
