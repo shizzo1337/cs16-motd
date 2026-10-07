@@ -20,12 +20,12 @@ jobs:
         run: git config --global core.autocrlf false
 
       - name: Get this repository (contains the patch)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           path: mypatch
 
-      - name: Get cs16-client sources (latest, build 3979)
-        uses: actions/checkout@v4
+      - name: Get cs16-client sources (build 3979)
+        uses: actions/checkout@v5
         with:
           repository: Velaron/cs16-client
           ref: ${{ env.CLIENT_REF }}
@@ -37,9 +37,16 @@ jobs:
         run: git apply --ignore-whitespace --whitespace=nowarn ../mypatch/cs16_motd_browser_3979.patch
 
       - name: Setup Visual Studio (64-bit)
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: amd64
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw "Visual Studio with the C++ tools is not found" }
+          $vcvars = Join-Path $vs "VC\Auxiliary\Build\vcvars64.bat"
+          cmd /c "`"$vcvars`" >nul && set" | ForEach-Object {
+            # only plain names (cmd also has internal ones like "=C:" and "ProgramFiles(x86)")
+            if ($_ -match '^([A-Za-z_][A-Za-z0-9_]*)=(.*)$') { "$($matches[1])=$($matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8 }
+          }
 
       - name: Configure
         working-directory: cs16
@@ -77,7 +84,7 @@ jobs:
           echo "Result looks complete"
 
       - name: Upload result
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: cs16-client-3979-motd-x64
           path: result/*
