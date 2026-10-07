@@ -161,10 +161,19 @@ index f23bb7c..34d6d0a 100644
  
  
 diff --git a/cl_dll/hud/MOTD.cpp b/cl_dll/hud/MOTD.cpp
-index 83208f5..2b914d9 100644
+index 83208f5..41a5348 100644
 --- a/cl_dll/hud/MOTD.cpp
 +++ b/cl_dll/hud/MOTD.cpp
-@@ -39,6 +39,12 @@ int CHudMOTD :: Init( void )
+@@ -27,6 +27,8 @@
+ #include <stdio.h>
+ #include "draw_util.h"
+ #include "build.h"
++#include "motd_util.h"
++#include <chrono>
+ 
+ #if XASH_WIN32 == 1 || XASH_PSVITA == 1
+ #define strcasestr strstr
+@@ -39,6 +41,12 @@ int CHudMOTD :: Init( void )
  	HOOK_MESSAGE( gHUD.m_MOTD, MOTD );
  
  	cl_hide_motd = CVAR_CREATE("cl_hide_motd", "0", FCVAR_ARCHIVE); // hide motd
@@ -177,7 +186,7 @@ index 83208f5..2b914d9 100644
  	Reset();
  
  	return 1;
-@@ -47,9 +53,279 @@ int CHudMOTD :: Init( void )
+@@ -47,9 +55,161 @@ int CHudMOTD :: Init( void )
  int CHudMOTD :: VidInit( void )
  {
  	// Load sprites here
@@ -185,162 +194,35 @@ index 83208f5..2b914d9 100644
  	return 1;
  }
  
-+static bool StartsWithNoCase( const char *s, const char *prefix )
-+{
-+	while( *prefix )
-+	{
-+		char a = *s++;
-+		char b = *prefix++;
-+
-+		if( a >= 'A' && a <= 'Z' )
-+			a += 'a' - 'A';
-+
-+		if( a != b )
-+			return false;
-+	}
-+
-+	return true;
-+}
-+
 +#if XASH_WIN32 == 1
 +bool MOTD_OpenInBrowser( const char *target );
 +bool MOTD_SaveTempHtml( const char *html, size_t len, char *outPath, size_t outSize );
-+#endif
 +
-+static bool IsBlank( char c )
++// The system browser is opened not more often than this: a server that sends its MOTD again and again
++// must not flood the desktop with browser windows and throw the player out of the game every time.
++static const double MOTD_BROWSER_COOLDOWN = 5.0;
++
++static double MotdNowSeconds( void )
 +{
-+	return (unsigned char)c <= ' ';
++	return std::chrono::duration<double>( std::chrono::steady_clock::now().time_since_epoch() ).count();
 +}
 +
-+static const char *FindNoCase( const char *s, const char *what )
++static bool MotdBrowserAllowed( void )
 +{
-+	for( ; *s; s++ )
-+		if( StartsWithNoCase( s, what ))
-+			return s;
++	static double lastOpen = -1.0e9;
++	const double now = MotdNowSeconds();
 +
-+	return NULL;
-+}
-+
-+// Finds the first <iframe ... src="http(s)://..."> in HTML and copies its address to out.
-+// Returns false if there is no such iframe or the address looks wrong.
-+// The attributes of a tag are read the way a browser reads them: with quotes or without, '>' can be inside quotes,
-+// "src" inside the value of another attribute is not an attribute, the first src of a tag is the one that counts.
-+static bool ExtractIframeSrc( const char *html, char *out, size_t outSize )
-+{
-+	const char *tag = html;
-+
-+	while(( tag = FindNoCase( tag, "<iframe" )) != NULL )
++	if( now - lastOpen < MOTD_BROWSER_COOLDOWN )
 +	{
-+		const char *p = tag + 7;
-+		tag = p; // the search for the next iframe goes on from here
-+
-+		if( !IsBlank( *p ) && *p != '/' ) // not "<iframe", e.g. "<iframes"
-+			continue;
-+
-+		for( ;; )
-+		{
-+			while( *p && ( IsBlank( *p ) || *p == '/' ))
-+				p++;
-+
-+			if( !*p )
-+				return false; // the tag is not closed, a browser drops it too
-+
-+			if( *p == '>' )
-+				break; // the end of the tag, there was no usable src
-+
-+			// name of the attribute
-+			const char *name = p;
-+
-+			while( *p && !IsBlank( *p ) && *p != '=' && *p != '>' && *p != '/' )
-+				p++;
-+
-+			const size_t nameLen = (size_t)( p - name );
-+
-+			while( *p && IsBlank( *p ))
-+				p++;
-+
-+			if( *p != '=' )
-+				continue; // an attribute without a value
-+
-+			p++;
-+
-+			while( *p && IsBlank( *p ))
-+				p++;
-+
-+			// the value
-+			char quote = 0;
-+
-+			if( *p == '"' || *p == '\'' )
-+				quote = *p++;
-+
-+			const char *value = p;
-+
-+			while( *p && ( quote ? ( *p != quote ) : ( !IsBlank( *p ) && *p != '>' )))
-+				p++;
-+
-+			if( !*p )
-+				return false; // an unclosed quote or tag swallows the rest of the page
-+
-+			const char *valueEnd = p;
-+
-+			if( quote )
-+				p++; // the closing quote
-+
-+			if( nameLen != 3 || !StartsWithNoCase( name, "src" ))
-+				continue;
-+
-+			// blanks around the address are not a part of it
-+			while( value < valueEnd && IsBlank( *value ))
-+				value++;
-+
-+			while( valueEnd > value && IsBlank( valueEnd[-1] ))
-+				valueEnd--;
-+
-+			size_t len = 0;
-+			bool ok = true;
-+
-+			for( const char *q = value; q < valueEnd; q++ )
-+			{
-+				if( IsBlank( *q )) // an address never contains blanks or control characters
-+				{
-+					ok = false;
-+					break;
-+				}
-+
-+				if( valueEnd - q >= 5 && !strncmp( q, "&amp;", 5 )) // HTML escaping of '&'
-+				{
-+					if( len + 1 >= outSize ) { ok = false; break; }
-+					out[len++] = '&';
-+					q += 4;
-+					continue;
-+				}
-+
-+				if( len + 1 >= outSize )
-+				{
-+					ok = false;
-+					break;
-+				}
-+
-+				out[len++] = *q;
-+			}
-+
-+			if( ok )
-+			{
-+				out[len] = 0;
-+
-+				// only http(s) addresses are opened
-+				if( StartsWithNoCase( out, "http://" ) || StartsWithNoCase( out, "https://" ))
-+					return true;
-+			}
-+
-+			break; // the first src of a tag decides, look at the next iframe
-+		}
-+
-+		tag = p;
++		gEngfuncs.Con_Printf( "MOTD: the browser was opened less than %d seconds ago, this MOTD is skipped\n", (int)MOTD_BROWSER_COOLDOWN );
++		return false;
 +	}
 +
-+	return false;
++	lastOpen = now;
++	return true;
 +}
++
++#endif // XASH_WIN32
 +
 +void CHudMOTD :: ResetBrowserState( void )
 +{
@@ -373,12 +255,12 @@ index 83208f5..2b914d9 100644
 +		ResetBrowserState();
 +		m_bMotdStarted = true;
 +
-+		while( *p && (unsigned char)*p <= ' ' )
++		while( *p && MotdUtil::IsBlank( *p ))
 +			p++;
 +
-+		if( StartsWithNoCase( p, "http://" ) || StartsWithNoCase( p, "https://" ))
++		if( MotdUtil::IsHttpUrl( p ))
 +			m_iBrowserMode = BROWSER_URL;
-+		else if( *p == '<' )
++		else if( MotdUtil::LooksLikeHtml( p ))
 +			m_iBrowserMode = BROWSER_HTML;
 +	}
 +
@@ -408,35 +290,44 @@ index 83208f5..2b914d9 100644
 +		return true;
 +
 +	// whole MOTD received
++	char safeUrl[4096];
++
 +	if( m_iBrowserMode == BROWSER_URL )
 +	{
 +		char *url = m_szBrowserMOTD;
 +		char *end;
 +
-+		while( *url && (unsigned char)*url <= ' ' )
++		while( *url && MotdUtil::IsBlank( *url ))
 +			url++;
 +
 +		// URL ends on the first whitespace
-+		for( end = url; *end && (unsigned char)*end > ' '; end++ );
++		for( end = url; *end && !MotdUtil::IsBlank( *end ); end++ );
 +		*end = 0;
 +
-+		// only http(s) links, never pass anything else from the server to the system
-+		if( StartsWithNoCase( url, "http://" ) || StartsWithNoCase( url, "https://" ))
++		// only http(s) links, made safe for the command line of the browser
++		if( !MotdUtil::MakeSafeUrl( url, safeUrl, sizeof( safeUrl )))
++			gEngfuncs.Con_Printf( "MOTD: the address is not usable, skipped\n" );
++		else if( MotdBrowserAllowed( ))
 +		{
-+			gEngfuncs.Con_Printf( "Opening MOTD in browser: %s\n", url );
-+			MOTD_OpenInBrowser( url );
++			gEngfuncs.Con_Printf( "Opening MOTD in browser: %s\n", safeUrl );
++			MOTD_OpenInBrowser( safeUrl );
 +		}
 +	}
 +	else if( m_iBrowserMode == BROWSER_HTML )
 +	{
 +		char iframeUrl[2048];
-+		char path[512];
++		char path[1024];
 +
-+		if( cl_motd_browser_iframe->value != 0 && ExtractIframeSrc( m_szBrowserMOTD, iframeUrl, sizeof( iframeUrl )))
++		if( !MotdBrowserAllowed( ))
++		{
++			// skipped, the message is printed
++		}
++		else if( cl_motd_browser_iframe->value != 0 && MotdUtil::ExtractIframeSrc( m_szBrowserMOTD, iframeUrl, sizeof( iframeUrl ))
++			&& MotdUtil::MakeSafeUrl( iframeUrl, safeUrl, sizeof( safeUrl )))
 +		{
 +			// the page is only a wrapper around an iframe, open the iframe address directly
-+			gEngfuncs.Con_Printf( "Opening MOTD iframe in browser: %s\n", iframeUrl );
-+			MOTD_OpenInBrowser( iframeUrl );
++			gEngfuncs.Con_Printf( "Opening MOTD iframe in browser: %s\n", safeUrl );
++			MOTD_OpenInBrowser( safeUrl );
 +		}
 +		else if( MOTD_SaveTempHtml( m_szBrowserMOTD, m_iBrowserLen, path, sizeof( path )))
 +		{
@@ -457,7 +348,7 @@ index 83208f5..2b914d9 100644
  void CHudMOTD :: Reset( void )
  {
  	m_iFlags &= ~HUD_DRAW;  // start out inactive
-@@ -137,13 +413,19 @@ int CHudMOTD :: MsgFunc_MOTD( const char *pszName, int iSize, void *pbuf )
+@@ -137,13 +297,19 @@ int CHudMOTD :: MsgFunc_MOTD( const char *pszName, int iSize, void *pbuf )
  		Reset(); // clear the current MOTD in prep for this one
  	}
  
@@ -483,15 +374,16 @@ index 83208f5..2b914d9 100644
  	if( strcasestr( m_szMOTD.String(), "<!DOCTYPE HTML>" ) )
 diff --git a/cl_dll/hud/MOTD_browser.cpp b/cl_dll/hud/MOTD_browser.cpp
 new file mode 100644
-index 0000000..fad4296
+index 0000000..0c32b91
 --- /dev/null
 +++ b/cl_dll/hud/MOTD_browser.cpp
-@@ -0,0 +1,64 @@
+@@ -0,0 +1,87 @@
 +//
 +// MOTD_browser.cpp
 +//
 +// OS specific helpers for opening server MOTD in the system web browser.
 +// Kept in a separate file because <windows.h> conflicts with engine headers.
++// All strings here are UTF-8 (the addresses are plain ASCII after MotdUtil::MakeSafeUrl).
 +//
 +
 +#include <stddef.h>
@@ -502,38 +394,60 @@ index 0000000..fad4296
 +#if defined( _WIN32 )
 +
 +#define WIN32_LEAN_AND_MEAN
++#ifndef NOMINMAX
 +#define NOMINMAX
++#endif
 +#include <windows.h>
 +#include <shellapi.h>
 +#include <stdio.h>
++#include <wchar.h>
++
++static bool Utf8ToWide( const char *s, wchar_t *out, int outCount )
++{
++	return MultiByteToWideChar( CP_UTF8, MB_ERR_INVALID_CHARS, s, -1, out, outCount ) > 0;
++}
 +
 +bool MOTD_OpenInBrowser( const char *target )
 +{
-+	HINSTANCE result = ShellExecuteA( NULL, "open", target, NULL, NULL, SW_SHOWNORMAL );
++	wchar_t wide[4096];
++
++	if( !target || !Utf8ToWide( target, wide, (int)( sizeof( wide ) / sizeof( wide[0] ))))
++		return false;
++
++	HINSTANCE result = ShellExecuteW( NULL, L"open", wide, NULL, NULL, SW_SHOWNORMAL );
 +
 +	return (INT_PTR)result > 32;
 +}
 +
++// The page is saved to %TEMP%\cs16_motd.html. The folder of a user can have any letters in its
++// name (C:\Users\Иван\...), so the wide functions of Windows are used and the path is given back in UTF-8.
 +bool MOTD_SaveTempHtml( const char *html, size_t len, char *outPath, size_t outSize )
 +{
-+	char dir[MAX_PATH];
-+	DWORD n = GetTempPathA( sizeof( dir ), dir );
++	wchar_t dir[MAX_PATH + 1];
++	const DWORD n = GetTempPathW( MAX_PATH + 1, dir );
 +
-+	if( n == 0 || n >= sizeof( dir ))
++	if( n == 0 || n > MAX_PATH )
 +		return false;
 +
-+	if( snprintf( outPath, outSize, "%scs16_motd.html", dir ) <= 0 )
++	wchar_t path[MAX_PATH + 32];
++
++	if( _snwprintf( path, sizeof( path ) / sizeof( path[0] ), L"%lscs16_motd.html", dir ) <= 0 )
 +		return false;
 +
-+	FILE *f = fopen( outPath, "wb" );
++	path[sizeof( path ) / sizeof( path[0] ) - 1] = 0;
++
++	FILE *f = _wfopen( path, L"wb" );
 +
 +	if( !f )
 +		return false;
 +
-+	size_t written = fwrite( html, 1, len, f );
++	const size_t written = fwrite( html, 1, len, f );
 +	fclose( f );
 +
-+	return written == len;
++	if( written != len )
++		return false;
++
++	return WideCharToMultiByte( CP_UTF8, 0, path, -1, outPath, (int)outSize, NULL, NULL ) > 0;
 +}
 +
 +#else // not implemented on other platforms yet
@@ -551,6 +465,320 @@ index 0000000..fad4296
 +}
 +
 +#endif
+diff --git a/cl_dll/hud/motd_util.h b/cl_dll/hud/motd_util.h
+new file mode 100644
+index 0000000..53fcfae
+--- /dev/null
++++ b/cl_dll/hud/motd_util.h
+@@ -0,0 +1,308 @@
++//
++// motd_util.h
++//
++// Helpers of the server MOTD: recognising HTML, finding the address of an iframe, making an address
++// safe to give to the system. No dependencies on the engine, so the same file is used by every build
++// of the client and can be tested alone.
++//
++
++#pragma once
++
++#include <stddef.h>
++#include <string.h>
++
++namespace MotdUtil {
++
++inline char LowerAscii( char c )
++{
++	return ( c >= 'A' && c <= 'Z' ) ? (char)( c + 'a' - 'A' ) : c;
++}
++
++// prefix must be in lower case
++inline bool StartsWithNoCase( const char *s, const char *prefix )
++{
++	while( *prefix )
++	{
++		if( LowerAscii( *s++ ) != *prefix++ )
++			return false;
++	}
++
++	return true;
++}
++
++inline bool IsBlank( char c )
++{
++	return (unsigned char)c <= ' ';
++}
++
++inline bool IsAsciiLetter( char c )
++{
++	return ( c >= 'a' && c <= 'z' ) || ( c >= 'A' && c <= 'Z' );
++}
++
++inline bool IsHttpUrl( const char *s )
++{
++	return StartsWithNoCase( s, "http://" ) || StartsWithNoCase( s, "https://" );
++}
++
++// The text of a MOTD is HTML if it starts with a tag: "<html", "<!DOCTYPE", "<b>", "</p>"...
++// A text like "<<< Welcome >>>" or "<-- rules" is not HTML and is shown in the game.
++inline bool LooksLikeHtml( const char *s )
++{
++	while( *s && IsBlank( *s ))
++		s++;
++
++	if( s[0] != '<' )
++		return false;
++
++	if( IsAsciiLetter( s[1] ) || s[1] == '!' || s[1] == '?' )
++		return true;
++
++	return s[1] == '/' && IsAsciiLetter( s[2] );
++}
++
++// the tag <name ...> starts at s ('<' included); name in lower case
++inline bool IsTagStart( const char *s, const char *name )
++{
++	if( s[0] != '<' || !StartsWithNoCase( s + 1, name ))
++		return false;
++
++	const char after = s[1 + strlen( name )];
++	return IsBlank( after ) || after == '>' || after == '/';
++}
++
++// first occurrence of what (lower case) in s, ignoring the case; NULL if there is none
++inline const char *FindNoCase( const char *s, const char *what )
++{
++	for( ; *s; s++ )
++		if( StartsWithNoCase( s, what ))
++			return s;
++
++	return NULL;
++}
++
++// Reads the attributes of a tag that starts at p (right after its name), the way a browser does:
++// with quotes or without, '>' can be inside quotes, the first src counts.
++// Returns: 1 - an http(s) src was found and copied to out, 0 - the tag has no usable src (end is set
++// to the end of the tag), -1 - the tag is not closed (the rest of the page is swallowed by it).
++inline int ReadIframeSrc( const char *p, char *out, size_t outSize, const char **end )
++{
++	for( ;; )
++	{
++		while( *p && ( IsBlank( *p ) || *p == '/' ))
++			p++;
++
++		if( !*p )
++			return -1;
++
++		if( *p == '>' )
++		{
++			*end = p + 1;
++			return 0;
++		}
++
++		// name of the attribute
++		const char *name = p;
++
++		while( *p && !IsBlank( *p ) && *p != '=' && *p != '>' && *p != '/' )
++			p++;
++
++		const size_t nameLen = (size_t)( p - name );
++
++		while( *p && IsBlank( *p ))
++			p++;
++
++		if( *p != '=' )
++			continue; // an attribute without a value
++
++		p++;
++
++		while( *p && IsBlank( *p ))
++			p++;
++
++		// the value
++		char quote = 0;
++
++		if( *p == '"' || *p == '\'' )
++			quote = *p++;
++
++		const char *value = p;
++
++		while( *p && ( quote ? ( *p != quote ) : ( !IsBlank( *p ) && *p != '>' )))
++			p++;
++
++		if( !*p )
++			return -1;
++
++		const char *valueEnd = p;
++
++		if( quote )
++			p++; // the closing quote
++
++		if( nameLen != 3 || !StartsWithNoCase( name, "src" ))
++			continue;
++
++		// blanks around the address are not a part of it
++		while( value < valueEnd && IsBlank( *value ))
++			value++;
++
++		while( valueEnd > value && IsBlank( valueEnd[-1] ))
++			valueEnd--;
++
++		size_t len = 0;
++		bool ok = true;
++
++		for( const char *q = value; q < valueEnd; q++ )
++		{
++			if( IsBlank( *q )) // an address never contains blanks or control characters
++			{
++				ok = false;
++				break;
++			}
++
++			char c = *q;
++
++			if( valueEnd - q >= 5 && !strncmp( q, "&amp;", 5 )) // HTML escaping of '&'
++			{
++				c = '&';
++				q += 4;
++			}
++
++			if( len + 1 >= outSize )
++			{
++				ok = false;
++				break;
++			}
++
++			out[len++] = c;
++		}
++
++		if( ok )
++		{
++			out[len] = 0;
++
++			if( IsHttpUrl( out ))
++				return 1;
++		}
++
++		// the first src of a tag decides: skip the rest of this tag
++		for( ;; )
++		{
++			while( *p && *p != '>' && *p != '"' && *p != '\'' )
++				p++;
++
++			if( !*p )
++				return -1;
++
++			if( *p == '>' )
++			{
++				*end = p + 1;
++				return 0;
++			}
++
++			const char *closing = strchr( p + 1, *p );
++
++			if( !closing )
++				return -1;
++
++			p = closing + 1;
++		}
++	}
++}
++
++// Finds the first <iframe ... src="http(s)://..."> of a page and copies its address to out.
++// Comments (<!-- -->), scripts and styles are skipped: an iframe written there is not on the page.
++// Returns false if there is no such iframe.
++inline bool ExtractIframeSrc( const char *html, char *out, size_t outSize )
++{
++	if( !html || !out || outSize == 0 )
++		return false;
++
++	const char *p = html;
++
++	while(( p = strchr( p, '<' )) != NULL )
++	{
++		if( !strncmp( p, "<!--", 4 ))
++		{
++			const char *close = strstr( p + 4, "-->" );
++
++			if( !close )
++				return false; // the rest of the page is a comment
++			p = close + 3;
++			continue;
++		}
++
++		if( IsTagStart( p, "script" ) || IsTagStart( p, "style" ))
++		{
++			const char *close = FindNoCase( p + 1, IsTagStart( p, "script" ) ? "</script" : "</style" );
++
++			if( !close )
++				return false; // the rest of the page is a script
++			p = close + 2;
++			continue;
++		}
++
++		if( IsTagStart( p, "iframe" ))
++		{
++			const char *end = NULL;
++			const int r = ReadIframeSrc( p + 7, out, outSize, &end );
++
++			if( r == 1 )
++				return true;
++			if( r < 0 )
++				return false;
++
++			p = end;
++			continue;
++		}
++
++		p++;
++	}
++
++	return false;
++}
++
++// Makes an http(s) address of a server safe to give to the system browser: everything that is not
++// a plain character of an address (quotes, '<', '>', '\', '^', '`', '{', '|', '}', letters that are
++// not ASCII) is written as %XX, so the address cannot break out of the command line of the browser.
++// Returns false if it is not an http(s) address, has control characters or does not fit into out.
++inline bool MakeSafeUrl( const char *in, char *out, size_t outSize )
++{
++	static const char hex[] = "0123456789ABCDEF";
++
++	if( !in || !out || outSize == 0 || !IsHttpUrl( in ))
++		return false;
++
++	size_t len = 0;
++
++	for( const unsigned char *p = (const unsigned char *)in; *p; p++ )
++	{
++		const unsigned char c = *p;
++
++		if( c <= ' ' || c == 0x7F )
++			return false;
++
++		const bool plain = ( c >= 'a' && c <= 'z' ) || ( c >= 'A' && c <= 'Z' ) || ( c >= '0' && c <= '9' )
++			|| ( c < 0x80 && strchr( "-._~:/?#[]@!$&'()*+,;=%", (char)c ));
++
++		if( plain )
++		{
++			if( len + 1 >= outSize )
++				return false;
++			out[len++] = (char)c;
++		}
++		else
++		{
++			if( len + 3 >= outSize )
++				return false;
++			out[len++] = '%';
++			out[len++] = hex[c >> 4];
++			out[len++] = hex[c & 15];
++		}
++	}
++
++	out[len] = 0;
++	return true;
++}
++
++} // namespace MotdUtil
 diff --git a/cl_dll/hud/scoreboard.cpp b/cl_dll/hud/scoreboard.cpp
 index cdbde46..9610599 100644
 --- a/cl_dll/hud/scoreboard.cpp
