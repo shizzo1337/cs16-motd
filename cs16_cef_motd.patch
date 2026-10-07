@@ -1,5 +1,5 @@
 diff --git a/cl_dll/CMakeLists.txt b/cl_dll/CMakeLists.txt
-index b0af818..f844dcf 100644
+index b0af818..e6a902e 100644
 --- a/cl_dll/CMakeLists.txt
 +++ b/cl_dll/CMakeLists.txt
 @@ -10,6 +10,7 @@ file(GLOB CS_WPNSH_SRC "../dlls/wpn_shared/*.cpp")
@@ -23,7 +23,7 @@ index b0af818..f844dcf 100644
  
  add_library(${CLIENT_LIB} SHARED ${CS_CLIENT_SRC})
 +# =========================================================
-+# CEF CONFIGURATION 
++# CEF CONFIGURATION
 +# =========================================================
 +
 +option(CS16CLIENT_ENABLE_CEF "Enable CEF integration" ON)
@@ -137,10 +137,10 @@ index 4f5a9e8..d91aef8 100644
  
 diff --git a/cl_dll/cef_helper/cef_helper_main.cpp b/cl_dll/cef_helper/cef_helper_main.cpp
 new file mode 100644
-index 0000000..5cb3948
+index 0000000..540db61
 --- /dev/null
 +++ b/cl_dll/cef_helper/cef_helper_main.cpp
-@@ -0,0 +1,45 @@
+@@ -0,0 +1,47 @@
 +// Helper executable of the embedded browser (CEF).
 +//
 +// Chromium starts its renderer and other service processes from this executable instead of
@@ -150,7 +150,9 @@ index 0000000..5cb3948
 +#if defined( CS16CLIENT_ENABLE_CEF ) && defined( _WIN32 )
 +
 +#define WIN32_LEAN_AND_MEAN
++#ifndef NOMINMAX
 +#define NOMINMAX
++#endif
 +#include <windows.h>
 +
 +#include "cef_app.h"
@@ -188,10 +190,10 @@ index 0000000..5cb3948
 +#endif
 diff --git a/cl_dll/chrome/chrome_backend.h b/cl_dll/chrome/chrome_backend.h
 new file mode 100644
-index 0000000..b1dfb44
+index 0000000..9b63e7e
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_backend.h
-@@ -0,0 +1,30 @@
+@@ -0,0 +1,33 @@
 +#pragma once
 +
 +#include <memory>
@@ -220,14 +222,17 @@ index 0000000..b1dfb44
 +
 +void SetChromeZoom( double scale );
 +void SetChromeFrameRate( int frames_per_second );
++
++// Browsers that are created and not closed yet (CEF must not be shut down while there are any)
++int LiveBrowserCount();
 +} // namespace CEF
 +} // namespace iHTMLChrome
 diff --git a/cl_dll/chrome/chrome_backend_cef.cpp b/cl_dll/chrome/chrome_backend_cef.cpp
 new file mode 100644
-index 0000000..a540a53
+index 0000000..3084aa4
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_backend_cef.cpp
-@@ -0,0 +1,405 @@
+@@ -0,0 +1,414 @@
 +#include "chrome_backend.h"
 +
 +#if defined(CS16CLIENT_ENABLE_CEF)
@@ -272,6 +277,7 @@ index 0000000..a540a53
 +constexpr double kDefaultPageScale = 1.0;
 +double g_browser_page_scale = kDefaultPageScale;
 +int g_chrome_windowless_target_fps = 60;
++int g_live_browsers = 0; // OnAfterCreated .. OnBeforeClose
 +
 +double PageScaleToCEFZoomLevel( double scale )
 +{
@@ -414,6 +420,7 @@ index 0000000..a540a53
 +
 +	void OnAfterCreated( CefRefPtr<CefBrowser> browser ) override
 +	{
++		++g_live_browsers;
 +		browser_ = browser;
 +		applied_cef_zoom_valid_ = false;
 +		applied_windowless_fps_ = -1;
@@ -443,6 +450,8 @@ index 0000000..a540a53
 +
 +	void OnBeforeClose( CefRefPtr<CefBrowser> ) override
 +	{
++		if( g_live_browsers > 0 )
++			--g_live_browsers;
 +		browser_ = nullptr;
 +	}
 +
@@ -630,15 +639,20 @@ index 0000000..a540a53
 +		frames_per_second = 240;
 +	g_chrome_windowless_target_fps = frames_per_second;
 +}
++
++int LiveBrowserCount()
++{
++	return g_live_browsers;
++}
 +} // namespace CEF
 +} // namespace iHTMLChrome
 +#endif
 diff --git a/cl_dll/chrome/chrome_backend_stub.cpp b/cl_dll/chrome/chrome_backend_stub.cpp
 new file mode 100644
-index 0000000..5326b09
+index 0000000..dde3ad1
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_backend_stub.cpp
-@@ -0,0 +1,33 @@
+@@ -0,0 +1,38 @@
 +#include "chrome_backend.h"
 +
 +namespace iHTMLChrome {
@@ -668,6 +682,11 @@ index 0000000..5326b09
 +void SetChromeFrameRate( int frames_per_second )
 +{
 +	(void)frames_per_second;
++}
++
++int LiveBrowserCount()
++{
++	return 0;
 +}
 +#endif
 +} // namespace CEF
@@ -841,15 +860,16 @@ index 0000000..72b1a8e
 +#undef CHROME_DEBUG_PRINTF_ATTR
 diff --git a/cl_dll/chrome/chrome_environment.cpp b/cl_dll/chrome/chrome_environment.cpp
 new file mode 100644
-index 0000000..efa746f
+index 0000000..285b208
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_environment.cpp
-@@ -0,0 +1,77 @@
+@@ -0,0 +1,78 @@
 +#include "chrome_environment.h"
 +
 +#if defined(CS16CLIENT_ENABLE_CEF)
 +
 +#include "chrome_debug.h"
++#include "chrome_path.h"
 +
 +#include <filesystem>
 +
@@ -874,7 +894,7 @@ index 0000000..efa746f
 +
 +std::string NormalizePath( const std::filesystem::path& path )
 +{
-+	return path.lexically_normal().generic_string();
++	return PathToUtf8( path.lexically_normal() );
 +}
 +
 +std::filesystem::path ToAbsolutePath( const std::filesystem::path& path )
@@ -897,7 +917,7 @@ index 0000000..efa746f
 +		return false;
 +	}
 +
-+	std::filesystem::path game_path = ToAbsolutePath( std::filesystem::path( ExpandPath( game_dir ) ) );
++	std::filesystem::path game_path = ToAbsolutePath( PathFromEngine( ExpandPath( game_dir ) ) );
 +	if( game_path.empty() )
 +	{
 +		Chrome_Printf( "[chrome] CefRuntime: failed to resolve game directory\n" );
@@ -912,7 +932,7 @@ index 0000000..efa746f
 +
 +#if defined(__APPLE__)
 +	env.frameworkDir = NormalizePath( game_path / "Chromium Embedded Framework.framework" );
-+	env.resourcesDir = NormalizePath( std::filesystem::path( env.frameworkDir ) / "Resources" );
++	env.resourcesDir = NormalizePath( PathFromUtf8( env.frameworkDir ) / "Resources" );
 +#endif
 +
 +	return true;
@@ -955,10 +975,10 @@ index 0000000..90f7f15
 +#endif
 diff --git a/cl_dll/chrome/chrome_host.cpp b/cl_dll/chrome/chrome_host.cpp
 new file mode 100644
-index 0000000..8b2504e
+index 0000000..42f22d7
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_host.cpp
-@@ -0,0 +1,841 @@
+@@ -0,0 +1,739 @@
 +#include "chrome_host.h"
 +#include "chrome_backend.h"
 +#include "chrome_debug.h"
@@ -966,6 +986,7 @@ index 0000000..8b2504e
 +#include "chrome_motd_input.h"
 +#include "chrome_motd_utf.h"
 +#include "chrome_runtime.h"
++#include "../hud/motd_util.h"
 +
 +#include <algorithm>
 +#include <cmath>
@@ -974,6 +995,7 @@ index 0000000..8b2504e
 +#include <cstring>
 +#include <memory>
 +#include <string>
++#include <thread>
 +#include <unordered_map>
 +
 +#include "hud.h"
@@ -993,13 +1015,11 @@ index 0000000..8b2504e
 +std::unordered_map<int, std::unique_ptr<ChromeInstance>> g_instances;
 +int g_next_instance_id = 1;
 +bool g_chrome_service_up = false;
++bool g_chrome_init_failed = false; // CefInitialize failed once: do not try again every MOTD
 +
 +cvar_t* cl_chrome_zoom = nullptr;
 +cvar_t* cl_chrome_framerate = nullptr;
-+cvar_t* cl_chrome_toggle = nullptr;
 +
-+int g_toggle_demo_id = -1;
-+int g_openurl_demo_id = -1;
 +int g_motd_id = -1;
 +std::chrono::steady_clock::time_point g_motd_shown_at;
 +MotdInput g_motd_input;
@@ -1015,8 +1035,6 @@ index 0000000..8b2504e
 +MotdTextSlot g_motd_title, g_motd_ok;
 +int g_motd_text_counter = 0;
 +std::unordered_map<int, std::pair<int, int>> g_last_mouse_pos; // for the generic SendMouse* functions
-+
-+int s_toggle_sync = -1;
 +
 +float CvarFloat( cvar_t* v, float fb )
 +{
@@ -1050,8 +1068,6 @@ index 0000000..8b2504e
 +		cl_chrome_zoom = CVAR_CREATE( "cl_chrome_zoom", "1", FCVAR_ARCHIVE );
 +	if( !cl_chrome_framerate )
 +		cl_chrome_framerate = CVAR_CREATE( "cl_chrome_framerate", "30", FCVAR_ARCHIVE );
-+	if( !cl_chrome_toggle )
-+		cl_chrome_toggle = CVAR_CREATE( "cl_chrome_toggle", "0", FCVAR_ARCHIVE );
 +}
 +
 +bool EnsureCefInitialized()
@@ -1059,8 +1075,14 @@ index 0000000..8b2504e
 +	if( g_chrome_service_up )
 +		return true;
 +
++	if( g_chrome_init_failed )
++		return false;
++
++	// CEF is started when it is needed for the first time (the first MOTD in mode 2),
++	// not when the game starts: with cl_motd_browser 0 or 1 it is never started at all
 +	if( !iHTMLChrome::CEF::CefRuntime::Get().Initialize() )
 +	{
++		g_chrome_init_failed = true;
 +		Chrome_Printf( "[chrome] CefRuntime::Initialize failed — browser features disabled\n" );
 +		return false;
 +	}
@@ -1070,11 +1092,10 @@ index 0000000..8b2504e
 +	return true;
 +}
 +
++// cl_chrome_openurl <address>: a page in the same window as the server MOTD (OK / Enter / cl_motd_close
++// close it). A server can run this command too, but it can show its MOTD anyway, so it gets nothing new.
 +void Cmd_ChromeOpenUrl()
 +{
-+	if( !EnsureCefInitialized() )
-+		return;
-+
 +	std::string url;
 +	const int argc = gEngfuncs.Cmd_Argc();
 +	for( int i = 1; i < argc; ++i )
@@ -1089,31 +1110,15 @@ index 0000000..8b2504e
 +	while( !url.empty() && ( url.back() == ' ' || url.back() == '\t' ) )
 +		url.pop_back();
 +
-+	if( url.empty() )
++	char safe[4096];
++	if( url.empty() || !MotdUtil::MakeSafeUrl( url.c_str(), safe, sizeof( safe ) ) )
 +	{
-+		Chrome_Printf( "usage: cl_chrome_openurl <url>\n" );
++		Chrome_Printf( "usage: cl_chrome_openurl <http:// or https:// address>\n" );
 +		return;
 +	}
 +
-+	if( g_toggle_demo_id >= 0 )
-+	{
-+		Chrome::Destroy( g_toggle_demo_id );
-+		g_toggle_demo_id = -1;
-+	}
-+
-+	if( cl_chrome_toggle && cl_chrome_toggle->value >= 1.0f && gEngfuncs.Cvar_Set )
-+		gEngfuncs.Cvar_Set( "cl_chrome_toggle", "0" );
-+	s_toggle_sync = 0;
-+
-+	if( g_openurl_demo_id >= 0 )
-+		Chrome::Destroy( g_openurl_demo_id );
-+
-+	const int fid = Chrome::Create( url.c_str(), 1280, 720, nullptr, nullptr );
-+	if( fid < 0 )
-+		return;
-+
-+	g_openurl_demo_id = fid;
-+	Chrome_DPrintf( 1.f, "[chrome] cl_chrome_openurl instance=%d url=%s\n", fid, url.c_str() );
++	if( !Chrome::ShowMotd( safe ) )
++		Chrome_Printf( "[chrome] the embedded browser is not available\n" );
 +}
 +
 +void Cmd_MotdClose();
@@ -1126,46 +1131,6 @@ index 0000000..8b2504e
 +	registered = true;
 +	gEngfuncs.pfnAddCommand( "cl_chrome_openurl", Cmd_ChromeOpenUrl );
 +	gEngfuncs.pfnAddCommand( "cl_motd_close", Cmd_MotdClose );
-+}
-+
-+void SyncToggleDemoBrowser()
-+{
-+	if( !g_chrome_service_up || !cl_chrome_toggle )
-+		return;
-+
-+	const int want = cl_chrome_toggle->value >= 1.0f ? 1 : 0;
-+	if( s_toggle_sync < 0 )
-+	{
-+		s_toggle_sync = want;
-+		return;
-+	}
-+
-+	if( want == s_toggle_sync )
-+		return;
-+
-+	s_toggle_sync = want;
-+
-+	if( want )
-+	{
-+		if( g_openurl_demo_id >= 0 )
-+			Chrome::Destroy( g_openurl_demo_id );
-+		g_openurl_demo_id = -1;
-+
-+		if( g_toggle_demo_id < 0 )
-+		{
-+			g_toggle_demo_id = Chrome::Create( "https://www.google.com/", 1280, 720, nullptr, nullptr );
-+			Chrome_DPrintf( 1.f, "[chrome] cl_chrome_toggle enabled demo instance=%d\n", g_toggle_demo_id );
-+		}
-+		return;
-+	}
-+
-+	if( g_toggle_demo_id >= 0 )
-+	{
-+		const int tid = g_toggle_demo_id;
-+		g_toggle_demo_id = -1;
-+		Chrome::Destroy( tid );
-+		Chrome_DPrintf( 1.f, "[chrome] cl_chrome_toggle off (destroy demo)\n" );
-+	}
 +}
 +
 +struct RenderExtents
@@ -1191,65 +1156,6 @@ index 0000000..8b2504e
 +	}
 +
 +	return e;
-+}
-+
-+void FitCenterLetterbox( float aspect, int fw, int fh, float& x1, float& y1, float& x2, float& y2 )
-+{
-+	if( fw <= 0 || fh <= 0 || aspect <= 0.f )
-+	{
-+		x1 = y1 = 0.f;
-+		x2 = static_cast<float>( fw );
-+		y2 = static_cast<float>( fh );
-+		return;
-+	}
-+
-+	const float frame_aspect = static_cast<float>( fw ) / static_cast<float>( fh );
-+
-+	float vw = static_cast<float>( fw );
-+	float vh = static_cast<float>( fh );
-+	if( frame_aspect > aspect )
-+		vw = vh * aspect;
-+	else if( frame_aspect < aspect )
-+		vh = vw / aspect;
-+
-+	const float ox = ( static_cast<float>( fw ) - vw ) * 0.5f;
-+	const float oy = ( static_cast<float>( fh ) - vh ) * 0.5f;
-+	x1 = ox;
-+	y1 = oy;
-+	x2 = ox + vw;
-+	y2 = oy + vh;
-+}
-+
-+void PresentDebugQuad( ChromeInstance* inst )
-+{
-+	if( !inst )
-+		return;
-+
-+	const unsigned int tex = inst->texture_id();
-+	if( tex == 0 || !gEngfuncs.pTriAPI )
-+		return;
-+
-+	const RenderExtents ext = VisibleRenderExtents();
-+	if( ext.w <= 1 || ext.h <= 1 )
-+		return;
-+
-+	int bw = inst->width();
-+	int bh = inst->height();
-+	if( bw < 1 )
-+		bw = 1;
-+	if( bh < 1 )
-+		bh = 1;
-+
-+	inst->set_viewport( ChromeRect{ 0, 0, bw, bh } );
-+
-+	float x1, y1, x2, y2;
-+	FitCenterLetterbox( 16.f / 9.f, ext.w, ext.h, x1, y1, x2, y2 );
-+
-+	gRenderAPI.GL_SelectTexture( 0 );
-+	gRenderAPI.GL_Bind( 0, tex );
-+	gEngfuncs.pTriAPI->RenderMode( kRenderTransAlpha );
-+	gEngfuncs.pTriAPI->Color4f( 1.0f, 1.0f, 1.0f, 1.0f );
-+	DrawUtils::Draw2DQuad( x1, y1, x2, y2 );
 +}
 +
 +double NowSeconds()
@@ -1495,28 +1401,42 @@ index 0000000..8b2504e
 +
 +bool Initialize()
 +{
++	// only the variables and commands: CEF itself is started by the first MOTD that needs it
 +	RegisterEngineCvars();
-+	if( !EnsureCefInitialized() )
-+		return false;
-+
 +	RegisterCommands();
-+
 +	return true;
 +}
 +
 +void Shutdown()
 +{
-+	g_instances.clear();
-+	g_toggle_demo_id = -1;
-+	g_openurl_demo_id = -1;
++	FreeMotdText( g_motd_title );
++	FreeMotdText( g_motd_ok );
++	g_instances.clear(); // asks every browser to close
 +	g_motd_id = -1;
 +
 +	if( !g_chrome_service_up )
 +		return;
 +
++	// CefShutdown must not be called while a browser is still open (the game may crash or hang on exit):
++	// let CEF finish closing them first
++	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds( 3 );
++
++	while( LiveBrowserCount() > 0 && std::chrono::steady_clock::now() < deadline )
++	{
++		iHTMLChrome::CEF::CefRuntime::Get().DoMessageLoopWork();
++		std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
++	}
++
++	if( LiveBrowserCount() > 0 )
++	{
++		// shutting CEF down now would be worse than leaving it to the end of the process
++		Chrome_Printf( "[chrome] %d browser(s) did not close in time, CEF shutdown is skipped\n", LiveBrowserCount() );
++		g_chrome_service_up = false;
++		return;
++	}
++
 +	iHTMLChrome::CEF::CefRuntime::Get().Shutdown();
 +	g_chrome_service_up = false;
-+	s_toggle_sync = -1;
 +	Chrome_DPrintf( 1.f, "[chrome] Chrome::Shutdown complete\n" );
 +}
 +
@@ -1533,20 +1453,12 @@ index 0000000..8b2504e
 +	for( auto& kv : g_instances )
 +		if( kv.second )
 +			kv.second->Tick();
-+
-+	SyncToggleDemoBrowser();
 +}
 +
-+void PresentDebugPresentationOverlays()
++void PresentMotd()
 +{
 +	if( !g_chrome_service_up )
 +		return;
-+
-+	if( g_toggle_demo_id >= 0 )
-+		PresentDebugQuad( Lookup( g_toggle_demo_id ) );
-+
-+	if( g_openurl_demo_id >= 0 )
-+		PresentDebugQuad( Lookup( g_openurl_demo_id ) );
 +
 +	if( g_motd_id >= 0 )
 +		PresentMotdWindow( Lookup( g_motd_id ) );
@@ -1596,10 +1508,6 @@ index 0000000..8b2504e
 +
 +void Destroy( const int instance_id )
 +{
-+	if( instance_id == g_toggle_demo_id )
-+		g_toggle_demo_id = -1;
-+	if( instance_id == g_openurl_demo_id )
-+		g_openurl_demo_id = -1;
 +	if( instance_id == g_motd_id )
 +		g_motd_id = -1;
 +	EraseInstanceRecord( instance_id );
@@ -1716,7 +1624,7 @@ index 0000000..8b2504e
 +bool IsAvailable()
 +{
 +#if defined( CS16CLIENT_ENABLE_CEF )
-+	return g_chrome_service_up;
++	return !g_chrome_init_failed; // built in, and did not fail to start (it is started on demand)
 +#else
 +	return false;
 +#endif
@@ -1724,19 +1632,29 @@ index 0000000..8b2504e
 +
 +bool ShowMotd( const char* url )
 +{
-+	if( !IsAvailable() || !url || !url[0] )
++	if( !IsAvailable() || !url || !url[0] || !EnsureCefInitialized() )
 +		return false;
 +
-+	HideMotd();
++	if( ChromeInstance* inst = Lookup( g_motd_id ))
++	{
++		// the window is already open (the server sent its MOTD again): the same browser shows the new page,
++		// no new browser is created for every message
++		inst->LoadURL( std::string( url ) );
++	}
++	else
++	{
++		HideMotd();
 +
-+	// the page gets a window-like size (4:3), not the whole screen
-+	const int id = Chrome::Create( url, 900, 450, nullptr, nullptr );
-+	if( id < 0 )
-+		return false;
++		// the page gets the size of the page of the Steam version, not the whole screen
++		const int id = Chrome::Create( url, 900, 450, nullptr, nullptr );
++		if( id < 0 )
++			return false;
++
++		g_motd_id = id;
++	}
 +
 +	FreeMotdText( g_motd_title );
 +	FreeMotdText( g_motd_ok );
-+	g_motd_id = id;
 +	g_motd_shown_at = std::chrono::steady_clock::now();
 +
 +	const RenderExtents ext = VisibleRenderExtents();
@@ -1802,7 +1720,7 @@ index 0000000..8b2504e
 +} // namespace Chrome
 diff --git a/cl_dll/chrome/chrome_host.h b/cl_dll/chrome/chrome_host.h
 new file mode 100644
-index 0000000..d0f0e12
+index 0000000..2821c3f
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_host.h
 @@ -0,0 +1,34 @@
@@ -1816,7 +1734,7 @@ index 0000000..d0f0e12
 +bool Initialize();
 +void Shutdown();
 +void RunFrame();
-+void PresentDebugPresentationOverlays();
++void PresentMotd(); // draws the MOTD window (called at the end of the HUD drawing)
 +
 +int Create( const char* url, int width, int height, ChromeOnPaintCallback callback, void* userdata );
 +void Destroy( int instance_id );
@@ -1831,7 +1749,7 @@ index 0000000..d0f0e12
 +unsigned int GetTextureId( int instance_id );
 +
 +// Server MOTD shown in the game by the embedded browser
-+bool IsAvailable();                // CEF is built in and really running
++bool IsAvailable();                // CEF is built in and did not fail to start (it is started on demand)
 +bool ShowMotd( const char* url );  // false if CEF is unavailable (the caller uses a fallback)
 +void HideMotd();
 +bool IsMotdShown();
@@ -1932,16 +1850,17 @@ index 0000000..e122c24
 +} // namespace iHTMLChrome
 diff --git a/cl_dll/chrome/chrome_installation.cpp b/cl_dll/chrome/chrome_installation.cpp
 new file mode 100644
-index 0000000..11998b1
+index 0000000..1f4c20c
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_installation.cpp
-@@ -0,0 +1,86 @@
+@@ -0,0 +1,102 @@
 +#include "chrome_installation.h"
 +
 +#if defined(CS16CLIENT_ENABLE_CEF)
 +
 +#include "chrome_environment.h"
 +#include "chrome_debug.h"
++#include "chrome_path.h"
 +
 +#include <filesystem>
 +
@@ -1964,14 +1883,14 @@ index 0000000..11998b1
 +bool CefInstallation_Validate( const CefEnvironment& env )
 +{
 +#if defined(_WIN32) || defined(__linux__)
-+	const std::filesystem::path cef_dir( env.cefDir );
++	const std::filesystem::path cef_dir = PathFromUtf8( env.cefDir );
 +	if( !Exists( cef_dir ) )
 +	{
 +		Chrome_Printf( "[chrome] CefRuntime: missing folder %s\n", env.cefDir.c_str() );
 +		return false;
 +	}
 +
-+	if( !HasAnyResourceBundle( std::filesystem::path( env.resourcesDir ) ) &&
++	if( !HasAnyResourceBundle( PathFromUtf8( env.resourcesDir ) ) &&
 +		!HasAnyResourceBundle( cef_dir / "Resources" ) )
 +	{
 +		Chrome_Printf( "[chrome] CefRuntime: %s lacks CEF resource bundles\n", env.cefDir.c_str() );
@@ -1980,14 +1899,14 @@ index 0000000..11998b1
 +
 +	return true;
 +#elif defined(__APPLE__)
-+	const std::filesystem::path framework_dir( env.frameworkDir );
++	const std::filesystem::path framework_dir = PathFromUtf8( env.frameworkDir );
 +	if( !Exists( framework_dir ) )
 +	{
 +		Chrome_Printf( "[chrome] CefRuntime: missing framework bundle %s\n", env.frameworkDir.c_str() );
 +		return false;
 +	}
 +
-+	if( !HasAnyResourceBundle( std::filesystem::path( env.resourcesDir ) ) )
++	if( !HasAnyResourceBundle( PathFromUtf8( env.resourcesDir ) ) )
 +	{
 +		Chrome_Printf( "[chrome] CefRuntime: framework resources missing in %s\n", env.resourcesDir.c_str() );
 +		return false;
@@ -2001,20 +1920,35 @@ index 0000000..11998b1
 +#endif
 +}
 +
-+bool CefInstallation_EnsureCachePath( const CefEnvironment& env )
++bool CefInstallation_EnsureCachePath( CefEnvironment& env )
 +{
 +	if( env.cachePath.empty() )
 +		return false;
 +
 +	std::error_code ec;
-+	std::filesystem::create_directories( std::filesystem::path( env.cachePath ), ec );
++	std::filesystem::create_directories( PathFromUtf8( env.cachePath ), ec );
++	if( !ec )
++		return true;
++
++	// the folder of the game may be read-only (Program Files): the cache goes to the temporary folder then
++	Chrome_Printf( "[chrome] CefRuntime: cannot create cache dir %s (%s), the temporary folder is used\n",
++		env.cachePath.c_str(), ec.message().c_str() );
++
++	ec.clear();
++	const std::filesystem::path temp = std::filesystem::temp_directory_path( ec );
++	if( ec || temp.empty() )
++		return false;
++
++	const std::filesystem::path fallback = temp / "cs16_cef_cache";
++	std::filesystem::create_directories( fallback, ec );
 +	if( ec )
 +	{
 +		Chrome_Printf( "[chrome] CefRuntime: cannot create cache dir %s (%s)\n",
-+			env.cachePath.c_str(), ec.message().c_str() );
++			PathToUtf8( fallback ).c_str(), ec.message().c_str() );
 +		return false;
 +	}
 +
++	env.cachePath = PathToUtf8( fallback );
 +	return true;
 +}
 +
@@ -2024,7 +1958,7 @@ index 0000000..11998b1
 +#endif
 diff --git a/cl_dll/chrome/chrome_installation.h b/cl_dll/chrome/chrome_installation.h
 new file mode 100644
-index 0000000..abcef9f
+index 0000000..e72630d
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_installation.h
 @@ -0,0 +1,16 @@
@@ -2038,7 +1972,7 @@ index 0000000..abcef9f
 +struct CefEnvironment;
 +
 +bool CefInstallation_Validate( const CefEnvironment& env );
-+bool CefInstallation_EnsureCachePath( const CefEnvironment& env );
++bool CefInstallation_EnsureCachePath( CefEnvironment& env ); // may move the cache to the temporary folder
 +
 +} // namespace CEF
 +} // namespace iHTMLChrome
@@ -2768,23 +2702,69 @@ index 0000000..8318043
 +
 +} // namespace CEF
 +} // namespace iHTMLChrome
+diff --git a/cl_dll/chrome/chrome_path.h b/cl_dll/chrome/chrome_path.h
+new file mode 100644
+index 0000000..a3905b0
+--- /dev/null
++++ b/cl_dll/chrome/chrome_path.h
+@@ -0,0 +1,37 @@
++#pragma once
++
++// Paths of the embedded browser are kept in UTF-8 strings (CEF takes UTF-8 too).
++// std::filesystem::path made from a plain std::string uses the ANSI code page on Windows, and
++// generic_string() gives ANSI back, so a folder with letters that are not ASCII (D:\Игры\cs16)
++// would be broken. These helpers always convert through UTF-8.
++
++#include <filesystem>
++#include <string>
++
++#include "chrome_motd_utf.h"
++
++namespace iHTMLChrome {
++namespace CEF {
++
++inline std::filesystem::path PathFromUtf8( const std::string& utf8 )
++{
++	return std::filesystem::path( std::u8string( reinterpret_cast<const char8_t*>( utf8.data() ), utf8.size() ) );
++}
++
++inline std::string PathToUtf8( const std::filesystem::path& path )
++{
++	const std::u8string u8 = path.generic_u8string();
++	return std::string( reinterpret_cast<const char*>( u8.data() ), u8.size() );
++}
++
++// A path given by the engine: UTF-8 if it is valid UTF-8, otherwise the ANSI code page of the system
++inline std::filesystem::path PathFromEngine( const std::string& s )
++{
++	if( IsValidUtf8( s.c_str() ) )
++		return PathFromUtf8( s );
++
++	return std::filesystem::path( s );
++}
++
++} // namespace CEF
++} // namespace iHTMLChrome
 diff --git a/cl_dll/chrome/chrome_platform.cpp b/cl_dll/chrome/chrome_platform.cpp
 new file mode 100644
-index 0000000..3a50815
+index 0000000..199b993
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_platform.cpp
-@@ -0,0 +1,164 @@
+@@ -0,0 +1,127 @@
 +#if defined(CS16CLIENT_ENABLE_CEF)
 +
 +#include "chrome_environment.h"
 +#include "chrome_platform.h"
 +#include "chrome_debug.h"
++#include "chrome_path.h"
 +
 +#include <filesystem>
 +
 +#if defined(_WIN32)
 +#define WIN32_LEAN_AND_MEAN
++#ifndef NOMINMAX
 +#define NOMINMAX
++#endif
 +#include <windows.h>
 +#elif defined(__linux__)
 +#include <dlfcn.h>
@@ -2797,23 +2777,6 @@ index 0000000..3a50815
 +
 +namespace iHTMLChrome {
 +namespace CEF {
-+
-+#if defined(_WIN32)
-+namespace {
-+bool Utf8ToWide( const std::string& utf8, std::wstring& out )
-+{
-+	const int n = MultiByteToWideChar( CP_UTF8, 0, utf8.c_str(), -1, nullptr, 0 );
-+	if( n <= 0 )
-+		return false;
-+
-+	out.resize( static_cast<std::size_t>( n ) );
-+	if( MultiByteToWideChar( CP_UTF8, 0, utf8.c_str(), -1, out.data(), n ) <= 0 )
-+		return false;
-+	return true;
-+}
-+
-+} // namespace
-+#endif
 +
 +bool Platform_GetExecutablePath( std::string& executable_path )
 +{
@@ -2864,67 +2827,44 @@ index 0000000..3a50815
 +
 +bool Platform_LoadCEF( const CefEnvironment& env )
 +{
-+	#if defined(_WIN32)
++#if defined(_WIN32)
++	// libcef.dll is loaded by its full path. LOAD_WITH_ALTERED_SEARCH_PATH makes Windows look for the
++	// libraries it depends on (chrome_elf.dll and others) in its own folder. The DLL search of the whole
++	// game process is not changed: the engine and other libraries keep loading as before.
++	std::filesystem::path libcef_path = PathFromUtf8( env.cefDir ) / "libcef.dll";
++	libcef_path.make_preferred(); // LOAD_WITH_ALTERED_SEARCH_PATH needs backslashes
++	const std::wstring libcef_wide = libcef_path.wstring();
 +
-+	const std::filesystem::path cef_dir_path( env.cefDir );
-+
-+	std::wstring cef_dir_wide;
-+	if( !Utf8ToWide( cef_dir_path.generic_string(), cef_dir_wide ) )
-+		return false;
-+
-+	SetDefaultDllDirectories(
-+		LOAD_LIBRARY_SEARCH_DEFAULT_DIRS |
-+		LOAD_LIBRARY_SEARCH_USER_DIRS );
-+
-+	AddDllDirectory( cef_dir_wide.c_str() );
-+
-+	const std::filesystem::path libcef_path =
-+		cef_dir_path / "libcef.dll";
-+
-+	std::wstring libcef_wide;
-+	if( !Utf8ToWide( libcef_path.generic_string(), libcef_wide ) )
-+		return false;
-+
-+	HMODULE module = LoadLibraryExW(
-+		libcef_wide.c_str(),
-+		nullptr,
-+		LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR |
-+		LOAD_LIBRARY_SEARCH_DEFAULT_DIRS |
-+		LOAD_LIBRARY_SEARCH_USER_DIRS );
++	HMODULE module = LoadLibraryExW( libcef_wide.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH );
 +
 +	if( !module )
 +	{
 +		Chrome_Printf(
 +			"[chrome] LoadLibrary(libcef.dll) failed %s (err=%lu)\n",
-+			libcef_path.generic_string().c_str(),
++			PathToUtf8( libcef_path ).c_str(),
 +			static_cast<unsigned long>( GetLastError() ) );
 +
 +		return false;
 +	}
 +
-+	Chrome_DPrintf(
-+		1.f,
-+		"[chrome] loaded %s\n",
-+		libcef_path.generic_string().c_str() );
-+
++	Chrome_DPrintf( 1.f, "[chrome] loaded %s\n", PathToUtf8( libcef_path ).c_str() );
 +	return true;
 +
 +#elif defined(__linux__)
-+	const std::filesystem::path libcef_path = std::filesystem::path( env.cefDir ) / "libcef.so";
-+	if( !dlopen( libcef_path.generic_string().c_str(), RTLD_NOW | RTLD_GLOBAL ) )
++	const std::string libcef_path = PathToUtf8( PathFromUtf8( env.cefDir ) / "libcef.so" );
++	if( !dlopen( libcef_path.c_str(), RTLD_NOW | RTLD_GLOBAL ) )
 +	{
-+		Chrome_Printf( "[chrome] dlopen failed %s: %s\n", libcef_path.generic_string().c_str(), dlerror() );
++		Chrome_Printf( "[chrome] dlopen failed %s: %s\n", libcef_path.c_str(), dlerror() );
 +		return false;
 +	}
 +
-+	Chrome_DPrintf( 1.f, "[chrome] loaded %s\n", libcef_path.generic_string().c_str() );
++	Chrome_DPrintf( 1.f, "[chrome] loaded %s\n", libcef_path.c_str() );
 +	return true;
 +#elif defined(__APPLE__)
-+	const std::filesystem::path framework_binary =
-+		std::filesystem::path( env.frameworkDir ) / "Chromium Embedded Framework";
-+	if( !cef_load_library( framework_binary.generic_string().c_str() ) )
++	const std::string framework_binary = PathToUtf8( PathFromUtf8( env.frameworkDir ) / "Chromium Embedded Framework" );
++	if( !cef_load_library( framework_binary.c_str() ) )
 +	{
-+		Chrome_Printf( "[chrome] cef_load_library failed: %s\n", framework_binary.generic_string().c_str() );
++		Chrome_Printf( "[chrome] cef_load_library failed: %s\n", framework_binary.c_str() );
 +		return false;
 +	}
 +	return true;
@@ -2967,7 +2907,7 @@ index 0000000..5303a30
 +#endif
 diff --git a/cl_dll/chrome/chrome_policy.cpp b/cl_dll/chrome/chrome_policy.cpp
 new file mode 100644
-index 0000000..ae9eb8a
+index 0000000..04d942c
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_policy.cpp
 @@ -0,0 +1,59 @@
@@ -3016,7 +2956,7 @@ index 0000000..ae9eb8a
 +	command_line->AppendSwitch( "disable-video-capture-use-gpu-memory-buffer" );
 +	command_line->AppendSwitch( "enable-zero-copy" );
 +	command_line->AppendSwitch( "disable-partial-raster" );
-+	command_line->AppendSwitch( "js-flags=--max-old-space-size=64" );
++	command_line->AppendSwitchWithValue( "js-flags", "--max-old-space-size=64" );
 +	command_line->AppendSwitch( "disable-javascript-harmony-shipping" );
 +	command_line->AppendSwitch( "disable-plugins" );
 +	command_line->AppendSwitch( "disable-translate" );
@@ -3057,10 +2997,10 @@ index 0000000..2c81df4
 +#endif
 diff --git a/cl_dll/chrome/chrome_runtime.cpp b/cl_dll/chrome/chrome_runtime.cpp
 new file mode 100644
-index 0000000..824dd9d
+index 0000000..c78e2eb
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_runtime.cpp
-@@ -0,0 +1,152 @@
+@@ -0,0 +1,153 @@
 +#include "chrome_runtime.h" // also needed without CEF, see the end of the file
 +
 +#if defined(CS16CLIENT_ENABLE_CEF)
@@ -3072,6 +3012,7 @@ index 0000000..824dd9d
 +#include "chrome_platform.h"
 +#include "chrome_settings.h"
 +#include "chrome_debug.h"
++#include "chrome_path.h"
 +
 +#include "cef_app.h"
 +#include "cef_command_line.h"
@@ -3127,12 +3068,12 @@ index 0000000..824dd9d
 +	// Normal multi-process mode: a separate helper executable runs the renderer and the other
 +	// Chromium processes. Without it Chromium has to run inside the game process (single-process).
 +	{
-+		const std::filesystem::path helper = std::filesystem::path( env.cefDir ) / "cs16_cef_helper.exe";
++		const std::filesystem::path helper = PathFromUtf8( env.cefDir ) / "cs16_cef_helper.exe";
 +		std::error_code ec;
 +
 +		if( std::filesystem::exists( helper, ec ))
 +		{
-+			env.subprocessPath = helper.generic_string();
++			env.subprocessPath = PathToUtf8( helper );
 +			SetCefSingleProcess( false );
 +			Chrome_Printf( "[chrome] multi-process mode, helper: %s\n", env.subprocessPath.c_str() );
 +		}
@@ -3241,16 +3182,17 @@ index 0000000..68c3437
 +} // namespace iHTMLChrome
 diff --git a/cl_dll/chrome/chrome_settings.cpp b/cl_dll/chrome/chrome_settings.cpp
 new file mode 100644
-index 0000000..32da159
+index 0000000..c132ddb
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_settings.cpp
-@@ -0,0 +1,79 @@
+@@ -0,0 +1,80 @@
 +#include "chrome_settings.h"
 +
 +#if defined(CS16CLIENT_ENABLE_CEF)
 +
 +#include "chrome_environment.h"
 +#include "chrome_debug.h"
++#include "chrome_path.h"
 +
 +#include <filesystem>
 +
@@ -3261,15 +3203,15 @@ index 0000000..32da159
 +std::string ResolveResourcesDir( const CefEnvironment& env )
 +{
 +#if defined(_WIN32) || defined(__linux__)
-+	const std::filesystem::path resources_root( env.resourcesDir );
++	const std::filesystem::path resources_root = PathFromUtf8( env.resourcesDir );
 +	std::error_code ec;
 +	if( std::filesystem::exists( resources_root / "icudtl.dat", ec ) )
 +		return env.resourcesDir;
 +
-+	const std::filesystem::path nested_resources = std::filesystem::path( env.cefDir ) / "Resources";
++	const std::filesystem::path nested_resources = PathFromUtf8( env.cefDir ) / "Resources";
 +	ec.clear();
 +	if( std::filesystem::exists( nested_resources / "icudtl.dat", ec ) )
-+		return nested_resources.generic_string();
++		return PathToUtf8( nested_resources );
 +
 +	return env.resourcesDir;
 +#else
@@ -3279,17 +3221,17 @@ index 0000000..32da159
 +
 +std::string FindLocalesDir( const std::string& resources_dir )
 +{
-+	const std::filesystem::path direct = std::filesystem::path( resources_dir ) / "locales";
++	const std::filesystem::path direct = PathFromUtf8( resources_dir ) / "locales";
 +	std::error_code ec;
 +	if( std::filesystem::exists( direct, ec ) )
-+		return direct.generic_string();
++		return PathToUtf8( direct );
 +
-+	const std::filesystem::path nested = std::filesystem::path( resources_dir ) / "Resources" / "locales";
++	const std::filesystem::path nested = PathFromUtf8( resources_dir ) / "Resources" / "locales";
 +	ec.clear();
 +	if( std::filesystem::exists( nested, ec ) )
-+		return nested.generic_string();
++		return PathToUtf8( nested );
 +
-+	return direct.generic_string();
++	return PathToUtf8( direct );
 +}
 +} // namespace
 +
@@ -3349,16 +3291,29 @@ index 0000000..7cd7e01
 +#endif
 diff --git a/cl_dll/chrome/chrome_texture_bridge.cpp b/cl_dll/chrome/chrome_texture_bridge.cpp
 new file mode 100644
-index 0000000..c6b6552
+index 0000000..aba0724
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_texture_bridge.cpp
-@@ -0,0 +1,99 @@
+@@ -0,0 +1,118 @@
 +#include "chrome_texture_bridge.h"
 +
 +#include "wrect.h"
 +#include "cl_dll.h"
 +
++#include <cstdio>
 +#include <vector>
++
++namespace
++{
++// The engine gives back the texture it already has for a name, so every texture needs its own name:
++// otherwise two browsers would draw into one texture and freeing one would break the other
++int g_chrome_texture_counter = 0;
++
++void MakeTextureName( char* name, std::size_t size )
++{
++	std::snprintf( name, size, "*chrome_offscreen_%d", ++g_chrome_texture_counter );
++}
++} // namespace
 +
 +namespace iHTMLChrome {
 +namespace CEF {
@@ -3414,8 +3369,11 @@ index 0000000..c6b6552
 +		rgba[d + 3] = bgra[s + 3];
 +	}
 +
++	char name[48];
++	MakeTextureName( name, sizeof( name ) );
++
 +	texture_id_ = gRenderAPI.GL_CreateTexture(
-+		"*chrome_offscreen",
++		name,
 +		frame.width,
 +		frame.height,
 +		rgba.data(),
@@ -3431,8 +3389,11 @@ index 0000000..c6b6552
 +	if( !gRenderAPI.GL_CreateTexture )
 +		return;
 +
++	char name[48];
++	MakeTextureName( name, sizeof( name ) );
++
 +	texture_id_ = gRenderAPI.GL_CreateTexture(
-+		"*chrome_offscreen",
++		name,
 +		width,
 +		height,
 +		nullptr,
@@ -3705,18 +3666,22 @@ index f23bb7c..34d6d0a 100644
  
  
 diff --git a/cl_dll/hud/MOTD.cpp b/cl_dll/hud/MOTD.cpp
-index 83208f5..38703cc 100644
+index 83208f5..1b9b833 100644
 --- a/cl_dll/hud/MOTD.cpp
 +++ b/cl_dll/hud/MOTD.cpp
-@@ -27,6 +27,7 @@
+@@ -27,6 +27,11 @@
  #include <stdio.h>
  #include "draw_util.h"
  #include "build.h"
++#include "motd_util.h"
++#include "chrome/chrome_motd_utf.h"
++#include <chrono>
++#include <string>
 +#include "chrome/chrome_host.h"
  
  #if XASH_WIN32 == 1 || XASH_PSVITA == 1
  #define strcasestr strstr
-@@ -39,6 +40,14 @@ int CHudMOTD :: Init( void )
+@@ -39,6 +44,14 @@ int CHudMOTD :: Init( void )
  	HOOK_MESSAGE( gHUD.m_MOTD, MOTD );
  
  	cl_hide_motd = CVAR_CREATE("cl_hide_motd", "0", FCVAR_ARCHIVE); // hide motd
@@ -3731,7 +3696,7 @@ index 83208f5..38703cc 100644
  	Reset();
  
  	return 1;
-@@ -47,9 +56,297 @@ int CHudMOTD :: Init( void )
+@@ -47,9 +60,229 @@ int CHudMOTD :: Init( void )
  int CHudMOTD :: VidInit( void )
  {
  	// Load sprites here
@@ -3740,163 +3705,93 @@ index 83208f5..38703cc 100644
  	return 1;
  }
  
-+static bool StartsWithNoCase( const char *s, const char *prefix )
-+{
-+	while( *prefix )
-+	{
-+		char a = *s++;
-+		char b = *prefix++;
-+
-+		if( a >= 'A' && a <= 'Z' )
-+			a += 'a' - 'A';
-+
-+		if( a != b )
-+			return false;
-+	}
-+
-+	return true;
-+}
-+
 +#if XASH_WIN32 == 1
 +bool MOTD_OpenInBrowser( const char *target );
 +bool MOTD_SaveTempHtml( const char *html, size_t len, char *outPath, size_t outSize );
-+#endif
 +
-+static bool IsBlank( char c )
++// The system browser is opened not more often than this: a server that sends its MOTD again and again
++// must not flood the desktop with browser windows and throw the player out of the game every time.
++static const double MOTD_BROWSER_COOLDOWN = 5.0;
++
++static double MotdNowSeconds( void )
 +{
-+	return (unsigned char)c <= ' ';
++	return std::chrono::duration<double>( std::chrono::steady_clock::now().time_since_epoch() ).count();
 +}
 +
-+static const char *FindNoCase( const char *s, const char *what )
++static bool MotdBrowserAllowed( void )
 +{
-+	for( ; *s; s++ )
-+		if( StartsWithNoCase( s, what ))
-+			return s;
++	static double lastOpen = -1.0e9;
++	const double now = MotdNowSeconds();
 +
-+	return NULL;
-+}
-+
-+// Finds the first <iframe ... src="http(s)://..."> in HTML and copies its address to out.
-+// Returns false if there is no such iframe or the address looks wrong.
-+static bool ExtractIframeSrc( const char *html, char *out, size_t outSize )
-+{
-+	const char *tag = html;
-+
-+	while(( tag = FindNoCase( tag, "<iframe" )) != NULL )
++	if( now - lastOpen < MOTD_BROWSER_COOLDOWN )
 +	{
-+		const char *p = tag + 7;
-+		tag = p; // continue the search after this tag if it does not fit
++		gEngfuncs.Con_Printf( "MOTD: the browser was opened less than %d seconds ago, this MOTD is skipped\n", (int)MOTD_BROWSER_COOLDOWN );
++		return false;
++	}
 +
-+		if( !IsBlank( *p ) && *p != '/' ) // not "<iframe", e.g. "<iframes"
-+			continue;
++	lastOpen = now;
++	return true;
++}
 +
-+		const char *tagEnd = strchr( p, '>' );
++// MOTD HTML is given to the embedded browser as a data: address. The page is converted to UTF-8 first
++// (a page that is not valid UTF-8 is taken as Windows-1251, like the server names), because the
++// charset of a data: address is stronger than <meta charset> inside the page.
++static std::string MakeHtmlDataUrl( const char *html, bool cutByBuffer )
++{
++	static const char b64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
++	std::string page( html );
 +
-+		if( !tagEnd )
-+			tagEnd = p + strlen( p );
++	// a long UTF-8 page cut at the end of the buffer may end in the middle of a letter: drop that piece,
++	// so the page is not taken as Windows-1251 because of it (only then: a short page ending in such
++	// bytes is a Windows-1251 page)
++	if( cutByBuffer && !iHTMLChrome::CEF::IsValidUtf8( page.c_str() ))
++	{
++		// the last lead byte of a UTF-8 letter in the last 3 bytes, followed only by continuation bytes,
++		// and fewer of them than the letter needs: that is a letter cut off by the end of the buffer
++		const size_t size = page.size();
 +
-+		for( const char *a = p; a < tagEnd; a++ )
++		for( size_t start = size; start > 0 && size - start < 3; )
 +		{
-+			// attribute name begins after a blank, so "data-src" and "srcdoc" do not match
-+			if( !IsBlank( a[-1] ) || !StartsWithNoCase( a, "src" ))
-+				continue;
++			--start;
++			const unsigned char c = (unsigned char)page[start];
 +
-+			const char *q = a + 3;
++			if(( c & 0xC0 ) == 0x80 )
++				continue; // a continuation byte, the lead byte is further left
 +
-+			while( q < tagEnd && IsBlank( *q )) q++;
++			const size_t need = ( c >= 0xC2 && c <= 0xDF ) ? 2 : ( c >= 0xE0 && c <= 0xEF ) ? 3 : ( c >= 0xF0 && c <= 0xF4 ) ? 4 : 0;
++			const std::string shorter = page.substr( 0, start );
 +
-+			if( q >= tagEnd || *q != '=' )
-+				continue;
++			if( need > size - start && iHTMLChrome::CEF::IsValidUtf8( shorter.c_str() ))
++				page = shorter;
 +
-+			q++;
-+			while( q < tagEnd && IsBlank( *q )) q++;
-+
-+			char quote = 0;
-+
-+			if( *q == '"' || *q == '\'' )
-+				quote = *q++;
-+
-+			size_t len = 0;
-+			bool ok = true;
-+
-+			for( ; *q; q++ )
-+			{
-+				if( quote ? ( *q == quote ) : ( IsBlank( *q ) || *q == '>' ))
-+					break;
-+
-+				if( IsBlank( *q )) // an address never contains blanks or control characters
-+				{
-+					ok = false;
-+					break;
-+				}
-+
-+				if( !strncmp( q, "&amp;", 5 )) // HTML escaping of '&'
-+				{
-+					if( len + 1 >= outSize ) { ok = false; break; }
-+					out[len++] = '&';
-+					q += 4;
-+					continue;
-+				}
-+
-+				if( len + 1 >= outSize )
-+				{
-+					ok = false;
-+					break;
-+				}
-+
-+				out[len++] = *q;
-+			}
-+
-+			// a tag that is not closed is dropped by browsers as well
-+			if( ok && !*q )
-+				ok = false;
-+
-+			if( ok )
-+			{
-+				out[len] = 0;
-+
-+				// only http(s) addresses are opened
-+				if( StartsWithNoCase( out, "http://" ) || StartsWithNoCase( out, "https://" ))
-+					return true;
-+			}
-+
-+			break; // look at the next iframe
++			break;
 +		}
 +	}
 +
-+	return false;
-+}
++	const std::string text = iHTMLChrome::CEF::ToUtf8( page.c_str() );
++	const size_t len = text.size();
 +
-+// MOTD HTML is given to the embedded browser as a data: address
-+static bool MakeHtmlDataUrl( const char *html, int len, char *out, size_t outSize )
-+{
-+	static const char b64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-+	static const char prefix[] = "data:text/html;charset=utf-8;base64,";
-+	size_t need = sizeof( prefix ) - 1 + (( (size_t)len + 2 ) / 3 ) * 4 + 1;
++	std::string out = "data:text/html;charset=utf-8;base64,";
++	out.reserve( out.size() + ( len + 2 ) / 3 * 4 );
 +
-+	if( len <= 0 || need > outSize )
-+		return false;
-+
-+	memcpy( out, prefix, sizeof( prefix ) - 1 );
-+	char *o = out + sizeof( prefix ) - 1;
-+
-+	for( int i = 0; i < len; i += 3 )
++	for( size_t i = 0; i < len; i += 3 )
 +	{
-+		unsigned int v = (unsigned char)html[i] << 16;
-+		int n = len - i;
++		unsigned int v = (unsigned char)text[i] << 16;
++		const size_t n = len - i;
 +
-+		if( n > 1 ) v |= (unsigned char)html[i + 1] << 8;
-+		if( n > 2 ) v |= (unsigned char)html[i + 2];
++		if( n > 1 ) v |= (unsigned char)text[i + 1] << 8;
++		if( n > 2 ) v |= (unsigned char)text[i + 2];
 +
-+		*o++ = b64[( v >> 18 ) & 63];
-+		*o++ = b64[( v >> 12 ) & 63];
-+		*o++ = ( n > 1 ) ? b64[( v >> 6 ) & 63] : '=';
-+		*o++ = ( n > 2 ) ? b64[v & 63] : '=';
++		out += b64[( v >> 18 ) & 63];
++		out += b64[( v >> 12 ) & 63];
++		out += ( n > 1 ) ? b64[( v >> 6 ) & 63] : '=';
++		out += ( n > 2 ) ? b64[v & 63] : '=';
 +	}
 +
-+	*o = 0;
-+	return true;
++	return out;
 +}
++
++#endif // XASH_WIN32
 +
 +void CHudMOTD :: ResetBrowserState( void )
 +{
@@ -3929,12 +3824,12 @@ index 83208f5..38703cc 100644
 +		ResetBrowserState();
 +		m_bMotdStarted = true;
 +
-+		while( *p && (unsigned char)*p <= ' ' )
++		while( *p && MotdUtil::IsBlank( *p ))
 +			p++;
 +
-+		if( StartsWithNoCase( p, "http://" ) || StartsWithNoCase( p, "https://" ))
++		if( MotdUtil::IsHttpUrl( p ))
 +			m_iBrowserMode = BROWSER_URL;
-+		else if( *p == '<' )
++		else if( MotdUtil::LooksLikeHtml( p ))
 +			m_iBrowserMode = BROWSER_HTML;
 +	}
 +
@@ -3966,49 +3861,51 @@ index 83208f5..38703cc 100644
 +	// whole MOTD received
 +	// mode 2: the page is shown in the game by the built-in browser (falls back to the system browser if it is not available)
 +	const bool cef = mode >= 2;
++	char safeUrl[4096];
 +
 +	if( m_iBrowserMode == BROWSER_URL )
 +	{
 +		char *url = m_szBrowserMOTD;
 +		char *end;
 +
-+		while( *url && (unsigned char)*url <= ' ' )
++		while( *url && MotdUtil::IsBlank( *url ))
 +			url++;
 +
 +		// URL ends on the first whitespace
-+		for( end = url; *end && (unsigned char)*end > ' '; end++ );
++		for( end = url; *end && !MotdUtil::IsBlank( *end ); end++ );
 +		*end = 0;
 +
-+		// only http(s) links, never pass anything else from the server to the system
-+		if( StartsWithNoCase( url, "http://" ) || StartsWithNoCase( url, "https://" ))
++		// only http(s) links, made safe for the command line of the browser
++		if( !MotdUtil::MakeSafeUrl( url, safeUrl, sizeof( safeUrl )))
++			gEngfuncs.Con_Printf( "MOTD: the address is not usable, skipped\n" );
++		else if( cef && Chrome::ShowMotd( safeUrl ))
++			gEngfuncs.Con_Printf( "Showing MOTD in the game browser: %s\n", safeUrl );
++		else if( MotdBrowserAllowed( ))
 +		{
-+			if( cef && Chrome::ShowMotd( url ))
-+			{
-+				gEngfuncs.Con_Printf( "Showing MOTD in the game browser: %s\n", url );
-+			}
-+			else
-+			{
-+				gEngfuncs.Con_Printf( "Opening MOTD in browser: %s\n", url );
-+				MOTD_OpenInBrowser( url );
-+			}
++			gEngfuncs.Con_Printf( "Opening MOTD in browser: %s\n", safeUrl );
++			MOTD_OpenInBrowser( safeUrl );
 +		}
 +	}
 +	else if( m_iBrowserMode == BROWSER_HTML )
 +	{
 +		char iframeUrl[2048];
-+		char path[512];
-+		static char dataUrl[22528]; // enough for the base64 form of the whole MOTD buffer
++		char path[1024];
 +
-+		if( cef && MakeHtmlDataUrl( m_szBrowserMOTD, m_iBrowserLen, dataUrl, sizeof( dataUrl )) && Chrome::ShowMotd( dataUrl ))
++		if( cef && Chrome::ShowMotd( MakeHtmlDataUrl( m_szBrowserMOTD, m_iBrowserLen >= (int)sizeof( m_szBrowserMOTD ) - 1 ).c_str() ))
 +		{
 +			// the whole page is shown, like the original embedded browser does
 +			gEngfuncs.Con_Printf( "Showing MOTD in the game browser\n" );
 +		}
-+		else if( cl_motd_browser_iframe->value != 0 && ExtractIframeSrc( m_szBrowserMOTD, iframeUrl, sizeof( iframeUrl )))
++		else if( !MotdBrowserAllowed( ))
++		{
++			// skipped, the message is printed
++		}
++		else if( cl_motd_browser_iframe->value != 0 && MotdUtil::ExtractIframeSrc( m_szBrowserMOTD, iframeUrl, sizeof( iframeUrl ))
++			&& MotdUtil::MakeSafeUrl( iframeUrl, safeUrl, sizeof( safeUrl )))
 +		{
 +			// the page is only a wrapper around an iframe, open the iframe address directly
-+			gEngfuncs.Con_Printf( "Opening MOTD iframe in browser: %s\n", iframeUrl );
-+			MOTD_OpenInBrowser( iframeUrl );
++			gEngfuncs.Con_Printf( "Opening MOTD iframe in browser: %s\n", safeUrl );
++			MOTD_OpenInBrowser( safeUrl );
 +		}
 +		else if( MOTD_SaveTempHtml( m_szBrowserMOTD, m_iBrowserLen, path, sizeof( path )))
 +		{
@@ -4029,7 +3926,7 @@ index 83208f5..38703cc 100644
  void CHudMOTD :: Reset( void )
  {
  	m_iFlags &= ~HUD_DRAW;  // start out inactive
-@@ -137,13 +434,19 @@ int CHudMOTD :: MsgFunc_MOTD( const char *pszName, int iSize, void *pbuf )
+@@ -137,13 +370,19 @@ int CHudMOTD :: MsgFunc_MOTD( const char *pszName, int iSize, void *pbuf )
  		Reset(); // clear the current MOTD in prep for this one
  	}
  
@@ -4055,15 +3952,16 @@ index 83208f5..38703cc 100644
  	if( strcasestr( m_szMOTD.String(), "<!DOCTYPE HTML>" ) )
 diff --git a/cl_dll/hud/MOTD_browser.cpp b/cl_dll/hud/MOTD_browser.cpp
 new file mode 100644
-index 0000000..fad4296
+index 0000000..0c32b91
 --- /dev/null
 +++ b/cl_dll/hud/MOTD_browser.cpp
-@@ -0,0 +1,64 @@
+@@ -0,0 +1,87 @@
 +//
 +// MOTD_browser.cpp
 +//
 +// OS specific helpers for opening server MOTD in the system web browser.
 +// Kept in a separate file because <windows.h> conflicts with engine headers.
++// All strings here are UTF-8 (the addresses are plain ASCII after MotdUtil::MakeSafeUrl).
 +//
 +
 +#include <stddef.h>
@@ -4074,38 +3972,60 @@ index 0000000..fad4296
 +#if defined( _WIN32 )
 +
 +#define WIN32_LEAN_AND_MEAN
++#ifndef NOMINMAX
 +#define NOMINMAX
++#endif
 +#include <windows.h>
 +#include <shellapi.h>
 +#include <stdio.h>
++#include <wchar.h>
++
++static bool Utf8ToWide( const char *s, wchar_t *out, int outCount )
++{
++	return MultiByteToWideChar( CP_UTF8, MB_ERR_INVALID_CHARS, s, -1, out, outCount ) > 0;
++}
 +
 +bool MOTD_OpenInBrowser( const char *target )
 +{
-+	HINSTANCE result = ShellExecuteA( NULL, "open", target, NULL, NULL, SW_SHOWNORMAL );
++	wchar_t wide[4096];
++
++	if( !target || !Utf8ToWide( target, wide, (int)( sizeof( wide ) / sizeof( wide[0] ))))
++		return false;
++
++	HINSTANCE result = ShellExecuteW( NULL, L"open", wide, NULL, NULL, SW_SHOWNORMAL );
 +
 +	return (INT_PTR)result > 32;
 +}
 +
++// The page is saved to %TEMP%\cs16_motd.html. The folder of a user can have any letters in its
++// name (C:\Users\Иван\...), so the wide functions of Windows are used and the path is given back in UTF-8.
 +bool MOTD_SaveTempHtml( const char *html, size_t len, char *outPath, size_t outSize )
 +{
-+	char dir[MAX_PATH];
-+	DWORD n = GetTempPathA( sizeof( dir ), dir );
++	wchar_t dir[MAX_PATH + 1];
++	const DWORD n = GetTempPathW( MAX_PATH + 1, dir );
 +
-+	if( n == 0 || n >= sizeof( dir ))
++	if( n == 0 || n > MAX_PATH )
 +		return false;
 +
-+	if( snprintf( outPath, outSize, "%scs16_motd.html", dir ) <= 0 )
++	wchar_t path[MAX_PATH + 32];
++
++	if( _snwprintf( path, sizeof( path ) / sizeof( path[0] ), L"%lscs16_motd.html", dir ) <= 0 )
 +		return false;
 +
-+	FILE *f = fopen( outPath, "wb" );
++	path[sizeof( path ) / sizeof( path[0] ) - 1] = 0;
++
++	FILE *f = _wfopen( path, L"wb" );
 +
 +	if( !f )
 +		return false;
 +
-+	size_t written = fwrite( html, 1, len, f );
++	const size_t written = fwrite( html, 1, len, f );
 +	fclose( f );
 +
-+	return written == len;
++	if( written != len )
++		return false;
++
++	return WideCharToMultiByte( CP_UTF8, 0, path, -1, outPath, (int)outSize, NULL, NULL ) > 0;
 +}
 +
 +#else // not implemented on other platforms yet
@@ -4289,6 +4209,320 @@ index 0000000..668a375
 +}
 +
 +#endif
+diff --git a/cl_dll/hud/motd_util.h b/cl_dll/hud/motd_util.h
+new file mode 100644
+index 0000000..53fcfae
+--- /dev/null
++++ b/cl_dll/hud/motd_util.h
+@@ -0,0 +1,308 @@
++//
++// motd_util.h
++//
++// Helpers of the server MOTD: recognising HTML, finding the address of an iframe, making an address
++// safe to give to the system. No dependencies on the engine, so the same file is used by every build
++// of the client and can be tested alone.
++//
++
++#pragma once
++
++#include <stddef.h>
++#include <string.h>
++
++namespace MotdUtil {
++
++inline char LowerAscii( char c )
++{
++	return ( c >= 'A' && c <= 'Z' ) ? (char)( c + 'a' - 'A' ) : c;
++}
++
++// prefix must be in lower case
++inline bool StartsWithNoCase( const char *s, const char *prefix )
++{
++	while( *prefix )
++	{
++		if( LowerAscii( *s++ ) != *prefix++ )
++			return false;
++	}
++
++	return true;
++}
++
++inline bool IsBlank( char c )
++{
++	return (unsigned char)c <= ' ';
++}
++
++inline bool IsAsciiLetter( char c )
++{
++	return ( c >= 'a' && c <= 'z' ) || ( c >= 'A' && c <= 'Z' );
++}
++
++inline bool IsHttpUrl( const char *s )
++{
++	return StartsWithNoCase( s, "http://" ) || StartsWithNoCase( s, "https://" );
++}
++
++// The text of a MOTD is HTML if it starts with a tag: "<html", "<!DOCTYPE", "<b>", "</p>"...
++// A text like "<<< Welcome >>>" or "<-- rules" is not HTML and is shown in the game.
++inline bool LooksLikeHtml( const char *s )
++{
++	while( *s && IsBlank( *s ))
++		s++;
++
++	if( s[0] != '<' )
++		return false;
++
++	if( IsAsciiLetter( s[1] ) || s[1] == '!' || s[1] == '?' )
++		return true;
++
++	return s[1] == '/' && IsAsciiLetter( s[2] );
++}
++
++// the tag <name ...> starts at s ('<' included); name in lower case
++inline bool IsTagStart( const char *s, const char *name )
++{
++	if( s[0] != '<' || !StartsWithNoCase( s + 1, name ))
++		return false;
++
++	const char after = s[1 + strlen( name )];
++	return IsBlank( after ) || after == '>' || after == '/';
++}
++
++// first occurrence of what (lower case) in s, ignoring the case; NULL if there is none
++inline const char *FindNoCase( const char *s, const char *what )
++{
++	for( ; *s; s++ )
++		if( StartsWithNoCase( s, what ))
++			return s;
++
++	return NULL;
++}
++
++// Reads the attributes of a tag that starts at p (right after its name), the way a browser does:
++// with quotes or without, '>' can be inside quotes, the first src counts.
++// Returns: 1 - an http(s) src was found and copied to out, 0 - the tag has no usable src (end is set
++// to the end of the tag), -1 - the tag is not closed (the rest of the page is swallowed by it).
++inline int ReadIframeSrc( const char *p, char *out, size_t outSize, const char **end )
++{
++	for( ;; )
++	{
++		while( *p && ( IsBlank( *p ) || *p == '/' ))
++			p++;
++
++		if( !*p )
++			return -1;
++
++		if( *p == '>' )
++		{
++			*end = p + 1;
++			return 0;
++		}
++
++		// name of the attribute
++		const char *name = p;
++
++		while( *p && !IsBlank( *p ) && *p != '=' && *p != '>' && *p != '/' )
++			p++;
++
++		const size_t nameLen = (size_t)( p - name );
++
++		while( *p && IsBlank( *p ))
++			p++;
++
++		if( *p != '=' )
++			continue; // an attribute without a value
++
++		p++;
++
++		while( *p && IsBlank( *p ))
++			p++;
++
++		// the value
++		char quote = 0;
++
++		if( *p == '"' || *p == '\'' )
++			quote = *p++;
++
++		const char *value = p;
++
++		while( *p && ( quote ? ( *p != quote ) : ( !IsBlank( *p ) && *p != '>' )))
++			p++;
++
++		if( !*p )
++			return -1;
++
++		const char *valueEnd = p;
++
++		if( quote )
++			p++; // the closing quote
++
++		if( nameLen != 3 || !StartsWithNoCase( name, "src" ))
++			continue;
++
++		// blanks around the address are not a part of it
++		while( value < valueEnd && IsBlank( *value ))
++			value++;
++
++		while( valueEnd > value && IsBlank( valueEnd[-1] ))
++			valueEnd--;
++
++		size_t len = 0;
++		bool ok = true;
++
++		for( const char *q = value; q < valueEnd; q++ )
++		{
++			if( IsBlank( *q )) // an address never contains blanks or control characters
++			{
++				ok = false;
++				break;
++			}
++
++			char c = *q;
++
++			if( valueEnd - q >= 5 && !strncmp( q, "&amp;", 5 )) // HTML escaping of '&'
++			{
++				c = '&';
++				q += 4;
++			}
++
++			if( len + 1 >= outSize )
++			{
++				ok = false;
++				break;
++			}
++
++			out[len++] = c;
++		}
++
++		if( ok )
++		{
++			out[len] = 0;
++
++			if( IsHttpUrl( out ))
++				return 1;
++		}
++
++		// the first src of a tag decides: skip the rest of this tag
++		for( ;; )
++		{
++			while( *p && *p != '>' && *p != '"' && *p != '\'' )
++				p++;
++
++			if( !*p )
++				return -1;
++
++			if( *p == '>' )
++			{
++				*end = p + 1;
++				return 0;
++			}
++
++			const char *closing = strchr( p + 1, *p );
++
++			if( !closing )
++				return -1;
++
++			p = closing + 1;
++		}
++	}
++}
++
++// Finds the first <iframe ... src="http(s)://..."> of a page and copies its address to out.
++// Comments (<!-- -->), scripts and styles are skipped: an iframe written there is not on the page.
++// Returns false if there is no such iframe.
++inline bool ExtractIframeSrc( const char *html, char *out, size_t outSize )
++{
++	if( !html || !out || outSize == 0 )
++		return false;
++
++	const char *p = html;
++
++	while(( p = strchr( p, '<' )) != NULL )
++	{
++		if( !strncmp( p, "<!--", 4 ))
++		{
++			const char *close = strstr( p + 4, "-->" );
++
++			if( !close )
++				return false; // the rest of the page is a comment
++			p = close + 3;
++			continue;
++		}
++
++		if( IsTagStart( p, "script" ) || IsTagStart( p, "style" ))
++		{
++			const char *close = FindNoCase( p + 1, IsTagStart( p, "script" ) ? "</script" : "</style" );
++
++			if( !close )
++				return false; // the rest of the page is a script
++			p = close + 2;
++			continue;
++		}
++
++		if( IsTagStart( p, "iframe" ))
++		{
++			const char *end = NULL;
++			const int r = ReadIframeSrc( p + 7, out, outSize, &end );
++
++			if( r == 1 )
++				return true;
++			if( r < 0 )
++				return false;
++
++			p = end;
++			continue;
++		}
++
++		p++;
++	}
++
++	return false;
++}
++
++// Makes an http(s) address of a server safe to give to the system browser: everything that is not
++// a plain character of an address (quotes, '<', '>', '\', '^', '`', '{', '|', '}', letters that are
++// not ASCII) is written as %XX, so the address cannot break out of the command line of the browser.
++// Returns false if it is not an http(s) address, has control characters or does not fit into out.
++inline bool MakeSafeUrl( const char *in, char *out, size_t outSize )
++{
++	static const char hex[] = "0123456789ABCDEF";
++
++	if( !in || !out || outSize == 0 || !IsHttpUrl( in ))
++		return false;
++
++	size_t len = 0;
++
++	for( const unsigned char *p = (const unsigned char *)in; *p; p++ )
++	{
++		const unsigned char c = *p;
++
++		if( c <= ' ' || c == 0x7F )
++			return false;
++
++		const bool plain = ( c >= 'a' && c <= 'z' ) || ( c >= 'A' && c <= 'Z' ) || ( c >= '0' && c <= '9' )
++			|| ( c < 0x80 && strchr( "-._~:/?#[]@!$&'()*+,;=%", (char)c ));
++
++		if( plain )
++		{
++			if( len + 1 >= outSize )
++				return false;
++			out[len++] = (char)c;
++		}
++		else
++		{
++			if( len + 3 >= outSize )
++				return false;
++			out[len++] = '%';
++			out[len++] = hex[c >> 4];
++			out[len++] = hex[c & 15];
++		}
++	}
++
++	out[len] = 0;
++	return true;
++}
++
++} // namespace MotdUtil
 diff --git a/cl_dll/hud/scoreboard.cpp b/cl_dll/hud/scoreboard.cpp
 index cdbde46..9610599 100644
 --- a/cl_dll/hud/scoreboard.cpp
@@ -4341,7 +4575,7 @@ index cdbde46..9610599 100644
  
  	int ypos = ystart + (list_slot * ROW_GAP) + 5;
 diff --git a/cl_dll/hud_redraw.cpp b/cl_dll/hud_redraw.cpp
-index 1f2ad59..271e0b3 100644
+index 1f2ad59..418f34d 100644
 --- a/cl_dll/hud_redraw.cpp
 +++ b/cl_dll/hud_redraw.cpp
 @@ -23,6 +23,7 @@
@@ -4356,22 +4590,10 @@ index 1f2ad59..271e0b3 100644
  
  	g_accept_utf8 = !stricmp( cl_charset->string, "utf-8" );
  
-+	Chrome::PresentDebugPresentationOverlays();
++	Chrome::PresentMotd();
 +
  	return 1;
  }
- 
-diff --git a/cl_dll/include/cl_dll.h b/cl_dll/include/cl_dll.h
-index 718d0ff..e34c6d0 100644
---- a/cl_dll/include/cl_dll.h
-+++ b/cl_dll/include/cl_dll.h
-@@ -94,6 +94,7 @@ struct kbutton_s   DLLEXPORT *KB_Find( const char *name );
- 
- void       DLLEXPORT IN_ClientMoveEvent( float forwardmove, float sidemove );
- void       DLLEXPORT IN_ClientLookEvent( float relyaw, float relpitch );
-+void       DLLEXPORT IN_ClientTouchEvent ( int fingerID, float x, float y, float dx, float dy );
- }
- 
  
 diff --git a/cl_dll/include/draw_util.h b/cl_dll/include/draw_util.h
 index 1fa2af1..7904cf5 100644
@@ -4415,7 +4637,7 @@ index c6579ca..aa51abf 100644
  		g_pMenu->Key( keynum, down );
  
 diff --git a/cl_dll/input/input_xash3d.cpp b/cl_dll/input/input_xash3d.cpp
-index c86bb0a..52990f5 100644
+index c86bb0a..0aebda1 100644
 --- a/cl_dll/input/input_xash3d.cpp
 +++ b/cl_dll/input/input_xash3d.cpp
 @@ -1,4 +1,5 @@
@@ -4424,19 +4646,7 @@ index c86bb0a..52990f5 100644
  #include "usercmd.h"
  #include "cvardef.h"
  #include "kbutton.h"
-@@ -117,6 +118,11 @@ void IN_ToggleButtons( float forwardmove, float sidemove )
- 
- }
- 
-+void IN_ClientTouchEvent( int fingerID, float x, float y, float dx, float dy )
-+{
-+	
-+}
-+
- void IN_ClientMoveEvent( float forwardmove, float sidemove )
- {
- 	//gEngfuncs.Con_Printf("IN_MoveEvent\n");
-@@ -128,6 +134,29 @@ void IN_ClientMoveEvent( float forwardmove, float sidemove )
+@@ -128,6 +129,29 @@ void IN_ClientMoveEvent( float forwardmove, float sidemove )
  
  void IN_ClientLookEvent( float relyaw, float relpitch )
  {
@@ -4466,7 +4676,7 @@ index c86bb0a..52990f5 100644
  	rel_yaw += relyaw;
  	rel_pitch += relpitch;
  }
-@@ -231,7 +260,7 @@ void DLLEXPORT IN_MouseEvent( int mstate )
+@@ -231,7 +255,7 @@ void DLLEXPORT IN_MouseEvent( int mstate )
  			gEngfuncs.Key_Event( K_MOUSE1 + i, 0 );
  		}
  	}	
@@ -4477,10 +4687,10 @@ index c86bb0a..52990f5 100644
  }
 diff --git a/cmake/CEFIntegration.cmake b/cmake/CEFIntegration.cmake
 new file mode 100644
-index 0000000..9855626
+index 0000000..07db7bf
 --- /dev/null
 +++ b/cmake/CEFIntegration.cmake
-@@ -0,0 +1,189 @@
+@@ -0,0 +1,188 @@
 +cmake_policy(SET CMP0074 NEW)
 +
 +function(cs16client_setup_cef target_name)
@@ -4523,7 +4733,6 @@ index 0000000..9855626
 +
 +    target_compile_definitions(${target_name} PRIVATE
 +        CS16CLIENT_ENABLE_CEF=1
-+        CS16CLIENT_CEF_ROOT="${CEF_ROOT}"
 +    )
 +
 +    # --------------------------------------------------
@@ -4536,7 +4745,7 @@ index 0000000..9855626
 +    # WINDOWS
 +    # ==================================================
 +    if(WIN32)
-+        add_compile_definitions(NOMINMAX)
++        target_compile_definitions(${target_name} PRIVATE NOMINMAX)
 +
 +        target_link_directories(${target_name} PRIVATE "${CEF_BIN}")
 +
@@ -4673,21 +4882,25 @@ index 0000000..9855626
 \ No newline at end of file
 diff --git a/scripts/ci_fetch_cef.py b/scripts/ci_fetch_cef.py
 new file mode 100644
-index 0000000..0e6cfd3
+index 0000000..9f67fd6
 --- /dev/null
 +++ b/scripts/ci_fetch_cef.py
-@@ -0,0 +1,58 @@
+@@ -0,0 +1,75 @@
 +#!/usr/bin/env python3
 +"""Download a CEF minimal binary tarball from Spotify CDN and extract it.
 +
 +Usage:
-+  python scripts/ci_fetch_cef.py <url> <parent_dir>
++  python scripts/ci_fetch_cef.py <url> <parent_dir> [sha1]
++
++If sha1 is given, the downloaded archive must have exactly this SHA-1 (from index.json of the CDN),
++otherwise nothing is extracted and the script fails.
 +
 +Prints the absolute path to the extracted cef_binary_* root (single line on stdout).
 +See https://cef-builds.spotifycdn.com/index.html
 +"""
 +from __future__ import annotations
 +
++import hashlib
 +import shutil
 +import sys
 +import tarfile
@@ -4696,12 +4909,13 @@ index 0000000..0e6cfd3
 +
 +
 +def main() -> int:
-+	if len(sys.argv) != 3:
-+		print("usage: ci_fetch_cef.py <tar.bz2_url> <extract_parent_dir>", file=sys.stderr)
++	if len(sys.argv) not in (3, 4):
++		print("usage: ci_fetch_cef.py <tar.bz2_url> <extract_parent_dir> [sha1]", file=sys.stderr)
 +		return 2
 +
 +	url = sys.argv[1]
 +	parent = Path(sys.argv[2]).resolve()
++	expected_sha1 = sys.argv[3].strip().lower() if len(sys.argv) == 4 else ""
 +	parent.mkdir(parents=True, exist_ok=True)
 +
 +	archive = parent / "cef_dist.tar.bz2"
@@ -4713,6 +4927,18 @@ index 0000000..0e6cfd3
 +	with urllib.request.urlopen(req, timeout=600) as resp:
 +		with archive.open("wb") as out:
 +			shutil.copyfileobj(resp, out)
++
++	if expected_sha1:
++		h = hashlib.sha1()
++		with archive.open("rb") as f:
++			for block in iter(lambda: f.read(1 << 20), b""):
++				h.update(block)
++		actual = h.hexdigest()
++		if actual != expected_sha1:
++			print(f"SHA-1 mismatch: expected {expected_sha1}, got {actual}", file=sys.stderr)
++			archive.unlink(missing_ok=True)
++			return 1
++		print(f"SHA-1 OK: {actual}", file=sys.stderr)
 +
 +	print(f"Extracting to {parent}", file=sys.stderr)
 +	with tarfile.open(archive, "r:bz2") as tf:
