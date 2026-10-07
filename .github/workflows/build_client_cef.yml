@@ -12,6 +12,11 @@ jobs:
       # The check at the end of the build fails if the built client does not have the label "<CLIENT_BUILD>-CEF".
       CLIENT_BUILD: "3979"
       CLIENT_REF: e30e27c3bd890f731ad7921d9c876d171aea4b32
+      # The CEF version the client is built with. If the CDN does not have exactly this version, the newest
+      # stable build of the same major version (147.x) is taken; another major version is never taken.
+      # The archive is always checked by its SHA-1 from the index of the CDN.
+      # To move to a newer CEF put its full version here (see https://cef-builds.spotifycdn.com/index.html).
+      CEF_VERSION: "147.0.10+gd58e84d+chromium-147.0.7727.118"
     defaults:
       run:
         shell: bash
@@ -20,12 +25,12 @@ jobs:
         run: git config --global core.autocrlf false
 
       - name: Get this repository (contains the patch)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           path: mypatch
 
-      - name: Get cs16-client sources (latest, build 3979)
-        uses: actions/checkout@v4
+      - name: Get cs16-client sources (build 3979)
+        uses: actions/checkout@v5
         with:
           repository: Velaron/cs16-client
           ref: ${{ env.CLIENT_REF }}
@@ -42,77 +47,84 @@ jobs:
           import json, os, sys, urllib.parse, urllib.request
 
           plat = sys.argv[1]
-          BASE = os.environ.get("CEF_BASE", "https://cef-builds.spotifycdn.com/")
+          pin = os.environ["CEF_VERSION"].strip()
+          major = pin.split(".")[0]
+          BASE = "https://cef-builds.spotifycdn.com/"
           UA = {"User-Agent": "cs16-client-ci/1.0"}
 
-          # versions to try first, in this order
-          KNOWN = [
-              "147.0.10+gd58e84d+chromium-147.0.7727.118",  # the version the CEF integration was written for
-              "148.0.10+g7ee53f5+chromium-148.0.7778.218",
-              "152.0.10+g82a832e+chromium-152.0.7977.140",
-          ]
+          def get(url):
+              req = urllib.request.Request(url, headers=UA)
+              with urllib.request.urlopen(req, timeout=120) as r:
+                  return r.read()
 
-          def exists(url):
-              for method in ("HEAD", "GET"):
-                  try:
-                      req = urllib.request.Request(url, method=method, headers=dict(UA, Range="bytes=0-0"))
-                      with urllib.request.urlopen(req, timeout=60) as r:
-                          if r.status in (200, 206):
-                              return True
-                  except Exception as e:
-                      print("  (%s %s)" % (method, e))
-              return False
+          def minimal(version):
+              for f in version.get("files", []):
+                  if f.get("type") == "minimal":
+                      return f
+              return None
 
-          cands = ["cef_binary_%s_%s_minimal.tar.bz2" % (v, plat) for v in KNOWN]
+          def result(name, sha1, note):
+              print(note)
+              print("CEF_URL=" + BASE + urllib.parse.quote(name))
+              print("CEF_NAME=" + name)
+              print("CEF_SHA1=" + sha1)
+              sys.exit(0)
 
-          # then everything the official index lists for this platform, stable first
           try:
-              req = urllib.request.Request(BASE + "index.json", headers=UA)
-              idx = json.load(urllib.request.urlopen(req, timeout=60))
-              versions = idx[plat]["versions"]
-              for channel in ("stable", "beta"):
-                  for v in versions:
-                      if v.get("channel") != channel:
-                          continue
-                      for f in v.get("files", []):
-                          if f.get("type") == "minimal":
-                              cands.append(f["name"])
-                              break
+              versions = json.loads(get(BASE + "index.json"))[plat]["versions"]
           except Exception as e:
+              versions = None
               print("index.json is not usable:", e)
 
-          seen = set()
-          for name in cands:
-              if name in seen:
-                  continue
-              seen.add(name)
-              url = BASE + urllib.parse.quote(name)
-              ok = exists(url)
-              print(("FOUND    " if ok else "missing  ") + name)
-              if ok:
-                  print("CEF_URL=" + url)
-                  print("CEF_NAME=" + name)
-                  sys.exit(0)
+          if versions is not None:
+              for v in versions:
+                  f = minimal(v)
+                  if v.get("cef_version") == pin and f and f.get("sha1"):
+                      result(f["name"], f["sha1"], "Using the pinned CEF " + pin)
 
-          print("ERROR: no CEF build found for " + plat)
-          sys.exit(1)
+              # newest first in the index: the first stable build of the same major version
+              for v in versions:
+                  f = minimal(v)
+                  if v.get("channel") == "stable" and str(v.get("cef_version", "")).startswith(major + ".") and f and f.get("sha1"):
+                      result(f["name"], f["sha1"],
+                             "WARNING: the pinned CEF %s is not on the CDN, using %s (same major version)" % (pin, v["cef_version"]))
+
+              print("ERROR: no CEF %s.x build for %s on the CDN. Put an existing version into CEF_VERSION." % (major, plat))
+              sys.exit(1)
+
+          # no index: only the pinned version, checked by the .sha1 file that lies next to every archive
+          name = "cef_binary_%s_%s_minimal.tar.bz2" % (pin, plat)
+          try:
+              sha1 = get(BASE + urllib.parse.quote(name) + ".sha1").decode().split()[0]
+          except Exception as e:
+              print("ERROR: cannot get the SHA-1 of %s: %s" % (name, e))
+              sys.exit(1)
+          result(name, sha1, "Using the pinned CEF " + pin + " (checked by its .sha1 file)")
           PY
           python pick_cef.py windows64 | tee pick.log
           grep '^CEF_URL=' pick.log >> "$GITHUB_ENV"
           grep '^CEF_NAME=' pick.log >> "$GITHUB_ENV"
+          grep '^CEF_SHA1=' pick.log >> "$GITHUB_ENV"
 
-      - name: Download and unpack CEF
+      - name: Download, check and unpack CEF
         run: |
-          CEF_ROOT="$(python cs16/scripts/ci_fetch_cef.py "$CEF_URL" "$RUNNER_TEMP/cef")"
+          CEF_ROOT="$(python cs16/scripts/ci_fetch_cef.py "$CEF_URL" "$RUNNER_TEMP/cef" "$CEF_SHA1")"
           CEF_ROOT="$(cygpath -m "$CEF_ROOT")"
           echo "CEF root: $CEF_ROOT"
           ls "$CEF_ROOT"
           echo "CEF_ROOT=$CEF_ROOT" >> "$GITHUB_ENV"
 
       - name: Setup Visual Studio (64-bit)
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: amd64
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw "Visual Studio with the C++ tools is not found" }
+          $vcvars = Join-Path $vs "VC\Auxiliary\Build\vcvars64.bat"
+          cmd /c "`"$vcvars`" >nul && set" | ForEach-Object {
+            # only plain names (cmd also has internal ones like "=C:" and "ProgramFiles(x86)")
+            if ($_ -match '^([A-Za-z_][A-Za-z0-9_]*)=(.*)$') { "$($matches[1])=$($matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8 }
+          }
 
       - name: Configure
         working-directory: cs16
@@ -135,7 +147,7 @@ jobs:
           find "$CEF_ROOT/Release" -maxdepth 1 \( -name '*.dll' -o -name '*.bin' -o -name '*.json' \) -exec cp -v {} "$OUT/cstrike/cef/" \;
           find "$CEF_ROOT/Resources" -maxdepth 1 \( -name '*.pak' -o -name '*.dat' -o -name '*.bin' \) -exec cp -v {} "$OUT/cstrike/cef/" \;
           cp -r "$CEF_ROOT/Resources/locales/." "$OUT/cstrike/cef/locales/"
-          echo "$CEF_NAME" > "$OUT/CEF_VERSION.txt"
+          printf '%s\nsha1 %s\n' "$CEF_NAME" "$CEF_SHA1" > "$OUT/CEF_VERSION.txt"
           du -sh "$OUT/cstrike/cef"
           ls -la "$OUT/cstrike/cl_dlls" "$OUT/cstrike/cef" | head -40
 
@@ -170,7 +182,7 @@ jobs:
           echo "Result looks complete"
 
       - name: Upload result
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: cs16-client-cef-motd-x64
           path: result/*
