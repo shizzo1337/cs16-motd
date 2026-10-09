@@ -1,5 +1,5 @@
 diff --git a/cl_dll/CMakeLists.txt b/cl_dll/CMakeLists.txt
-index b0af818..e6a902e 100644
+index b0af818..fa55d38 100644
 --- a/cl_dll/CMakeLists.txt
 +++ b/cl_dll/CMakeLists.txt
 @@ -10,6 +10,7 @@ file(GLOB CS_WPNSH_SRC "../dlls/wpn_shared/*.cpp")
@@ -88,7 +88,7 @@ index b0af818..e6a902e 100644
  set_target_postfix(${CLIENT_LIB})
  
 +if(WIN32)
-+	# shell32: opening the MOTD in the browser; gdi32 and user32: the text of the MOTD window (Windows fonts)
++	# shell32: opening the MOTD in the browser; gdi32 and user32: the texts of the MOTD window and of the tutor messages (Windows fonts)
 +	target_link_libraries(${CLIENT_LIB} PRIVATE shell32 gdi32 user32)
 +endif()
 +
@@ -2608,97 +2608,24 @@ index 0000000..1a5d9d8
 +} // namespace iHTMLChrome
 diff --git a/cl_dll/chrome/chrome_motd_utf.h b/cl_dll/chrome/chrome_motd_utf.h
 new file mode 100644
-index 0000000..8318043
+index 0000000..510b050
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_motd_utf.h
-@@ -0,0 +1,90 @@
+@@ -0,0 +1,17 @@
 +#pragma once
 +
 +// Text helpers of the server MOTD window: server names come in UTF-8 or in the Windows-1251 code page.
++// The code is shared with the other texts of the client (cl_dll/hud/text_utf8.h).
 +// This file has no dependencies on the engine.
 +
-+#include <string>
++#include "../hud/text_utf8.h"
 +
 +namespace iHTMLChrome {
 +namespace CEF {
 +
-+inline bool IsValidUtf8( const char* s )
-+{
-+	const unsigned char* p = reinterpret_cast<const unsigned char*>( s );
-+
-+	while( *p )
-+	{
-+		int n;
-+
-+		if( *p < 0x80 )
-+			n = 0;
-+		else if(( *p & 0xE0 ) == 0xC0 && *p >= 0xC2 )
-+			n = 1;
-+		else if(( *p & 0xF0 ) == 0xE0 )
-+			n = 2;
-+		else if(( *p & 0xF8 ) == 0xF0 && *p <= 0xF4 )
-+			n = 3;
-+		else
-+			return false;
-+
-+		for( int i = 1; i <= n; ++i )
-+			if(( p[i] & 0xC0 ) != 0x80 )
-+				return false;
-+
-+		p += n + 1;
-+	}
-+
-+	return true;
-+}
-+
-+inline void AppendUtf8( std::string& out, unsigned int cp )
-+{
-+	if( cp < 0x80 )
-+	{
-+		out += (char)cp;
-+	}
-+	else if( cp < 0x800 )
-+	{
-+		out += (char)( 0xC0 | ( cp >> 6 ));
-+		out += (char)( 0x80 | ( cp & 0x3F ));
-+	}
-+	else
-+	{
-+		out += (char)( 0xE0 | ( cp >> 12 ));
-+		out += (char)( 0x80 | (( cp >> 6 ) & 0x3F ));
-+		out += (char)( 0x80 | ( cp & 0x3F ));
-+	}
-+}
-+
-+// Anything that is not valid UTF-8 is taken as Windows-1251
-+inline std::string ToUtf8( const char* s )
-+{
-+	if( !s )
-+		return std::string();
-+
-+	if( IsValidUtf8( s ))
-+		return std::string( s );
-+
-+	static const unsigned short cp1251_80_BF[64] = {
-+		0x0402, 0x0403, 0x201A, 0x0453, 0x201E, 0x2026, 0x2020, 0x2021, 0x20AC, 0x2030, 0x0409, 0x2039, 0x040A, 0x040C, 0x040B, 0x040F,
-+		0x0452, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014, 0xFFFD, 0x2122, 0x0459, 0x203A, 0x045A, 0x045C, 0x045B, 0x045F,
-+		0x00A0, 0x040E, 0x045E, 0x0408, 0x00A4, 0x0490, 0x00A6, 0x00A7, 0x0401, 0x00A9, 0x0404, 0x00AB, 0x00AC, 0x00AD, 0x00AE, 0x0407,
-+		0x00B0, 0x00B1, 0x0406, 0x0456, 0x0491, 0x00B5, 0x00B6, 0x00B7, 0x0451, 0x2116, 0x0454, 0x00BB, 0x0458, 0x0405, 0x0455, 0x0457 };
-+
-+	std::string out;
-+
-+	for( const unsigned char* p = reinterpret_cast<const unsigned char*>( s ); *p; ++p )
-+	{
-+		if( *p < 0x80 )
-+			out += (char)*p;
-+		else if( *p < 0xC0 )
-+			AppendUtf8( out, cp1251_80_BF[*p - 0x80] );
-+		else
-+			AppendUtf8( out, 0x0410 + ( *p - 0xC0 )); // A..ya
-+	}
-+
-+	return out;
-+}
++using TextUtf::IsValidUtf8;
++using TextUtf::AppendUtf8;
++using TextUtf::ToUtf8;
 +
 +} // namespace CEF
 +} // namespace iHTMLChrome
@@ -3518,7 +3445,7 @@ index 0000000..e5e0e81
 +} // namespace CEF
 +} // namespace iHTMLChrome
 diff --git a/cl_dll/draw_util.cpp b/cl_dll/draw_util.cpp
-index c585f3c..7c66a65 100644
+index c585f3c..625ccf3 100644
 --- a/cl_dll/draw_util.cpp
 +++ b/cl_dll/draw_util.cpp
 @@ -33,6 +33,7 @@ version.
@@ -3529,7 +3456,7 @@ index c585f3c..7c66a65 100644
  #include "utflib.h"
  #include "utlvector.h"
  
-@@ -368,6 +369,84 @@ int DrawUtils::DrawHudNumber2( int x, int y, int iNumber, int r, int g, int b )
+@@ -368,6 +369,111 @@ int DrawUtils::DrawHudNumber2( int x, int y, int iNumber, int r, int g, int b )
  	return ResX;
  }
  
@@ -3566,6 +3493,33 @@ index c585f3c..7c66a65 100644
 +	{
 +		const int inset = RoundedInset( rb, i );
 +		FillRGBABlend( x + inset, y + tall - 1 - i, wide - inset * 2, 1, r, g, b, a );
++	}
++}
++
++// Blended rectangle made of 1 pixel rows; the corners on the left and/or on the right side are rounded
++void DrawUtils::FillRoundedRectSides( int x, int y, int wide, int tall, int radius, bool roundLeft, bool roundRight,
++									  int r, int g, int b, int a )
++{
++	if( wide <= 0 || tall <= 0 )
++		return;
++
++	if( radius > wide / 2 ) radius = wide / 2;
++	if( radius > tall / 2 ) radius = tall / 2;
++	if( radius < 0 ) radius = 0;
++
++	if( !roundLeft && !roundRight )
++		radius = 0;
++
++	FillRGBABlend( x, y + radius, wide, tall - radius * 2, r, g, b, a );
++
++	for( int i = 0; i < radius; ++i )
++	{
++		const int inset = RoundedInset( radius, i );
++		const int left = roundLeft ? inset : 0;
++		const int right = roundRight ? inset : 0;
++
++		FillRGBABlend( x + left, y + i, wide - left - right, 1, r, g, b, a );
++		FillRGBABlend( x + left, y + tall - 1 - i, wide - left - right, 1, r, g, b, a );
 +	}
 +}
 +
@@ -3615,7 +3569,7 @@ index c585f3c..7c66a65 100644
  {
  	// REMOVE WHEN NANOGL BUG WILL BE FIXED
 diff --git a/cl_dll/hud.cpp b/cl_dll/hud.cpp
-index 9ae956c..a4e8446 100644
+index 9ae956c..36a1d17 100644
 --- a/cl_dll/hud.cpp
 +++ b/cl_dll/hud.cpp
 @@ -363,7 +363,14 @@ void CHud :: Init( void )
@@ -3634,11 +3588,31 @@ index 9ae956c..a4e8446 100644
  
  	m_iLogo = 0;
  	m_iFOV = 0;
+@@ -423,6 +430,9 @@ void CHud :: Init( void )
+ 	if( GetGameType() != GAME_CZERODS )
+ 		m_SpectatorGui.Init();
+ 
++	// tutor messages of the server: over the spectator bars, under the scoreboard
++	m_Tutor.Init();
++
+ 	m_Scoreboard.Init();
+ 
+ 	GetClientVoice()->Init( &g_VoiceStatusHelper );
 diff --git a/cl_dll/hud.h b/cl_dll/hud.h
-index f23bb7c..34d6d0a 100644
+index f23bb7c..3d6f3d1 100644
 --- a/cl_dll/hud.h
 +++ b/cl_dll/hud.h
-@@ -347,14 +347,26 @@ public:
+@@ -37,6 +37,9 @@
+ #include "csprite.h"
+ #include "cvardef.h"
+ #include "utlstring.h"
++#include <string>
++#include <vector>
++#include "hud/tutor_logic.h"
+ 
+ #define MIN_ALPHA	 100	
+ #define	HUDELEM_ACTIVE	1
+@@ -347,14 +350,26 @@ public:
  	float scroll;
  	bool m_bShow;
  	cvar_t *cl_hide_motd;
@@ -3665,6 +3639,74 @@ index f23bb7c..34d6d0a 100644
  };
  
  
+@@ -885,6 +900,50 @@ private:
+ //-----------------------------------------------------
+ //
+ 
++// Tutor messages of the server (TutorText, TutorClose), see hud/tutor.cpp
++class CHudTutor : public CHudBase
++{
++public:
++	int Init( void );
++	int VidInit( void );
++	int Draw( float flTime );
++	void InitHUDData( void );
++
++	CHudMsgFunc(TutorText);
++	CHudMsgFunc(TutorClose);
++	CHudMsgFunc(TutorState);
++	CHudMsgFunc(TutorLine);
++
++private:
++	void Hide( void );
++	void FreeText( void );
++	void LoadResources( void );
++	void BuildText( int maxWidth );
++
++	cvar_t *cl_tutor;
++	cvar_t *cl_tutor_maxtime;
++
++	bool m_bShow;
++	int m_iType;
++	float m_flShownAt;
++	std::string m_szText;
++
++	Tutor::Scheme m_scheme;
++	bool m_bSchemeLoaded;
++	int m_iIconTex[Tutor::ICON_COUNT];
++	bool m_bIconTried[Tutor::ICON_COUNT];
++
++	int m_iTextTex;          // the text drawn by a Windows font
++	int m_iTextW, m_iTextH;
++	bool m_bTextDirty;
++	int m_iTextureCounter;
++	std::vector<std::string> m_lines; // the text for the font of the HUD
++};
++
++//
++//-----------------------------------------------------
++//
++
+ class CHudScenario : public CHudBase
+ {
+ public:
+@@ -909,6 +968,8 @@ private:
+ class CHudSpectatorGui: public CHudBase
+ {
+ public:
++	static int BarHeight( void ); // the height of the black bars of the spectator mode (as in the Steam version)
++
+ 	int Init();
+ 	int VidInit();
+ 	int Draw( float flTime );
+@@ -1089,6 +1150,7 @@ public:
+ 	CHudRadar       m_Radar;
+ 	CHudSpectatorGui m_SpectatorGui;
+ 	CHudScenario	m_Scenario;
++	CHudTutor       m_Tutor;
+ 
+ 	// user messages
+ 	CHudMsgFunc(Damage);
 diff --git a/cl_dll/hud/MOTD.cpp b/cl_dll/hud/MOTD.cpp
 index 83208f5..1b9b833 100644
 --- a/cl_dll/hud/MOTD.cpp
@@ -4574,6 +4616,1259 @@ index cdbde46..9610599 100644
  		m_colors.r, m_colors.g, m_colors.b, m_colors.a, m_bDrawStroke);
  
  	int ypos = ystart + (list_slot * ROW_GAP) + 5;
+diff --git a/cl_dll/hud/spectator_gui.cpp b/cl_dll/hud/spectator_gui.cpp
+index 991ebdd..d11bafc 100644
+--- a/cl_dll/hud/spectator_gui.cpp
++++ b/cl_dll/hud/spectator_gui.cpp
+@@ -47,6 +47,19 @@ version.
+ #define INT_XPOS(x) int(XPOS(x) * ScreenWidth)
+ #define INT_YPOS(y) int(YPOS(y) * ScreenHeight)
+ 
++// The black bars at the top and at the bottom of the screen, as in the Steam version:
++// 64 of 480 lines (2/15 of the height, 144 pixels at 1080), black with the alpha 196 (measured on its screenshots)
++#define BAR_ALPHA 196
++
++int CHudSpectatorGui::BarHeight( void )
++{
++	return int( ScreenHeight * 2.0f / 15.0f );
++}
++
++// the two lines of text in the upper bar (the tops of their capitals are at 38 and 65 of 144 in the Steam version)
++#define BAR_ROW1 int( CHudSpectatorGui::BarHeight() * 0.25f )
++#define BAR_ROW2 int( CHudSpectatorGui::BarHeight() * 0.4375f )
++
+ int CHudSpectatorGui::Init()
+ {
+ 	if( !g_iXash )
+@@ -186,32 +199,26 @@ int CHudSpectatorGui::Draw( float flTime )
+ 		startpos = XRES(gHUD.m_Spectator.m_OverviewData.insetWindowWidth) + XRES(gHUD.m_Spectator.m_OverviewData.insetWindowX);
+ 		startpos *= ScreenWidth / TrueWidth; // hud_scale adjust
+ 	}
+-	FillRGBABlend(startpos, 0, ScreenWidth - startpos, INT_YPOS(2), 0, 0, 0, 153);
+-	FillRGBABlend(0, ScreenHeight - INT_YPOS(2), ScreenWidth, INT_YPOS(2), 0, 0, 0, 153);
++	const int barH = BarHeight();
++	FillRGBABlend(startpos, 0, ScreenWidth - startpos, barH, 0, 0, 0, BAR_ALPHA);
++	FillRGBABlend(0, ScreenHeight - barH, ScreenWidth, barH, 0, 0, 0, BAR_ALPHA);
+ 
+ 	if ( gHUD.m_Spectator.m_drawstatus && gHUD.m_Spectator.m_drawstatus->value )
+ 	{
+ 		// divider
+ 		{
++			// from 27 to 93 of 144 in the Steam version
+ 			int divX = INT_XPOS(12.5);
+-			int divTop = INT_YPOS(2) * 0.25;
+-			int divBottom = INT_YPOS(2) * 0.5 + gHUD.GetCharHeight();
+-			int divH = divBottom - divTop;
+-			if (divH < gHUD.GetCharHeight()) divH = gHUD.GetCharHeight();
+-
+-			int pad = (gHUD.GetCharHeight() * 2) / 3;
+-			if (pad < 1) pad = 1;
+-
+-			int drawTop = divTop - pad;
+-			if (drawTop < 0) drawTop = 0;
+-			int drawH = divH + pad * 2;
+-			if (drawTop + drawH > ScreenHeight) drawH = ScreenHeight - drawTop;
++			int drawTop = int( barH * 0.1875f );
++			int drawH = int( barH * 0.65f ) - drawTop + 1;
++			if (drawH < gHUD.GetCharHeight()) drawH = gHUD.GetCharHeight();
++			if (drawTop + drawH > barH) drawH = barH - drawTop;
+ 
+ 			FillRGBABlend(divX, drawTop, 1, drawH, r, g, b, 255);
+ 		}
+ 
+ 		{ // mapname. extradata
+-			DrawUtils::DrawHudString( INT_XPOS(12.5) + 10, INT_YPOS(2) * 0.25, ScreenWidth, label.m_szMap, r, g, b );
++			DrawUtils::DrawHudString( INT_XPOS(12.5) + 10, BAR_ROW1, ScreenWidth, label.m_szMap, r, g, b );
+ 
+ 			if( !m_bBombPlanted ) // timer remaining
+ 			{
+@@ -223,7 +230,7 @@ int CHudSpectatorGui::Draw( float flTime )
+ 					gEngfuncs.pTriAPI->Color4f( 1.0f, 1.0f, 1.0f, 1.0f );
+ 
+ 					float quadX = INT_XPOS(12.5) + 10;
+-					float quadY = INT_YPOS(2) * 0.5f;
++					float quadY = BAR_ROW2;
+ 					int uploadW = (int)gRenderAPI.RenderGetParm( PARM_TEX_WIDTH, m_hTimerTexture );
+ 					int uploadH = (int)gRenderAPI.RenderGetParm( PARM_TEX_HEIGHT, m_hTimerTexture );
+ 
+@@ -234,7 +241,7 @@ int CHudSpectatorGui::Draw( float flTime )
+ 										(quadY + (float)uploadH) * gHUD.m_flScale );
+ 					// gEngfuncs.pTriAPI->End();
+ 				}
+-				DrawUtils::DrawHudString( INT_XPOS(12.5) + gHUD.GetCharHeight() * 1.5 + gHUD.GetCharWidth('M') , INT_YPOS(2) * 0.5, ScreenWidth,
++				DrawUtils::DrawHudString( INT_XPOS(12.5) + gHUD.GetCharHeight() * 1.5 + gHUD.GetCharWidth('M') , BAR_ROW2, ScreenWidth,
+ 										label.m_szTimer, r, g, b );
+ 			}
+ 		}
+@@ -243,11 +250,11 @@ int CHudSpectatorGui::Draw( float flTime )
+ 		{ // draw team here
+ 			int iLen = DrawUtils::HudStringLen("Counter-Terrorists:" );
+ 
+-			DrawUtils::DrawHudString( INT_XPOS(12.5) - iLen - 50 , INT_YPOS(2) * 0.25, INT_XPOS(12.5) - 50, "Counter-Terrorists:", r, g, b );
+-			DrawUtils::DrawHudString( INT_XPOS(12.5) - iLen - 50, INT_YPOS(2) * 0.5, INT_XPOS(12.5) - 50, "Terrorists:", r, g, b );
++			DrawUtils::DrawHudString( INT_XPOS(12.5) - iLen - 50 , BAR_ROW1, INT_XPOS(12.5) - 50, "Counter-Terrorists:", r, g, b );
++			DrawUtils::DrawHudString( INT_XPOS(12.5) - iLen - 50, BAR_ROW2, INT_XPOS(12.5) - 50, "Terrorists:", r, g, b );
+ 			// count
+-			DrawUtils::DrawHudNumberString( INT_XPOS(12.5) - 10, INT_YPOS(2) * 0.25, INT_XPOS(12.5) - 50, label.m_iCounterTerrorists, r, g, b );
+-			DrawUtils::DrawHudNumberString( INT_XPOS(12.5) - 10, INT_YPOS(2) * 0.5,  INT_XPOS(12.5) - 50, label.m_iTerrorists,        r, g, b );
++			DrawUtils::DrawHudNumberString( INT_XPOS(12.5) - 10, BAR_ROW1, INT_XPOS(12.5) - 50, label.m_iCounterTerrorists, r, g, b );
++			DrawUtils::DrawHudNumberString( INT_XPOS(12.5) - 10, BAR_ROW2,  INT_XPOS(12.5) - 50, label.m_iTerrorists,        r, g, b );
+ 		}
+ 	}
+ 
+@@ -355,7 +362,7 @@ int CHudSpectatorGui::Draw( float flTime )
+ 	//{
+ 		int iLen = DrawUtils::HudStringLen( label.m_szNameAndHealth );
+ 		GetTeamColor( r, g, b, g_PlayerExtraInfo[ g_iUser2 ].teamnumber );
+-		DrawUtils::DrawHudString( ScreenWidth * 0.5 - iLen * 0.5, INT_YPOS(9) - gHUD.GetCharHeight() * 0.5 , ScreenWidth,
++		DrawUtils::DrawHudString( ScreenWidth * 0.5 - iLen * 0.5, ScreenHeight - BarHeight() / 2 - gHUD.GetCharHeight() * 0.5 , ScreenWidth,
+ 								  label.m_szNameAndHealth, r, g, b );
+ 	//}
+ 
+diff --git a/cl_dll/hud/text_gdi.cpp b/cl_dll/hud/text_gdi.cpp
+new file mode 100644
+index 0000000..d28491e
+--- /dev/null
++++ b/cl_dll/hud/text_gdi.cpp
+@@ -0,0 +1,173 @@
++//
++// text_gdi.cpp
++//
++// A block of text drawn by the fonts of Windows (GDI), in lines that are not wrapped:
++// the picture is the coverage of the glyphs that the client shows as a texture, one pixel on one pixel.
++// Used by the tutor messages. Kept in a separate file because <windows.h> conflicts with engine headers.
++//
++
++#include <string.h>
++#include <string>
++#include <vector>
++
++#include "text_gdi.h"
++
++#if defined( _WIN32 )
++
++#define WIN32_LEAN_AND_MEAN
++#ifndef NOMINMAX
++#define NOMINMAX
++#endif
++#include <windows.h>
++#include <wchar.h>
++
++static std::wstring Utf8ToWide( const char *utf8 )
++{
++	const int n = MultiByteToWideChar( CP_UTF8, 0, utf8, -1, nullptr, 0 );
++
++	if( n <= 1 )
++		return std::wstring();
++
++	std::wstring w( (size_t)n, L'\0' );
++	MultiByteToWideChar( CP_UTF8, 0, utf8, -1, &w[0], n );
++	w.resize( (size_t)n - 1 );
++	return w;
++}
++
++// The font asked for, if the system has it; otherwise the next one of the list that it has
++static HFONT CreateFontFromList( HDC dc, const char *wanted, int emHeight, int weight, bool antialias )
++{
++	const std::wstring first = Utf8ToWide( wanted ? wanted : "" );
++	const wchar_t *fallbacks[] = { L"Tahoma", L"Verdana", L"Segoe UI", L"Arial" };
++	const DWORD quality = antialias ? ANTIALIASED_QUALITY : NONANTIALIASED_QUALITY;
++
++	for( int i = -1; i < (int)( sizeof( fallbacks ) / sizeof( fallbacks[0] )); ++i )
++	{
++		const wchar_t *face = i < 0 ? first.c_str() : fallbacks[i];
++
++		if( !face[0] || wcslen( face ) >= LF_FACESIZE )
++			continue;
++
++		// a negative height is the height of the letters (em)
++		HFONT font = CreateFontW( -emHeight, 0, 0, 0, weight, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
++			OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, quality, DEFAULT_PITCH | FF_SWISS, face );
++
++		if( !font )
++			continue;
++
++		HGDIOBJ old = SelectObject( dc, font );
++		wchar_t actual[LF_FACESIZE] = {};
++		GetTextFaceW( dc, LF_FACESIZE, actual );
++		SelectObject( dc, old );
++
++		if( _wcsicmp( actual, face ) == 0 )
++			return font;
++
++		DeleteObject( font ); // the system gave another font instead
++	}
++
++	return CreateFontW( -emHeight, 0, 0, 0, weight, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
++		OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, quality, DEFAULT_PITCH | FF_SWISS, L"Arial" );
++}
++
++bool GDI_RenderTextBlock( const char *utf8, const char *fontName, int emHeight, int weight, bool antialias,
++						  int maxWidth, std::vector<unsigned char> &alpha, int &width, int &height )
++{
++	if( !utf8 || !utf8[0] || emHeight < 4 || maxWidth < 8 )
++		return false;
++
++	const std::wstring text = Utf8ToWide( utf8 );
++
++	if( text.empty() )
++		return false;
++
++	HDC screen = GetDC( nullptr );
++	HDC dc = CreateCompatibleDC( screen );
++	ReleaseDC( nullptr, screen );
++
++	if( !dc )
++		return false;
++
++	bool ok = false;
++	HFONT font = CreateFontFromList( dc, fontName, emHeight, weight, antialias );
++	HGDIOBJ oldFont = font ? SelectObject( dc, font ) : nullptr;
++	// no wrapping (as the Steam version): every line of the text is one line on the screen
++	const UINT format = DT_LEFT | DT_TOP | DT_NOPREFIX | DT_EXPANDTABS | DT_NOCLIP;
++
++	// the size of the block
++	RECT rc = { 0, 0, 0, 0 };
++
++	if( font && DrawTextW( dc, text.c_str(), (int)text.size(), &rc, format | DT_CALCRECT ) > 0 )
++	{
++		int w = rc.right - rc.left;
++		int h = rc.bottom - rc.top;
++
++		// a line wider than the screen is cut at the limit
++		if( w > maxWidth )
++			w = maxWidth;
++		if( h > 2048 )
++			h = 2048;
++
++		BITMAPINFO bi = {};
++		bi.bmiHeader.biSize = sizeof( BITMAPINFOHEADER );
++		bi.bmiHeader.biWidth = w;
++		bi.bmiHeader.biHeight = -h; // from the top to the bottom
++		bi.bmiHeader.biPlanes = 1;
++		bi.bmiHeader.biBitCount = 32;
++		bi.bmiHeader.biCompression = BI_RGB;
++
++		void *bits = nullptr;
++		HBITMAP bitmap = ( w > 0 && h > 0 ) ? CreateDIBSection( dc, &bi, DIB_RGB_COLORS, &bits, nullptr, 0 ) : nullptr;
++
++		if( bitmap && bits )
++		{
++			HGDIOBJ oldBitmap = SelectObject( dc, bitmap );
++
++			memset( bits, 0, (size_t)w * h * 4 );
++			SetBkColor( dc, RGB( 0, 0, 0 ));
++			SetTextColor( dc, RGB( 255, 255, 255 ));
++			SetBkMode( dc, OPAQUE );
++
++			RECT draw = { 0, 0, w, h };
++			DrawTextW( dc, text.c_str(), (int)text.size(), &draw, format );
++			GdiFlush();
++
++			// white text on black: the brightness of a pixel is how much of it the glyph covers
++			alpha.resize( (size_t)w * h );
++
++			const unsigned char *p = static_cast<const unsigned char *>( bits );
++
++			for( size_t i = 0, n = (size_t)w * h; i < n; ++i, p += 4 )
++			{
++				unsigned char m = p[0] > p[1] ? p[0] : p[1];
++				alpha[i] = m > p[2] ? m : p[2];
++			}
++
++			width = w;
++			height = h;
++			ok = true;
++
++			SelectObject( dc, oldBitmap );
++		}
++
++		if( bitmap )
++			DeleteObject( bitmap );
++	}
++
++	if( oldFont )
++		SelectObject( dc, oldFont );
++	if( font )
++		DeleteObject( font );
++
++	DeleteDC( dc );
++	return ok;
++}
++
++#else // not implemented on other platforms: the font of the HUD is used there
++
++bool GDI_RenderTextBlock( const char *, const char *, int, int, bool, int, std::vector<unsigned char> &, int &, int & )
++{
++	return false;
++}
++
++#endif
+diff --git a/cl_dll/hud/text_gdi.h b/cl_dll/hud/text_gdi.h
+new file mode 100644
+index 0000000..4034911
+--- /dev/null
++++ b/cl_dll/hud/text_gdi.h
+@@ -0,0 +1,11 @@
++#pragma once
++
++#include <vector>
++
++// A block of UTF-8 text drawn by a font of Windows, without wrapping (line ends in the text start new lines);
++// lines wider than maxWidth are cut. The result is width * height bytes of the coverage of the glyphs.
++// fontName - the font that is wanted (Tahoma, Verdana, Segoe UI, Arial are tried if the system has no such font),
++// emHeight - the height of the letters (em) in pixels.
++// Returns false where the fonts of Windows are not available (the caller uses the font of the HUD).
++bool GDI_RenderTextBlock( const char *utf8, const char *fontName, int emHeight, int weight, bool antialias,
++						  int maxWidth, std::vector<unsigned char> &alpha, int &width, int &height );
+diff --git a/cl_dll/hud/text_utf8.h b/cl_dll/hud/text_utf8.h
+new file mode 100644
+index 0000000..7b712a8
+--- /dev/null
++++ b/cl_dll/hud/text_utf8.h
+@@ -0,0 +1,93 @@
++//
++// text_utf8.h
++//
++// Texts that come from servers are in UTF-8 or in the Windows-1251 code page (Russian servers).
++// Anything that is not valid UTF-8 is taken as Windows-1251 and converted to UTF-8.
++// No dependencies on the engine.
++//
++
++#pragma once
++
++#include <string>
++
++namespace TextUtf {
++
++inline bool IsValidUtf8( const char* s )
++{
++	const unsigned char* p = reinterpret_cast<const unsigned char*>( s );
++
++	while( *p )
++	{
++		int n;
++
++		if( *p < 0x80 )
++			n = 0;
++		else if(( *p & 0xE0 ) == 0xC0 && *p >= 0xC2 )
++			n = 1;
++		else if(( *p & 0xF0 ) == 0xE0 )
++			n = 2;
++		else if(( *p & 0xF8 ) == 0xF0 && *p <= 0xF4 )
++			n = 3;
++		else
++			return false;
++
++		for( int i = 1; i <= n; ++i )
++			if(( p[i] & 0xC0 ) != 0x80 )
++				return false;
++
++		p += n + 1;
++	}
++
++	return true;
++}
++
++inline void AppendUtf8( std::string& out, unsigned int cp )
++{
++	if( cp < 0x80 )
++	{
++		out += (char)cp;
++	}
++	else if( cp < 0x800 )
++	{
++		out += (char)( 0xC0 | ( cp >> 6 ));
++		out += (char)( 0x80 | ( cp & 0x3F ));
++	}
++	else
++	{
++		out += (char)( 0xE0 | ( cp >> 12 ));
++		out += (char)( 0x80 | (( cp >> 6 ) & 0x3F ));
++		out += (char)( 0x80 | ( cp & 0x3F ));
++	}
++}
++
++// Anything that is not valid UTF-8 is taken as Windows-1251
++inline std::string ToUtf8( const char* s )
++{
++	if( !s )
++		return std::string();
++
++	if( IsValidUtf8( s ))
++		return std::string( s );
++
++	static const unsigned short cp1251_80_BF[64] = {
++		0x0402, 0x0403, 0x201A, 0x0453, 0x201E, 0x2026, 0x2020, 0x2021, 0x20AC, 0x2030, 0x0409, 0x2039, 0x040A, 0x040C, 0x040B, 0x040F,
++		0x0452, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014, 0xFFFD, 0x2122, 0x0459, 0x203A, 0x045A, 0x045C, 0x045B, 0x045F,
++		0x00A0, 0x040E, 0x045E, 0x0408, 0x00A4, 0x0490, 0x00A6, 0x00A7, 0x0401, 0x00A9, 0x0404, 0x00AB, 0x00AC, 0x00AD, 0x00AE, 0x0407,
++		0x00B0, 0x00B1, 0x0406, 0x0456, 0x0491, 0x00B5, 0x00B6, 0x00B7, 0x0451, 0x2116, 0x0454, 0x00BB, 0x0458, 0x0405, 0x0455, 0x0457 };
++
++	std::string out;
++
++	for( const unsigned char* p = reinterpret_cast<const unsigned char*>( s ); *p; ++p )
++	{
++		if( *p < 0x80 )
++			out += (char)*p;
++		else if( *p < 0xC0 )
++			AppendUtf8( out, cp1251_80_BF[*p - 0x80] );
++		else
++			AppendUtf8( out, 0x0410 + ( *p - 0xC0 )); // A..ya
++	}
++
++	return out;
++}
++
++} // namespace TextUtf
+diff --git a/cl_dll/hud/tutor.cpp b/cl_dll/hud/tutor.cpp
+new file mode 100644
+index 0000000..bdeceb1
+--- /dev/null
++++ b/cl_dll/hud/tutor.cpp
+@@ -0,0 +1,386 @@
++//
++// tutor.cpp
++//
++// Tutor messages of the server: TutorText shows a message in the upper right corner of the screen,
++// TutorClose hides it (TutorState and TutorLine are read and not used, as in the Steam version of CS 1.6).
++// They are sent by ReGameDLL (the tutor of Condition Zero) and by many AMX Mod X plugins.
++//
++// The window repeats the one of the Steam version (see tutor_logic.h for the sizes): one line of text,
++// the window gets as wide as the text is. Its colours and font
++// are taken from resource/TutorScheme.res (servers send this file with the plugins), the icons from
++// gfx/career/icon_i.tga and icon_skulls.tga. Without these files the window is drawn by the client itself.
++//
++// cl_tutor 0          - do not show the messages
++// cl_tutor_maxtime N  - hide a message after N seconds even if the server does not close it (0 - never)
++//
++
++#include "hud.h"
++#include "cl_util.h"
++#include "parsemsg.h"
++#include "triangleapi.h"
++#include "draw_util.h"
++#include "vgui_parser.h"
++
++#include <stdio.h>
++#include <string>
++#include <vector>
++
++#include "tutor_logic.h"
++#include "text_utf8.h"
++#include "text_gdi.h"
++
++static const char *const s_iconFiles[Tutor::ICON_COUNT] =
++{
++	"gfx/career/icon_i.tga",
++	"gfx/career/icon_skulls.tga",
++};
++
++int CHudTutor::Init( void )
++{
++	HOOK_MESSAGE( gHUD.m_Tutor, TutorText );
++	HOOK_MESSAGE( gHUD.m_Tutor, TutorClose );
++	HOOK_MESSAGE( gHUD.m_Tutor, TutorState );
++	HOOK_MESSAGE( gHUD.m_Tutor, TutorLine );
++
++	cl_tutor = CVAR_CREATE( "cl_tutor", "1", FCVAR_ARCHIVE );
++	cl_tutor_maxtime = CVAR_CREATE( "cl_tutor_maxtime", "30", FCVAR_ARCHIVE );
++
++	m_bShow = false;
++	m_iType = Tutor::TYPE_DEFAULT;
++	m_flShownAt = 0.0f;
++	m_iTextTex = 0;
++	m_iTextW = m_iTextH = 0;
++	m_bTextDirty = false;
++	m_bSchemeLoaded = false;
++	m_iTextureCounter = 0;
++
++	for( int i = 0; i < Tutor::ICON_COUNT; ++i )
++	{
++		m_iIconTex[i] = 0;
++		m_bIconTried[i] = false;
++	}
++
++	m_iFlags = HUD_DRAW | HUD_INTERMISSION;
++	gHUD.AddHudElem( this );
++	return 1;
++}
++
++int CHudTutor::VidInit( void )
++{
++	// a new map: the files of the server (scheme, icons) may be other ones
++	Hide();
++	FreeText();
++
++	m_scheme = Tutor::Scheme();
++	m_bSchemeLoaded = false;
++
++	for( int i = 0; i < Tutor::ICON_COUNT; ++i )
++	{
++		m_iIconTex[i] = 0;
++		m_bIconTried[i] = false;
++	}
++
++	return 1;
++}
++
++void CHudTutor::InitHUDData( void )
++{
++	Hide();
++}
++
++void CHudTutor::Hide( void )
++{
++	m_bShow = false;
++	m_szText.clear();
++}
++
++void CHudTutor::FreeText( void )
++{
++	if( m_iTextTex > 0 && gRenderAPI.GL_FreeTexture )
++		gRenderAPI.GL_FreeTexture( m_iTextTex );
++
++	m_iTextTex = 0;
++	m_iTextW = m_iTextH = 0;
++	m_lines.clear();
++	m_bTextDirty = true;
++}
++
++// resource/TutorScheme.res and the icons are read when the first message of a map comes:
++// by then the server has sent them
++void CHudTutor::LoadResources( void )
++{
++	if( !m_bSchemeLoaded )
++	{
++		m_bSchemeLoaded = true;
++		m_scheme = Tutor::Scheme();
++
++		int len = 0;
++		byte *data = gEngfuncs.COM_LoadFile( "resource/TutorScheme.res", 5, &len );
++
++		if( data )
++		{
++			const std::string text( (const char *)data, len > 0 ? (size_t)len : 0 );
++			gEngfuncs.COM_FreeFile( data );
++			Tutor::ParseScheme( text.c_str(), m_scheme );
++		}
++	}
++
++	for( int i = 0; i < Tutor::ICON_COUNT; ++i )
++	{
++		if( m_iIconTex[i] > 0 || m_bIconTried[i] || !gRenderAPI.GL_LoadTexture )
++			continue;
++
++		m_bIconTried[i] = true;
++
++		// the engine prints nothing if there is no such file: the client then draws the icon itself
++		if( gEngfuncs.COM_LoadFile )
++		{
++			int len = 0;
++			byte *probe = gEngfuncs.COM_LoadFile( s_iconFiles[i], 5, &len );
++
++			if( !probe )
++				continue;
++
++			gEngfuncs.COM_FreeFile( probe );
++		}
++
++		m_iIconTex[i] = gRenderAPI.GL_LoadTexture( s_iconFiles[i], NULL, 0, TF_NOMIPMAP | TF_CLAMP );
++	}
++}
++
++int CHudTutor::MsgFunc_TutorText( const char *pszName, int iSize, void *pbuf )
++{
++	BufferReader reader( pszName, pbuf, iSize );
++
++	// the strings are copied at once: the reader gives all of them in one buffer
++	const std::string raw = reader.ReadString();
++	const int numArgs = reader.ReadByte();
++	std::vector<std::string> args;
++
++	for( int i = 0; i < numArgs; ++i )
++	{
++		const std::string arg = reader.ReadString();
++
++		if( i < 9 )
++			args.push_back( TextUtf::ToUtf8( arg.c_str() ));
++	}
++
++	reader.ReadShort(); // number of the message in tutordata.txt
++	reader.ReadShort(); // the player is dead
++	const int type = reader.ReadShort();
++
++	// "#Key" is a string of the game (resource/cstrike_<language>.txt)
++	const char *text = raw.c_str();
++
++	if( text[0] == '#' )
++		text = Localize( text );
++
++	const std::string message = Tutor::CleanText( Tutor::Substitute( TextUtf::ToUtf8( text ), args ));
++
++	if( message.empty() )
++	{
++		Hide();
++		return 1;
++	}
++
++	LoadResources();
++
++	if( message != m_szText )
++	{
++		m_szText = message;
++		FreeText();
++	}
++
++	m_iType = type > 0 ? type : Tutor::TYPE_DEFAULT;
++	m_flShownAt = gHUD.m_flTime;
++	m_bShow = true;
++
++	if( gEngfuncs.pfnGetCvarFloat( "developer" ) > 0 )
++		gEngfuncs.Con_Printf( "[tutor] type %d: %s\n", m_iType, m_szText.c_str() );
++
++	return 1;
++}
++
++int CHudTutor::MsgFunc_TutorClose( const char *pszName, int iSize, void *pbuf )
++{
++	Hide();
++	return 1;
++}
++
++int CHudTutor::MsgFunc_TutorState( const char *pszName, int iSize, void *pbuf )
++{
++	// the state of the tutor of Condition Zero, not shown in CS 1.6
++	BufferReader reader( pszName, pbuf, iSize );
++	reader.ReadString();
++	return 1;
++}
++
++int CHudTutor::MsgFunc_TutorLine( const char *pszName, int iSize, void *pbuf )
++{
++	// a line to an entity, not used by the game
++	return 1;
++}
++
++// The picture of the text (Windows fonts) or its lines for the font of the HUD; maxWidth - the widest line
++void CHudTutor::BuildText( int maxWidth )
++{
++	m_bTextDirty = false;
++
++	std::vector<unsigned char> alpha;
++	int w = 0, h = 0;
++
++	// the texture is in screen pixels, the layout is in the units of the HUD (the same unless hud_scale is used)
++	const float scale = gHUD.m_flScale > 0.0f ? gHUD.m_flScale : 1.0f;
++
++	if( gRenderAPI.GL_CreateTexture
++		&& GDI_RenderTextBlock( m_szText.c_str(), m_scheme.fontName.c_str(), (int)( Tutor::FontEmHeight( m_scheme.fontTall ) * scale + 0.5f ), m_scheme.fontWeight,
++			m_scheme.fontAntialias, (int)( maxWidth * scale ), alpha, w, h ))
++	{
++		// white pixels, the glyphs are in the alpha channel (the colour is set when the text is drawn)
++		std::vector<unsigned char> rgba( (size_t)w * h * 4, 255 );
++
++		for( size_t i = 0, n = (size_t)w * h; i < n; ++i )
++			rgba[i * 4 + 3] = alpha[i];
++
++		// every picture has its own name: the engine gives back the old texture for a name it already has
++		char name[48];
++		snprintf( name, sizeof( name ), "*tutor_text_%d", ++m_iTextureCounter );
++
++		m_iTextTex = gRenderAPI.GL_CreateTexture( name, w, h, rgba.data(), static_cast<texFlags_t>( TF_NOMIPMAP | TF_CLAMP | TF_HAS_ALPHA | TF_NEAREST ));
++
++		if( m_iTextTex > 0 )
++		{
++			m_iTextW = w;
++			m_iTextH = h;
++			return;
++		}
++
++		m_iTextTex = 0;
++	}
++
++	// no Windows fonts: the font of the HUD
++	m_lines = Tutor::ClipLines( m_szText, maxWidth, []( const std::string &s ) { return DrawUtils::HudStringLen( s.c_str() ); } );
++	m_iTextW = 0;
++
++	for( const std::string &line : m_lines )
++	{
++		const int lw = DrawUtils::HudStringLen( line.c_str() );
++		if( lw > m_iTextW )
++			m_iTextW = lw;
++	}
++
++	m_iTextH = (int)m_lines.size() * gHUD.GetCharHeight();
++}
++
++static void DrawTexture( int tex, float x, float y, float w, float h, const Tutor::Color &c, float scale )
++{
++	gRenderAPI.GL_SelectTexture( 0 );
++	gRenderAPI.GL_Bind( 0, tex );
++	gEngfuncs.pTriAPI->RenderMode( kRenderTransAlpha );
++	gEngfuncs.pTriAPI->Color4f( c.r / 255.0f, c.g / 255.0f, c.b / 255.0f, c.a / 255.0f );
++	DrawUtils::Draw2DQuad( x * scale, y * scale, ( x + w ) * scale, ( y + h ) * scale );
++}
++
++// The icon drawn by the client when the server did not send gfx/career/*.tga:
++// a rounded square of the colour of the message with a dark sign on it
++static void DrawOwnIcon( int x, int y, Tutor::Icon icon, const Tutor::Color &c )
++{
++	const int s = Tutor::Size::IconSize - 2;
++	x += 1;
++	y += 1;
++
++	DrawUtils::FillRoundedRect( x, y, s, s, 3, true, true, c.r, c.g, c.b, 255 );
++
++	if( icon == Tutor::ICON_SKULL )
++	{
++		// a cross
++		const int n = s - 12;
++
++		for( int i = 0; i < n; ++i )
++		{
++			FillRGBA( x + 6 + i, y + 6 + i, 2, 2, 20, 20, 20, 255 );
++			FillRGBA( x + s - 8 - i, y + 6 + i, 2, 2, 20, 20, 20, 255 );
++		}
++	}
++	else
++	{
++		// "i"
++		const int cx = x + s / 2;
++		FillRGBA( cx - 2, y + 4, 4, 3, 20, 20, 20, 255 );
++		FillRGBA( cx - 2, y + 9, 4, s - 13, 20, 20, 20, 255 );
++	}
++}
++
++int CHudTutor::Draw( float flTime )
++{
++	if( !m_bShow || m_szText.empty() )
++		return 1;
++
++	if( cl_tutor && cl_tutor->value == 0.0f )
++		return 1;
++
++	// the server forgot to close it (or its TutorClose was lost)
++	if( cl_tutor_maxtime && cl_tutor_maxtime->value > 0.0f && flTime - m_flShownAt > cl_tutor_maxtime->value )
++	{
++		Hide();
++		return 1;
++	}
++
++	// a new map started: the time of the client starts from zero again
++	if( flTime < m_flShownAt )
++		m_flShownAt = flTime;
++
++	const float scale = gHUD.m_flScale > 0.0f ? gHUD.m_flScale : 1.0f;
++
++	if( m_bTextDirty )
++		BuildText( Tutor::MaxTextWidth( ScreenWidth ));
++
++	// in units of the HUD
++	const int textW = m_iTextTex > 0 ? (int)( m_iTextW / scale + 0.5f ) : m_iTextW;
++	const int textH = m_iTextTex > 0 ? (int)( m_iTextH / scale + 0.5f ) : m_iTextH;
++
++	// in the spectator mode the window is below the upper bar of the spectator
++	int top = 0;
++	if( g_iUser1 && gHUD.GetGameType() != GAME_CZERODS )
++		top = CHudSpectatorGui::BarHeight();
++
++	const Tutor::Layout l = Tutor::ComputeLayout( ScreenWidth, top, textW, textH );
++	const Tutor::Color bg = m_scheme.background;
++	const Tutor::Color color = m_scheme.ColorForType( m_iType );
++	const Tutor::Icon icon = Tutor::IconForType( m_iType );
++
++	// the panel: the part with the icon and the part with the text, the game is seen through the cut between them
++	const int rightX = l.cutX + Tutor::Size::Cut;
++	DrawUtils::FillRoundedRectSides( l.x, l.y, l.cutX - l.x, l.h, Tutor::Size::Radius, true, false, bg.r, bg.g, bg.b, bg.a );
++	DrawUtils::FillRoundedRectSides( rightX, l.y, l.x + l.w - rightX, l.h, Tutor::Size::Radius, false, true, bg.r, bg.g, bg.b, bg.a );
++
++	// the icon: a white picture painted with the colour of the message
++	if( m_iIconTex[icon] > 0 )
++	{
++		const Tutor::Color opaque = { color.r, color.g, color.b, 255 };
++		DrawTexture( m_iIconTex[icon], (float)l.iconX, (float)l.iconY, (float)Tutor::Size::IconSize, (float)Tutor::Size::IconSize, opaque, scale );
++	}
++	else
++	{
++		DrawOwnIcon( l.iconX, l.iconY, icon, color );
++	}
++
++	// the text
++	if( m_iTextTex > 0 )
++	{
++		DrawTexture( m_iTextTex, (float)l.textX, (float)l.textY, m_iTextW / scale, m_iTextH / scale, color, scale );
++	}
++	else
++	{
++		int y = l.textY;
++
++		for( const std::string &line : m_lines )
++		{
++			DrawUtils::DrawHudString( l.textX, y, ScreenWidth, line.c_str(), color.r, color.g, color.b );
++			y += gHUD.GetCharHeight();
++		}
++	}
++
++	gEngfuncs.pTriAPI->RenderMode( kRenderNormal );
++	return 1;
++}
+diff --git a/cl_dll/hud/tutor_logic.h b/cl_dll/hud/tutor_logic.h
+new file mode 100644
+index 0000000..a99341b
+--- /dev/null
++++ b/cl_dll/hud/tutor_logic.h
+@@ -0,0 +1,451 @@
++//
++// tutor_logic.h
++//
++// Tutor messages of the server (TutorText / TutorClose / TutorState / TutorLine, as sent by ReGameDLL
++// and by AMX Mod X plugins): the colours and the font from resource/TutorScheme.res, the text with its
++// parameters and the layout of the window.
++// No dependencies on the engine, so it can be tested alone.
++//
++// The window is the one of the Steam version, measured on its screenshots (1920x1080); the sizes are
++// the ones of resource/UI/TutorTextWindow.res and do not depend on the resolution:
++//  - in the upper right corner, 10 pixels from the right and from the top
++//    (10 pixels below the upper bar of the spectator mode when it is shown);
++//  - a dark rounded panel (radius 10), 45 pixels high for one line of text;
++//  - on the left a part 40 pixels wide with the icon 25x25 at (10, 10), then a cut of 2 pixels
++//    through which the game is seen, then the text from x = 50 with 17 pixels on the right;
++//  - the text is in one line (the Steam version does not wrap it, the window just gets wider),
++//    Tahoma 14 of the scheme drawn 10 pixels high (em), not antialiased, in the colour of the type.
++//
++
++#pragma once
++
++#include <stddef.h>
++#include <stdlib.h>
++#include <string.h>
++#include <string>
++#include <vector>
++
++namespace Tutor {
++
++// Types of messages (ReGameDLL, tutor_cs_tutor.h): the server sends one of these bits
++enum
++{
++	TYPE_DEFAULT      = 1 << 0, // info, green
++	TYPE_FRIEND_DEATH = 1 << 1, // skull, red
++	TYPE_ENEMY_DEATH  = 1 << 2, // skull, blue
++	TYPE_SCENARIO     = 1 << 3, // info, yellow
++	TYPE_BUY          = 1 << 4,
++	TYPE_CAREER       = 1 << 5,
++	TYPE_HINT         = 1 << 6,
++	TYPE_INGAME_HINT  = 1 << 7,
++	TYPE_END_GAME     = 1 << 8, // info, yellow
++};
++
++enum Icon
++{
++	ICON_INFO = 0,
++	ICON_SKULL,
++	ICON_COUNT
++};
++
++struct Color
++{
++	unsigned char r, g, b, a;
++};
++
++inline bool SameColor( const Color& x, const Color& y )
++{
++	return x.r == y.r && x.g == y.g && x.b == y.b && x.a == y.a;
++}
++
++// What the window looks like (defaults are the values of TutorScheme.res of the Steam version)
++struct Scheme
++{
++	Color background = { 0, 0, 0, 200 };       // "WindowBG"
++	Color classDefault = { 28, 207, 61, 255 };   // "TutorTextClassDefault"
++
++	struct ClassColor
++	{
++		int type;
++		Color color;
++	};
++	std::vector<ClassColor> classes = {
++		{ TYPE_FRIEND_DEATH, { 255, 38, 38, 255 } },  // "TutorTextClass2"
++		{ TYPE_ENEMY_DEATH,  { 38, 149, 253, 255 } }, // "TutorTextClass4"
++		{ TYPE_SCENARIO,     { 255, 227, 38, 255 } }, // "TutorTextClass8"
++		{ TYPE_END_GAME,     { 255, 227, 38, 255 } }, // "TutorTextClass256"
++	};
++
++	std::string fontName = "Tahoma"; // Fonts / "Default" / "1"
++	int fontTall = 14;
++	int fontWeight = 500;
++	bool fontAntialias = false;
++
++	void SetClassColor( int type, const Color& c )
++	{
++		for( ClassColor& cc : classes )
++		{
++			if( cc.type == type )
++			{
++				cc.color = c;
++				return;
++			}
++		}
++
++		classes.push_back( { type, c } );
++	}
++
++	Color ColorForType( int type ) const
++	{
++		for( const ClassColor& cc : classes )
++			if( cc.type == type )
++				return cc.color;
++
++		return classDefault;
++	}
++};
++
++inline Icon IconForType( int type )
++{
++	return ( type == TYPE_FRIEND_DEATH || type == TYPE_ENEMY_DEATH ) ? ICON_SKULL : ICON_INFO;
++}
++
++// ---- reading of resource/TutorScheme.res (the KeyValues format of the Valve resource files)
++
++namespace detail {
++
++inline bool IsSpace( char c )
++{
++	return c == ' ' || c == '\t' || c == '\r' || c == '\n';
++}
++
++// Next token: a quoted string, '{', '}' or a bare word. Comments (//) are skipped. Returns false at the end.
++inline bool NextToken( const char*& p, std::string& token, bool& quoted )
++{
++	for( ;; )
++	{
++		while( *p && IsSpace( *p ))
++			p++;
++
++		if( p[0] == '/' && p[1] == '/' )
++		{
++			while( *p && *p != '\n' )
++				p++;
++			continue;
++		}
++
++		break;
++	}
++
++	if( !*p )
++		return false;
++
++	token.clear();
++	quoted = false;
++
++	if( *p == '{' || *p == '}' )
++	{
++		token = *p++;
++		return true;
++	}
++
++	if( *p == '"' )
++	{
++		quoted = true;
++		p++;
++
++		while( *p && *p != '"' && token.size() < 1024 )
++			token += *p++;
++
++		if( *p == '"' )
++			p++;
++
++		return true;
++	}
++
++	while( *p && !IsSpace( *p ) && *p != '{' && *p != '}' && *p != '"' && token.size() < 1024 )
++		token += *p++;
++
++	return true;
++}
++
++inline std::string Lower( std::string s )
++{
++	for( char& c : s )
++		if( c >= 'A' && c <= 'Z' )
++			c = (char)( c - 'A' + 'a' );
++	return s;
++}
++
++inline bool ParseColor( const std::string& s, Color& out )
++{
++	int v[4] = { 0, 0, 0, 255 };
++	int n = 0;
++	const char* p = s.c_str();
++
++	while( n < 4 )
++	{
++		char *end = nullptr;
++		const long x = strtol( p, &end, 10 );
++
++		if( end == p )
++			break;
++
++		v[n++] = x < -1000 ? -1000 : ( x > 1000 ? 1000 : (int)x );
++		p = end;
++	}
++
++	if( n < 3 )
++		return false;
++
++	for( int& x : v )
++		x = x < 0 ? 0 : ( x > 255 ? 255 : x );
++
++	out = { (unsigned char)v[0], (unsigned char)v[1], (unsigned char)v[2], (unsigned char)v[3] };
++	return true;
++}
++
++} // namespace detail
++
++// Takes from the text of TutorScheme.res what the window uses: the colours of the background and of the
++// types of the messages, and the first font of "Default". Everything else is kept as it is in the scheme.
++// Values that are missing or wrong keep their defaults.
++inline void ParseScheme( const char* text, Scheme& scheme )
++{
++	if( !text )
++		return;
++
++	using namespace detail;
++
++	std::vector<std::string> path; // the sections we are in, in lower case
++	std::string token, key;
++	bool quoted = false;
++	bool haveKey = false;
++	bool fontTaken = false;
++	const char* p = text;
++
++	while( NextToken( p, token, quoted ))
++	{
++		if( !quoted && token == "{" )
++		{
++			path.push_back( haveKey ? Lower( key ) : std::string());
++			haveKey = false;
++			continue;
++		}
++
++		if( !quoted && token == "}" )
++		{
++			if( !path.empty() )
++			{
++				// the end of the first font of "Default": the next ones are only fallbacks
++				if( path.size() >= 4 && path[1] == "fonts" && path[2] == "default" )
++					fontTaken = true;
++				path.pop_back();
++			}
++			haveKey = false;
++			continue;
++		}
++
++		if( !haveKey )
++		{
++			key = token;
++			haveKey = true;
++			continue;
++		}
++
++		// key + value
++		const std::string lk = Lower( key );
++		haveKey = false;
++
++		if( path.size() == 2 && path[1] == "colors" )
++		{
++			Color c;
++
++			if( !ParseColor( token, c ))
++				continue;
++
++			if( lk == "windowbg" )
++				scheme.background = c;
++			else if( lk == "tutortextclassdefault" )
++				scheme.classDefault = c;
++			else if( lk.compare( 0, 14, "tutortextclass" ) == 0 && lk.size() > 14 && lk[14] >= '0' && lk[14] <= '9' )
++				scheme.SetClassColor( atoi( lk.c_str() + 14 ), c );
++		}
++		else if( path.size() == 4 && path[1] == "fonts" && path[2] == "default" && !fontTaken )
++		{
++			if( lk == "name" && !token.empty() && token.size() < 32 )
++				scheme.fontName = token;
++			else if( lk == "tall" )
++			{
++				const int t = atoi( token.c_str() );
++				if( t >= 6 && t <= 48 )
++					scheme.fontTall = t;
++			}
++			else if( lk == "weight" )
++			{
++				const int w = atoi( token.c_str() );
++				if( w >= 100 && w <= 900 )
++					scheme.fontWeight = w;
++			}
++			else if( lk == "antialias" )
++				scheme.fontAntialias = atoi( token.c_str() ) != 0;
++		}
++	}
++}
++
++// ---- the text
++
++// Puts the parameters of the message into its text: %s1 .. %s9 (as the Steam version does)
++inline std::string Substitute( const std::string& text, const std::vector<std::string>& args )
++{
++	std::string out;
++	out.reserve( text.size() );
++
++	for( size_t i = 0; i < text.size(); )
++	{
++		if( text[i] == '%' && i + 2 < text.size() && text[i + 1] == 's' && text[i + 2] >= '1' && text[i + 2] <= '9' )
++		{
++			const size_t idx = (size_t)( text[i + 2] - '1' );
++
++			if( idx < args.size() )
++				out += args[idx];
++
++			i += 3;
++			continue;
++		}
++
++		out += text[i++];
++	}
++
++	return out;
++}
++
++// The text is made ready to be drawn: Windows line ends and the line ends at the end are removed,
++// control characters other than line ends become spaces
++inline std::string CleanText( const std::string& text )
++{
++	std::string out;
++	out.reserve( text.size() );
++
++	for( char c : text )
++	{
++		if( c == '\r' )
++			continue;
++
++		if( (unsigned char)c < ' ' && c != '\n' )
++			c = ' ';
++
++		out += c;
++	}
++
++	while( !out.empty() && ( out.back() == '\n' || out.back() == ' ' ))
++		out.pop_back();
++
++	return out;
++}
++
++// ---- the layout
++
++namespace Size {
++const int Margin = 10;      // from the right edge and from the top of the screen (or of the spectator bar)
++const int Radius = 10;
++const int MinHeight = 45;
++const int LeftWidth = 40;   // the part with the icon
++const int Cut = 2;          // the cut between the parts
++const int IconPos = 10;
++const int IconSize = 25;
++const int TextX = 50;       // the text starts here
++const int TextRight = 17;   // room on the right of the text
++const int TextPad = 10;     // room above and below the text when it has many lines (line ends in the text)
++} // namespace Size
++
++// The font of the scheme ("tall" 14) is drawn by the Steam version with letters 10 pixels high (em):
++// capitals of 7 pixels and small letters of 5, measured on its screenshots
++inline int FontEmHeight( int schemeTall )
++{
++	const int em = ( schemeTall * 5 + 3 ) / 7;
++	return em < 4 ? 4 : em;
++}
++
++struct Layout
++{
++	int x = 0, y = 0, w = 0, h = 0;  // the panel
++	int iconX = 0, iconY = 0;
++	int cutX = 0;                    // the cut is cutX .. cutX + Size::Cut
++	int textX = 0, textY = 0;
++};
++
++// The longest line that fits on the screen (a longer one is cut at the right edge of the window)
++inline int MaxTextWidth( int screenW )
++{
++	int w = screenW - Size::Margin - Size::TextX - Size::TextRight;
++	if( w < 50 )
++		w = 50;
++	return w;
++}
++
++// screenW - width of the screen, top - where the window may start (0, or the bottom of the spectator bar),
++// textW / textH - the size of the drawn text
++inline Layout ComputeLayout( int screenW, int top, int textW, int textH )
++{
++	Layout l;
++
++	if( textW < 0 ) textW = 0;
++	if( textH < 0 ) textH = 0;
++
++	l.w = Size::TextX + textW + Size::TextRight;
++	l.h = textH + Size::TextPad * 2;
++	if( l.h < Size::MinHeight )
++		l.h = Size::MinHeight;
++
++	l.x = screenW - Size::Margin - l.w;
++	if( l.x < 0 )
++		l.x = 0;
++	l.y = top + Size::Margin;
++
++	l.iconX = l.x + Size::IconPos;
++	l.iconY = l.y + Size::IconPos;
++	l.cutX = l.x + Size::LeftWidth;
++	l.textX = l.x + Size::TextX;
++
++	// in the middle of the panel, as in the Steam version
++	l.textY = l.y + ( l.h - textH ) / 2;
++
++	return l;
++}
++
++// The text split at its line ends; a line wider than maxWidth is cut (UTF-8 letters are kept whole).
++// For the font of the HUD (the Windows fonts cut the lines by themselves).
++// width( const std::string& ) gives the width of a piece of text.
++template <class WidthFn>
++std::vector<std::string> ClipLines( const std::string& text, int maxWidth, WidthFn width )
++{
++	std::vector<std::string> lines;
++	size_t start = 0;
++
++	for( ;; )
++	{
++		const size_t end = text.find( '\n', start );
++		std::string line = text.substr( start, end == std::string::npos ? std::string::npos : end - start );
++
++		while( !line.empty() && width( line ) > maxWidth )
++		{
++			size_t cut = line.size() - 1;
++
++			while( cut > 0 && ( (unsigned char)line[cut] & 0xC0 ) == 0x80 )
++				--cut;
++
++			line.erase( cut );
++		}
++
++		lines.push_back( line );
++
++		if( end == std::string::npos )
++			break;
++		start = end + 1;
++	}
++
++	return lines;
++}
++
++} // namespace Tutor
 diff --git a/cl_dll/hud_redraw.cpp b/cl_dll/hud_redraw.cpp
 index 1f2ad59..418f34d 100644
 --- a/cl_dll/hud_redraw.cpp
@@ -4596,16 +5891,18 @@ index 1f2ad59..418f34d 100644
  }
  
 diff --git a/cl_dll/include/draw_util.h b/cl_dll/include/draw_util.h
-index 1fa2af1..7904cf5 100644
+index 1fa2af1..2ec9115 100644
 --- a/cl_dll/include/draw_util.h
 +++ b/cl_dll/include/draw_util.h
-@@ -184,6 +184,13 @@ public:
+@@ -184,6 +184,15 @@ public:
  		}
  	}
  
 +	// Rectangles with rounded corners (the same rounding is used by all windows of the client)
 +	static void FillRoundedRect( int x, int y, int wide, int tall, int radius, bool roundTop, bool roundBottom,
 +								 int r, int g, int b, int a );
++	static void FillRoundedRectSides( int x, int y, int wide, int tall, int radius, bool roundLeft, bool roundRight,
++									  int r, int g, int b, int a );
 +	static void DrawRoundedFrame( int x, int y, int wide, int tall, int radius, int r, int g, int b, int a );
 +	static void DrawRoundedRectangle( int x, int y, int wide, int tall, int radius,
 +									  int r = 0, int g = 0, int b = 0, int a = 153, bool drawStroke = true );
