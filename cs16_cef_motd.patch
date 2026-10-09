@@ -3599,20 +3599,21 @@ index 9ae956c..36a1d17 100644
  
  	GetClientVoice()->Init( &g_VoiceStatusHelper );
 diff --git a/cl_dll/hud.h b/cl_dll/hud.h
-index f23bb7c..3d6f3d1 100644
+index f23bb7c..a7abba5 100644
 --- a/cl_dll/hud.h
 +++ b/cl_dll/hud.h
-@@ -37,6 +37,9 @@
+@@ -37,6 +37,10 @@
  #include "csprite.h"
  #include "cvardef.h"
  #include "utlstring.h"
 +#include <string>
 +#include <vector>
 +#include "hud/tutor_logic.h"
++#include "hud/text_texture.h"
  
  #define MIN_ALPHA	 100	
  #define	HUDELEM_ACTIVE	1
-@@ -347,14 +350,26 @@ public:
+@@ -347,14 +351,26 @@ public:
  	float scroll;
  	bool m_bShow;
  	cvar_t *cl_hide_motd;
@@ -3639,7 +3640,16 @@ index f23bb7c..3d6f3d1 100644
  };
  
  
-@@ -885,6 +900,50 @@ private:
+@@ -764,6 +780,8 @@ public:
+ 	CHudMsgFunc(Money);
+ 	CHudMsgFunc(BlinkAcct);
+ 
++	int GetMoney( void ) const { return m_iMoneyCount; } // shown in the spectator bar
++
+ private:
+ 	int m_iMoneyCount;
+ 	int m_iDelta;
+@@ -885,6 +903,50 @@ private:
  //-----------------------------------------------------
  //
  
@@ -3690,16 +3700,21 @@ index f23bb7c..3d6f3d1 100644
  class CHudScenario : public CHudBase
  {
  public:
-@@ -909,6 +968,8 @@ private:
+@@ -909,6 +971,13 @@ private:
  class CHudSpectatorGui: public CHudBase
  {
  public:
 +	static int BarHeight( void ); // the height of the black bars of the spectator mode (as in the Steam version)
++	void DrawStatusBar( void );   // the upper bar: scores, money and time (as in the Steam version)
++	void FreeStatusBarText( void );
++
++	// the texts of the upper bar drawn by Windows fonts
++	CTextTexture m_txtCTLabel, m_txtTLabel, m_txtCTValue, m_txtTValue, m_txtInfo, m_txtTimer;
 +
  	int Init();
  	int VidInit();
  	int Draw( float flTime );
-@@ -1089,6 +1150,7 @@ public:
+@@ -1089,6 +1158,7 @@ public:
  	CHudRadar       m_Radar;
  	CHudSpectatorGui m_SpectatorGui;
  	CHudScenario	m_Scenario;
@@ -4617,30 +4632,154 @@ index cdbde46..9610599 100644
  
  	int ypos = ystart + (list_slot * ROW_GAP) + 5;
 diff --git a/cl_dll/hud/spectator_gui.cpp b/cl_dll/hud/spectator_gui.cpp
-index 991ebdd..d11bafc 100644
+index 991ebdd..3cc6e8a 100644
 --- a/cl_dll/hud/spectator_gui.cpp
 +++ b/cl_dll/hud/spectator_gui.cpp
-@@ -47,6 +47,19 @@ version.
+@@ -36,6 +36,7 @@ version.
+ #include "vgui_parser.h"
+ #include "triangleapi.h"
+ #include "draw_util.h"
++#include "spectator_layout.h"
+ 
+ /*
+  * We will draw all elements inside a box. It's size 16x10.
+@@ -47,6 +48,15 @@ version.
  #define INT_XPOS(x) int(XPOS(x) * ScreenWidth)
  #define INT_YPOS(y) int(YPOS(y) * ScreenHeight)
  
 +// The black bars at the top and at the bottom of the screen, as in the Steam version:
-+// 64 of 480 lines (2/15 of the height, 144 pixels at 1080), black with the alpha 196 (measured on its screenshots)
++// 64 of 480 lines (144 pixels at 1080), black with the alpha 196 (measured on its screenshots)
 +#define BAR_ALPHA 196
 +
 +int CHudSpectatorGui::BarHeight( void )
 +{
-+	return int( ScreenHeight * 2.0f / 15.0f );
++	return SpecBar::BarHeight( ScreenHeight );
 +}
-+
-+// the two lines of text in the upper bar (the tops of their capitals are at 38 and 65 of 144 in the Steam version)
-+#define BAR_ROW1 int( CHudSpectatorGui::BarHeight() * 0.25f )
-+#define BAR_ROW2 int( CHudSpectatorGui::BarHeight() * 0.4375f )
 +
  int CHudSpectatorGui::Init()
  {
  	if( !g_iXash )
-@@ -186,32 +199,26 @@ int CHudSpectatorGui::Draw( float flTime )
+@@ -98,7 +108,10 @@ int CHudSpectatorGui::VidInit()
+ 		return 0;
+ 	}
+ 
+-	m_hTimerTexture = gRenderAPI.GL_LoadTexture("gfx/vgui/timer.tga", NULL, 0, TF_NEAREST |TF_NOMIPMAP|TF_CLAMP );
++	FreeStatusBarText();
++
++	// the timer icon is scaled with the bar (as in the Steam version), so it is filtered
++	m_hTimerTexture = gRenderAPI.GL_LoadTexture("gfx/vgui/timer.tga", NULL, 0, TF_NOMIPMAP|TF_CLAMP );
+ 	m_hChecked     = gRenderAPI.GL_LoadTexture("gfx/vgui/640_checked.tga", NULL, 0, TF_NEAREST | TF_NOMIPMAP | TF_CLAMP );
+ 	m_hArrowDown   = gRenderAPI.GL_LoadTexture("gfx/vgui/1920_arrowdown.tga", NULL, 0, TF_NEAREST | TF_NOMIPMAP | TF_CLAMP );
+ 	m_hArrowUp     = gRenderAPI.GL_LoadTexture("gfx/vgui/1920_arrowup.tga", NULL, 0, TF_NEAREST | TF_NOMIPMAP | TF_CLAMP );
+@@ -109,6 +122,7 @@ int CHudSpectatorGui::VidInit()
+ 
+ void CHudSpectatorGui::Shutdown()
+ {
++	FreeStatusBarText();
+ 	gRenderAPI.GL_FreeTexture( m_hTimerTexture );
+ 	gRenderAPI.GL_FreeTexture( m_hChecked );
+ 	gRenderAPI.GL_FreeTexture( m_hArrowDown );
+@@ -162,6 +176,99 @@ static void DrawIconOnButton( int x1, int y1, int wide, int tall, int hTex, int
+ 						   (quadY + (float)uploadH) * gHUD.m_flScale );
+ }
+ 
++// The upper bar as in the Steam version (see spectator_layout.h): the scores of the teams on the left of the
++// divider, the money (or the map name for HLTV) and the time on the right of it, in the font of
++// resource/ClientScheme.res drawn by Windows. Without the Windows fonts the font of the HUD is used.
++void CHudSpectatorGui::DrawStatusBar( void )
++{
++	const int textR = 255, textG = 176, textB = 0; // "BaseText" of ClientScheme.res
++
++	const float scale = gHUD.m_flScale > 0.0f ? gHUD.m_flScale : 1.0f; // pixels of the screen per unit of the HUD
++	const SpecBar::Layout l = SpecBar::Compute( ScreenWidth, ScreenHeight );
++
++	// the font: its size depends on the real height of the screen
++	const SpecBar::Font font = SpecBar::FontFor( TrueHeight );
++	const int em = SpecBar::FontEm( font.tall );
++	const int emHud = (int)( em / scale + 0.5f );
++	const int row1 = SpecBar::CellTopFromCapTop( SpecBar::Row1CapTop( ScreenHeight ), emHud );
++	const int row2 = SpecBar::CellTopFromCapTop( SpecBar::Row2CapTop( ScreenHeight ), emHud );
++
++	// the divider ("BorderBright" of the scheme)
++	FillRGBABlend( l.dividerX, l.dividerY, l.dividerW, l.dividerH, 188, 112, 0, 128 );
++
++	char ct[32], t[32], info[96];
++	snprintf( ct, sizeof( ct ), "%d", label.m_iCounterTerrorists );
++	snprintf( t, sizeof( t ), "%d", label.m_iTerrorists );
++
++	if( gEngfuncs.IsSpectateOnly() )
++		snprintf( info, sizeof( info ), "%s", label.m_szMap );
++	else
++		snprintf( info, sizeof( info ), "$%d", gHUD.m_Money.GetMoney() );
++
++	const bool showTimer = !m_bBombPlanted;
++
++	struct Item
++	{
++		CTextTexture *tex;
++		const char *text;
++		int x, y;
++		bool rightAligned;
++	};
++
++	const Item items[] =
++	{
++		{ &m_txtCTLabel, "Counter-Terrorists :", l.teamLabelRight, row1, true },
++		{ &m_txtTLabel,  "Terrorists :",         l.teamLabelRight, row2, true },
++		{ &m_txtCTValue, ct,                     l.teamValueX,     row1, false },
++		{ &m_txtTValue,  t,                      l.teamValueX,     row2, false },
++		{ &m_txtInfo,    info,                   l.infoX,          row1, false },
++		{ &m_txtTimer,   showTimer ? label.m_szTimer : "", l.timerTextX, row2, false },
++	};
++
++	for( const Item &it : items )
++	{
++		if( it.tex->Update( it.text, "Verdana", em, 600, font.antialias ))
++		{
++			if( !it.tex->Valid() )
++				continue;
++
++			const float w = it.tex->Width() / scale;
++			const float x = it.rightAligned ? it.x - w : (float)it.x;
++			it.tex->Draw( x * scale, it.y * scale, textR, textG, textB );
++		}
++		else if( it.text[0] )
++		{
++			// no Windows fonts
++			if( it.rightAligned )
++				DrawUtils::DrawHudStringReverse( it.x, it.y, 0, it.text, textR, textG, textB );
++			else
++				DrawUtils::DrawHudString( it.x, it.y, ScreenWidth, it.text, textR, textG, textB );
++		}
++	}
++
++	// the timer icon
++	if( showTimer && m_hTimerTexture )
++	{
++		gRenderAPI.GL_SelectTexture( 0 );
++		gRenderAPI.GL_Bind( 0, m_hTimerTexture );
++		gEngfuncs.pTriAPI->RenderMode( kRenderTransAlpha );
++		gEngfuncs.pTriAPI->Color4f( 1.0f, 1.0f, 1.0f, 1.0f );
++		DrawUtils::Draw2DQuad( l.timerIconX * scale, l.timerIconY * scale,
++							   ( l.timerIconX + l.timerIconSize ) * scale, ( l.timerIconY + l.timerIconSize ) * scale );
++		gEngfuncs.pTriAPI->RenderMode( kRenderNormal );
++	}
++}
++
++void CHudSpectatorGui::FreeStatusBarText( void )
++{
++	m_txtCTLabel.Free();
++	m_txtTLabel.Free();
++	m_txtCTValue.Free();
++	m_txtTValue.Free();
++	m_txtInfo.Free();
++	m_txtTimer.Free();
++}
++
+ int CHudSpectatorGui::Draw( float flTime )
+ {
+ 	if( !g_iUser1 )
+@@ -186,70 +293,12 @@ int CHudSpectatorGui::Draw( float flTime )
  		startpos = XRES(gHUD.m_Spectator.m_OverviewData.insetWindowWidth) + XRES(gHUD.m_Spectator.m_OverviewData.insetWindowX);
  		startpos *= ScreenWidth / TrueWidth; // hud_scale adjust
  	}
@@ -4651,11 +4790,10 @@ index 991ebdd..d11bafc 100644
 +	FillRGBABlend(0, ScreenHeight - barH, ScreenWidth, barH, 0, 0, 0, BAR_ALPHA);
  
  	if ( gHUD.m_Spectator.m_drawstatus && gHUD.m_Spectator.m_drawstatus->value )
- 	{
- 		// divider
- 		{
-+			// from 27 to 93 of 144 in the Steam version
- 			int divX = INT_XPOS(12.5);
+-	{
+-		// divider
+-		{
+-			int divX = INT_XPOS(12.5);
 -			int divTop = INT_YPOS(2) * 0.25;
 -			int divBottom = INT_YPOS(2) * 0.5 + gHUD.GetCharHeight();
 -			int divH = divBottom - divTop;
@@ -4668,55 +4806,55 @@ index 991ebdd..d11bafc 100644
 -			if (drawTop < 0) drawTop = 0;
 -			int drawH = divH + pad * 2;
 -			if (drawTop + drawH > ScreenHeight) drawH = ScreenHeight - drawTop;
-+			int drawTop = int( barH * 0.1875f );
-+			int drawH = int( barH * 0.65f ) - drawTop + 1;
-+			if (drawH < gHUD.GetCharHeight()) drawH = gHUD.GetCharHeight();
-+			if (drawTop + drawH > barH) drawH = barH - drawTop;
- 
- 			FillRGBABlend(divX, drawTop, 1, drawH, r, g, b, 255);
- 		}
- 
- 		{ // mapname. extradata
+-
+-			FillRGBABlend(divX, drawTop, 1, drawH, r, g, b, 255);
+-		}
+-
+-		{ // mapname. extradata
 -			DrawUtils::DrawHudString( INT_XPOS(12.5) + 10, INT_YPOS(2) * 0.25, ScreenWidth, label.m_szMap, r, g, b );
-+			DrawUtils::DrawHudString( INT_XPOS(12.5) + 10, BAR_ROW1, ScreenWidth, label.m_szMap, r, g, b );
- 
- 			if( !m_bBombPlanted ) // timer remaining
- 			{
-@@ -223,7 +230,7 @@ int CHudSpectatorGui::Draw( float flTime )
- 					gEngfuncs.pTriAPI->Color4f( 1.0f, 1.0f, 1.0f, 1.0f );
- 
- 					float quadX = INT_XPOS(12.5) + 10;
+-
+-			if( !m_bBombPlanted ) // timer remaining
+-			{
+-				if( m_hTimerTexture )
+-				{
+-					gRenderAPI.GL_SelectTexture( 0 );
+-					gRenderAPI.GL_Bind(0, m_hTimerTexture);
+-					gEngfuncs.pTriAPI->RenderMode( kRenderTransAlpha );
+-					gEngfuncs.pTriAPI->Color4f( 1.0f, 1.0f, 1.0f, 1.0f );
+-
+-					float quadX = INT_XPOS(12.5) + 10;
 -					float quadY = INT_YPOS(2) * 0.5f;
-+					float quadY = BAR_ROW2;
- 					int uploadW = (int)gRenderAPI.RenderGetParm( PARM_TEX_WIDTH, m_hTimerTexture );
- 					int uploadH = (int)gRenderAPI.RenderGetParm( PARM_TEX_HEIGHT, m_hTimerTexture );
- 
-@@ -234,7 +241,7 @@ int CHudSpectatorGui::Draw( float flTime )
- 										(quadY + (float)uploadH) * gHUD.m_flScale );
- 					// gEngfuncs.pTriAPI->End();
- 				}
+-					int uploadW = (int)gRenderAPI.RenderGetParm( PARM_TEX_WIDTH, m_hTimerTexture );
+-					int uploadH = (int)gRenderAPI.RenderGetParm( PARM_TEX_HEIGHT, m_hTimerTexture );
+-
+-					// gEngfuncs.pTriAPI->Begin( TRI_QUADS );
+-					DrawUtils::Draw2DQuad( quadX * gHUD.m_flScale,
+-										quadY * gHUD.m_flScale,
+-										(quadX + (float)uploadW) * gHUD.m_flScale,
+-										(quadY + (float)uploadH) * gHUD.m_flScale );
+-					// gEngfuncs.pTriAPI->End();
+-				}
 -				DrawUtils::DrawHudString( INT_XPOS(12.5) + gHUD.GetCharHeight() * 1.5 + gHUD.GetCharWidth('M') , INT_YPOS(2) * 0.5, ScreenWidth,
-+				DrawUtils::DrawHudString( INT_XPOS(12.5) + gHUD.GetCharHeight() * 1.5 + gHUD.GetCharWidth('M') , BAR_ROW2, ScreenWidth,
- 										label.m_szTimer, r, g, b );
- 			}
- 		}
-@@ -243,11 +250,11 @@ int CHudSpectatorGui::Draw( float flTime )
- 		{ // draw team here
- 			int iLen = DrawUtils::HudStringLen("Counter-Terrorists:" );
- 
+-										label.m_szTimer, r, g, b );
+-			}
+-		}
+-
+-
+-		{ // draw team here
+-			int iLen = DrawUtils::HudStringLen("Counter-Terrorists:" );
+-
 -			DrawUtils::DrawHudString( INT_XPOS(12.5) - iLen - 50 , INT_YPOS(2) * 0.25, INT_XPOS(12.5) - 50, "Counter-Terrorists:", r, g, b );
 -			DrawUtils::DrawHudString( INT_XPOS(12.5) - iLen - 50, INT_YPOS(2) * 0.5, INT_XPOS(12.5) - 50, "Terrorists:", r, g, b );
-+			DrawUtils::DrawHudString( INT_XPOS(12.5) - iLen - 50 , BAR_ROW1, INT_XPOS(12.5) - 50, "Counter-Terrorists:", r, g, b );
-+			DrawUtils::DrawHudString( INT_XPOS(12.5) - iLen - 50, BAR_ROW2, INT_XPOS(12.5) - 50, "Terrorists:", r, g, b );
- 			// count
+-			// count
 -			DrawUtils::DrawHudNumberString( INT_XPOS(12.5) - 10, INT_YPOS(2) * 0.25, INT_XPOS(12.5) - 50, label.m_iCounterTerrorists, r, g, b );
 -			DrawUtils::DrawHudNumberString( INT_XPOS(12.5) - 10, INT_YPOS(2) * 0.5,  INT_XPOS(12.5) - 50, label.m_iTerrorists,        r, g, b );
-+			DrawUtils::DrawHudNumberString( INT_XPOS(12.5) - 10, BAR_ROW1, INT_XPOS(12.5) - 50, label.m_iCounterTerrorists, r, g, b );
-+			DrawUtils::DrawHudNumberString( INT_XPOS(12.5) - 10, BAR_ROW2,  INT_XPOS(12.5) - 50, label.m_iTerrorists,        r, g, b );
- 		}
- 	}
+-		}
+-	}
++		DrawStatusBar();
  
-@@ -355,7 +362,7 @@ int CHudSpectatorGui::Draw( float flTime )
+ 	if( m_menuFlags & ROOT_MENU )
+ 	{
+@@ -355,7 +404,7 @@ int CHudSpectatorGui::Draw( float flTime )
  	//{
  		int iLen = DrawUtils::HudStringLen( label.m_szNameAndHealth );
  		GetTeamColor( r, g, b, g_PlayerExtraInfo[ g_iUser2 ].teamnumber );
@@ -4725,6 +4863,101 @@ index 991ebdd..d11bafc 100644
  								  label.m_szNameAndHealth, r, g, b );
  	//}
  
+diff --git a/cl_dll/hud/spectator_layout.h b/cl_dll/hud/spectator_layout.h
+new file mode 100644
+index 0000000..20fee2c
+--- /dev/null
++++ b/cl_dll/hud/spectator_layout.h
+@@ -0,0 +1,89 @@
++//
++// spectator_layout.h
++//
++// The upper bar of the spectator mode as in the Steam version of CS 1.6, measured on its screenshots
++// (1920x1080 and 1600x900). Its sizes are in units of 1/480 of the screen height ("proportional" sizes
++// of VGUI2) and the elements are placed from the right edge of the screen:
++//
++//   Counter-Terrorists :  0  |  $800
++//          Terrorists :  0  |  (timer) 1:45
++//
++// No dependencies on the engine, so it can be tested alone.
++//
++
++#pragma once
++
++namespace SpecBar {
++
++// One unit in pixels
++inline float Unit( int screenH )
++{
++	return screenH / 480.0f;
++}
++
++// Height of the black bars (64 units, 144 pixels at 1080)
++inline int BarHeight( int screenH )
++{
++	return int( screenH * 64 / 480 );
++}
++
++// The font of the bar is "Default" of resource/ClientScheme.res (Verdana, weight 600): its size depends
++// on the height of the screen; the Steam version draws a "tall" of the scheme with letters of tall * 5 / 7 pixels
++struct Font
++{
++	int tall;
++	bool antialias;
++};
++
++inline Font FontFor( int screenH )
++{
++	if( screenH < 600 )  return { 12, false };
++	if( screenH < 768 )  return { 13, false };
++	if( screenH < 1024 ) return { 14, true };
++	if( screenH < 1200 ) return { 20, true };
++	return { 24, true };
++}
++
++inline int FontEm( int tall )
++{
++	const int em = ( tall * 5 + 3 ) / 7;
++	return em < 4 ? 4 : em;
++}
++
++// The top of the capitals of the two rows (38 and 65 of 1080) and their distance from the top of the cell
++// of the font (the ascent of Verdana is 1.005 em, its capitals are 0.727 em high)
++inline float Row1CapTop( int screenH ) { return 16.9f * Unit( screenH ); }
++inline float Row2CapTop( int screenH ) { return 28.9f * Unit( screenH ); }
++inline int CellTopFromCapTop( float capTop, int em ) { return int( capTop - 0.278f * em + 0.5f ); }
++
++struct Layout
++{
++	int teamLabelRight;  // right edge of "Counter-Terrorists :" and "Terrorists :" (right aligned)
++	int teamValueX;      // left edge of the scores
++	int dividerX, dividerY, dividerW, dividerH; // the vertical line
++	int infoX;           // left edge of the money (or the map name) in the first row
++	int timerIconX, timerIconY, timerIconSize;
++	int timerTextX;      // left edge of the time in the second row
++};
++
++inline Layout Compute( int screenW, int screenH )
++{
++	const float u = Unit( screenH );
++	auto fromRight = [screenW, u]( float units ) { return int( screenW - units * u + 0.5f ); };
++
++	Layout l;
++	l.teamLabelRight = fromRight( 84.4f );  // ':' ends at 1729 of 1920
++	l.teamValueX = fromRight( 79.6f );      // "0" at 1741
++	l.dividerX = fromRight( 64.0f );        // 1776..1777
++	l.dividerW = int( u + 0.5f ) > 0 ? int( u + 0.5f ) : 1;
++	l.dividerY = int( 12.0f * u + 0.5f );   // 27..93
++	l.dividerH = int( 30.0f * u + 0.5f ) - 1;
++	l.infoX = fromRight( 55.6f );           // "$" at 1795
++	l.timerIconX = fromRight( 54.6f );      // 1797
++	l.timerIconY = int( 26.2f * u + 0.5f ); // 59
++	l.timerIconSize = int( 10.0f * u + 0.5f );
++	l.timerTextX = fromRight( 41.6f );      // 1826
++	return l;
++}
++
++} // namespace SpecBar
 diff --git a/cl_dll/hud/text_gdi.cpp b/cl_dll/hud/text_gdi.cpp
 new file mode 100644
 index 0000000..d28491e
@@ -4921,6 +5154,142 @@ index 0000000..4034911
 +// Returns false where the fonts of Windows are not available (the caller uses the font of the HUD).
 +bool GDI_RenderTextBlock( const char *utf8, const char *fontName, int emHeight, int weight, bool antialias,
 +						  int maxWidth, std::vector<unsigned char> &alpha, int &width, int &height );
+diff --git a/cl_dll/hud/text_texture.cpp b/cl_dll/hud/text_texture.cpp
+new file mode 100644
+index 0000000..700f2d8
+--- /dev/null
++++ b/cl_dll/hud/text_texture.cpp
+@@ -0,0 +1,89 @@
++//
++// text_texture.cpp
++//
++
++#include "hud.h"
++#include "cl_util.h"
++#include "triangleapi.h"
++#include "draw_util.h"
++
++#include <stdio.h>
++#include <vector>
++
++#include "text_texture.h"
++#include "text_gdi.h"
++
++static int s_textTextureCounter = 0;
++
++void CTextTexture::Free()
++{
++	if( m_iTex > 0 && gRenderAPI.GL_FreeTexture )
++		gRenderAPI.GL_FreeTexture( m_iTex );
++
++	m_iTex = 0;
++	m_iWidth = m_iHeight = 0;
++	m_bFailed = false;
++	m_key.clear();
++}
++
++bool CTextTexture::Update( const std::string &utf8, const char *fontName, int emHeight, int weight, bool antialias )
++{
++	char extra[96];
++	snprintf( extra, sizeof( extra ), "|%s|%d|%d|%d", fontName ? fontName : "", emHeight, weight, antialias ? 1 : 0 );
++	const std::string key = utf8 + extra;
++
++	if( key == m_key )
++		return m_iTex > 0 || ( utf8.empty() && !m_bFailed ); // also remembers that it did not work
++
++	Free();
++	m_key = key;
++
++	if( utf8.empty() )
++		return true; // nothing to draw
++
++	std::vector<unsigned char> alpha;
++	int w = 0, h = 0;
++
++	if( !gRenderAPI.GL_CreateTexture
++		|| !GDI_RenderTextBlock( utf8.c_str(), fontName, emHeight, weight, antialias, 4096, alpha, w, h ))
++	{
++		m_bFailed = true;
++		return false;
++	}
++
++	// white pixels, the glyphs are in the alpha channel (the colour is set when the text is drawn)
++	std::vector<unsigned char> rgba( (size_t)w * h * 4, 255 );
++
++	for( size_t i = 0, n = (size_t)w * h; i < n; ++i )
++		rgba[i * 4 + 3] = alpha[i];
++
++	// every picture has its own name: the engine gives back the old texture for a name it already has
++	char name[48];
++	snprintf( name, sizeof( name ), "*text_%d", ++s_textTextureCounter );
++
++	m_iTex = gRenderAPI.GL_CreateTexture( name, w, h, rgba.data(), static_cast<texFlags_t>( TF_NOMIPMAP | TF_CLAMP | TF_HAS_ALPHA | TF_NEAREST ));
++
++	if( m_iTex <= 0 )
++	{
++		m_iTex = 0;
++		m_bFailed = true;
++		return false;
++	}
++
++	m_iWidth = w;
++	m_iHeight = h;
++	return true;
++}
++
++void CTextTexture::Draw( float x, float y, int r, int g, int b, int a ) const
++{
++	if( m_iTex <= 0 )
++		return;
++
++	gRenderAPI.GL_SelectTexture( 0 );
++	gRenderAPI.GL_Bind( 0, m_iTex );
++	gEngfuncs.pTriAPI->RenderMode( kRenderTransAlpha );
++	gEngfuncs.pTriAPI->Color4f( r / 255.0f, g / 255.0f, b / 255.0f, a / 255.0f );
++	DrawUtils::Draw2DQuad( x, y, x + m_iWidth, y + m_iHeight );
++	gEngfuncs.pTriAPI->RenderMode( kRenderNormal );
++}
+diff --git a/cl_dll/hud/text_texture.h b/cl_dll/hud/text_texture.h
+new file mode 100644
+index 0000000..60d5e34
+--- /dev/null
++++ b/cl_dll/hud/text_texture.h
+@@ -0,0 +1,35 @@
++//
++// text_texture.h
++//
++// A piece of text drawn by a Windows font (text_gdi.cpp) and kept as a texture: it is made again only when
++// the text or the font changes. Used where the client draws text like the VGUI2 panels of the Steam version.
++//
++
++#pragma once
++
++#include <string>
++
++class CTextTexture
++{
++public:
++	~CTextTexture() { Free(); }
++
++	// Makes the picture if something has changed. Returns false if the Windows fonts are not available
++	// (then the caller draws the text with the font of the HUD).
++	bool Update( const std::string &utf8, const char *fontName, int emHeight, int weight, bool antialias );
++
++	// Draws the text with the top left corner of its cell at (x, y), in pixels of the screen
++	void Draw( float x, float y, int r, int g, int b, int a = 255 ) const;
++
++	void Free();
++
++	int Width() const { return m_iWidth; }
++	int Height() const { return m_iHeight; }
++	bool Valid() const { return m_iTex > 0; }
++
++private:
++	int m_iTex = 0;
++	int m_iWidth = 0, m_iHeight = 0;
++	bool m_bFailed = false;
++	std::string m_key;
++};
 diff --git a/cl_dll/hud/text_utf8.h b/cl_dll/hud/text_utf8.h
 new file mode 100644
 index 0000000..7b712a8
