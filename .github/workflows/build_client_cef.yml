@@ -166,6 +166,7 @@ jobs:
           sys.exit(0 if machine == 0x8664 else 1)
           PY
           grep -aq "libcef.dll" "$f" || { echo "ERROR: client is not linked with CEF"; exit 1; }
+          grep -aq "cl_tutor_maxtime" "$f" || { echo "ERROR: the tutor messages are not in this client"; exit 1; }
           grep -aq -- "${CLIENT_BUILD}-CEF" "$f" || { echo "ERROR: the version mark ${CLIENT_BUILD}-CEF is not in the client. If the patch was moved to another client version, put the same number into the label in cl_dll/hud.cpp (inside the patch) as in CLIENT_BUILD at the top of this workflow"; exit 1; }
           test -f cstrike/cef/libcef.dll || { echo "ERROR: libcef.dll is missing"; exit 1; }
           test -f cstrike/cef/cs16_cef_helper.exe || { echo "ERROR: cs16_cef_helper.exe is missing"; exit 1; }
