@@ -3482,7 +3482,7 @@ index 0000000..e5e0e81
 +} // namespace iHTMLChrome
 diff --git a/cl_dll/chrome/motd_layout.h b/cl_dll/chrome/motd_layout.h
 new file mode 100644
-index 0000000..a761746
+index 0000000..9fa8ab7
 --- /dev/null
 +++ b/cl_dll/chrome/motd_layout.h
 @@ -0,0 +1,91 @@
@@ -3493,7 +3493,7 @@ index 0000000..a761746
 +// (2.25 pixels at 1080) and grows with the resolution:
 +//
 +//   panel 1345 x 985 at (285, 45), rounded with the radius 20, a cut of 2 pixels at 117 from its top
-+//   the CS icon (gfx/vgui/CS_logo.tga, 64 x 64) as a square of 85 at (13, 13), the name of the server (cap height 22) from x 126, its baseline at 70
++//   the CS icon (gfx/vgui/CS_logo.tga, 64 x 64) as a square of 88 at (12, 12), the name of the server (cap height 22) from x 126, its baseline at 70
 +//   the page 1080 x 540 at (126, 216)
 +//   the OK button 288 x 45 at (126, 774), "OK" in the font of the scheme, its baseline at 28 of the button
 +//
@@ -3547,10 +3547,10 @@ index 0000000..a761746
 +	l.cutY = l.panelY + U( 52.0f );
 +	l.cutH = int( u ) > 0 ? int( u ) : 1;
 +
-+	// the figure of CS_logo.tga is 12..53 x 4..57 of 64: seen at 314..368 x 63..135
-+	l.iconX = l.panelX + U( 5.8f );
-+	l.iconY = l.panelY + U( 5.8f );
-+	l.iconSize = U( 37.9f );
++	// the figure of CS_logo.tga is 12..53 x 5..56 of 64: seen at 314..368 x 63..135 (a square of 88 at 297, 57)
++	l.iconX = l.panelX + U( 5.3f );
++	l.iconY = l.panelY + U( 5.3f );
++	l.iconSize = U( 39.0f );
 +
 +	l.titleX = l.panelX + U( 56.0f );
 +	l.titleBaseline = l.panelY + U( 31.1f );
@@ -3571,7 +3571,7 @@ index 0000000..a761746
 +	l.btnW = U( 128.0f );
 +	l.btnH = U( 20.0f );
 +
-+	l.okCenterX = l.btnX + U( 66.7f );   // a little right of the middle, as in the Steam version
++	l.okCenterX = l.btnX + U( 67.2f );   // a little right of the middle, as in the Steam version
 +	l.okBaseline = l.btnY + U( 12.4f );
 +	return l;
 +}
@@ -3702,7 +3702,7 @@ index c585f3c..625ccf3 100644
  {
  	// REMOVE WHEN NANOGL BUG WILL BE FIXED
 diff --git a/cl_dll/hud.cpp b/cl_dll/hud.cpp
-index 9ae956c..36a1d17 100644
+index 9ae956c..6e0f1d9 100644
 --- a/cl_dll/hud.cpp
 +++ b/cl_dll/hud.cpp
 @@ -363,7 +363,14 @@ void CHud :: Init( void )
@@ -3716,7 +3716,7 @@ index 9ae956c..36a1d17 100644
 +	// the client sources this patch was made for and it does not depend on the day of compilation.
 +	// When the patch is moved to another client version change it here and in CLIENT_BUILD of the
 +	// workflow (the workflow checks that both are the same).
-+	static char cscl_ver[] = "3979-CEF";
++	static char cscl_ver[] = "3998-CEF";
 +	CVAR_CREATE( "cscl_ver", cscl_ver, 1<<14 | FCVAR_USERINFO ); // init and userinfo
  
  	m_iLogo = 0;
@@ -5028,7 +5028,7 @@ index 991ebdd..3cc6e8a 100644
  
 diff --git a/cl_dll/hud/spectator_layout.h b/cl_dll/hud/spectator_layout.h
 new file mode 100644
-index 0000000..d2f3d2b
+index 0000000..bdca025
 --- /dev/null
 +++ b/cl_dll/hud/spectator_layout.h
 @@ -0,0 +1,90 @@
@@ -5117,7 +5117,7 @@ index 0000000..d2f3d2b
 +	l.timerIconX = fromRight( 56.0f );      // the picture of the icon is seen at 1798..1814 x 59..81
 +	l.timerIconY = int( 25.3f * u + 0.5f );
 +	l.timerIconSize = int( 12.4f * u + 0.5f );
-+	l.timerTextX = fromRight( 42.1f );      // 1825: "0:09" is seen from 1827 (2 pixels of bearing)
++	l.timerTextX = fromRight( 41.7f );      // 1826: "0:00" is seen at 1827..1865 (1 pixel of bearing)
 +	return l;
 +}
 +
