@@ -1,4 +1,4 @@
-name: Build cs16-client 3979 (x64) with MOTD in the browser
+name: Build cs16-client 3998 (x64) with MOTD in the browser
 
 on:
   workflow_dispatch:
@@ -10,8 +10,8 @@ jobs:
       # The client version these patches are made for. When you move to another client version change BOTH
       # values below and the label "<number>-motd" in cl_dll/hud.cpp inside the patch (see the README).
       # The check at the end of the build fails if the built client does not have the label "<CLIENT_BUILD>-motd".
-      CLIENT_BUILD: "3979"
-      CLIENT_REF: e30e27c3bd890f731ad7921d9c876d171aea4b32
+      CLIENT_BUILD: "3998"
+      CLIENT_REF: c1604b609c553a6825278324f70b2ba54013fd41
     defaults:
       run:
         shell: bash
@@ -24,7 +24,7 @@ jobs:
         with:
           path: mypatch
 
-      - name: Get cs16-client sources (build 3979)
+      - name: Get cs16-client sources (build 3998)
         uses: actions/checkout@v5
         with:
           repository: Velaron/cs16-client
@@ -34,7 +34,7 @@ jobs:
 
       - name: Apply the MOTD patch
         working-directory: cs16
-        run: git apply --ignore-whitespace --whitespace=nowarn ../mypatch/cs16_motd_browser_3979.patch
+        run: git apply --ignore-whitespace --whitespace=nowarn ../mypatch/cs16_motd_browser_3998.patch
 
       - name: Setup Visual Studio (64-bit)
         shell: pwsh
@@ -80,11 +80,12 @@ jobs:
           PY
           grep -aq "cl_motd_browser_iframe" "$f" || { echo "ERROR: the MOTD patch is not in this client"; exit 1; }
           grep -aq "ShellExecute" "$f" || { echo "ERROR: the client cannot open the browser"; exit 1; }
+          grep -aq "cl_tutor_maxtime" "$f" || { echo "ERROR: the tutor messages are not in this client"; exit 1; }
           grep -aq -- "${CLIENT_BUILD}-motd" "$f" || { echo "ERROR: the version mark ${CLIENT_BUILD}-motd is not in the client. If the patch was moved to another client version, put the same number into the label in cl_dll/hud.cpp (inside the patch) as in CLIENT_BUILD at the top of this workflow"; exit 1; }
           echo "Result looks complete"
 
       - name: Upload result
         uses: actions/upload-artifact@v6
         with:
-          name: cs16-client-3979-motd-x64
+          name: cs16-client-3998-motd-x64
           path: result/*
