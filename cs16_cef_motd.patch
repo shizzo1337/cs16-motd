@@ -4865,10 +4865,10 @@ index 991ebdd..3cc6e8a 100644
  
 diff --git a/cl_dll/hud/spectator_layout.h b/cl_dll/hud/spectator_layout.h
 new file mode 100644
-index 0000000..20fee2c
+index 0000000..84c825d
 --- /dev/null
 +++ b/cl_dll/hud/spectator_layout.h
-@@ -0,0 +1,89 @@
+@@ -0,0 +1,90 @@
 +//
 +// spectator_layout.h
 +//
@@ -4899,7 +4899,8 @@ index 0000000..20fee2c
 +}
 +
 +// The font of the bar is "Default" of resource/ClientScheme.res (Verdana, weight 600): its size depends
-+// on the height of the screen; the Steam version draws a "tall" of the scheme with letters of tall * 5 / 7 pixels
++// on the height of the screen; the Steam version draws a "tall" of the scheme with letters of tall * 3 / 4 pixels
++// (rounded down): 20 -> 15 at 1080 (capitals of 11 pixels, small letters of 8), 14 -> 10 for the tutor
 +struct Font
 +{
 +	int tall;
@@ -4917,7 +4918,7 @@ index 0000000..20fee2c
 +
 +inline int FontEm( int tall )
 +{
-+	const int em = ( tall * 5 + 3 ) / 7;
++	const int em = tall * 3 / 4;
 +	return em < 4 ? 4 : em;
 +}
 +
@@ -4943,16 +4944,16 @@ index 0000000..20fee2c
 +	auto fromRight = [screenW, u]( float units ) { return int( screenW - units * u + 0.5f ); };
 +
 +	Layout l;
-+	l.teamLabelRight = fromRight( 84.4f );  // ':' ends at 1729 of 1920
-+	l.teamValueX = fromRight( 79.6f );      // "0" at 1741
++	l.teamLabelRight = fromRight( 83.1f );  // ':' ends at 1729 of 1920
++	l.teamValueX = fromRight( 80.0f );      // "0" at 1741
 +	l.dividerX = fromRight( 64.0f );        // 1776..1777
 +	l.dividerW = int( u + 0.5f ) > 0 ? int( u + 0.5f ) : 1;
 +	l.dividerY = int( 12.0f * u + 0.5f );   // 27..93
 +	l.dividerH = int( 30.0f * u + 0.5f ) - 1;
-+	l.infoX = fromRight( 55.6f );           // "$" at 1795
-+	l.timerIconX = fromRight( 54.6f );      // 1797
-+	l.timerIconY = int( 26.2f * u + 0.5f ); // 59
-+	l.timerIconSize = int( 10.0f * u + 0.5f );
++	l.infoX = fromRight( 56.0f );           // "$" at 1795
++	l.timerIconX = fromRight( 56.0f );      // the picture of the icon is seen at 1798..1814 x 59..81
++	l.timerIconY = int( 25.3f * u + 0.5f );
++	l.timerIconSize = int( 12.4f * u + 0.5f );
 +	l.timerTextX = fromRight( 41.6f );      // 1826
 +	return l;
 +}
@@ -5783,10 +5784,10 @@ index 0000000..bdeceb1
 +}
 diff --git a/cl_dll/hud/tutor_logic.h b/cl_dll/hud/tutor_logic.h
 new file mode 100644
-index 0000000..a99341b
+index 0000000..0299152
 --- /dev/null
 +++ b/cl_dll/hud/tutor_logic.h
-@@ -0,0 +1,451 @@
+@@ -0,0 +1,452 @@
 +//
 +// tutor_logic.h
 +//
@@ -6148,11 +6149,12 @@ index 0000000..a99341b
 +const int TextPad = 10;     // room above and below the text when it has many lines (line ends in the text)
 +} // namespace Size
 +
-+// The font of the scheme ("tall" 14) is drawn by the Steam version with letters 10 pixels high (em):
-+// capitals of 7 pixels and small letters of 5, measured on its screenshots
++// The Steam version draws the "tall" of a scheme with letters of tall * 3 / 4 pixels (rounded down, the em):
++// the tutor font ("tall" 14) has letters of 10 pixels, capitals of 7 and small letters of 5 (measured on its
++// screenshots; the font of the spectator bar gives the same rule, see spectator_layout.h)
 +inline int FontEmHeight( int schemeTall )
 +{
-+	const int em = ( schemeTall * 5 + 3 ) / 7;
++	const int em = schemeTall * 3 / 4;
 +	return em < 4 ? 4 : em;
 +}
 +
