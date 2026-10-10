@@ -975,10 +975,10 @@ index 0000000..90f7f15
 +#endif
 diff --git a/cl_dll/chrome/chrome_host.cpp b/cl_dll/chrome/chrome_host.cpp
 new file mode 100644
-index 0000000..42f22d7
+index 0000000..fc6e501
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_host.cpp
-@@ -0,0 +1,739 @@
+@@ -0,0 +1,775 @@
 +#include "chrome_host.h"
 +#include "chrome_backend.h"
 +#include "chrome_debug.h"
@@ -986,6 +986,8 @@ index 0000000..42f22d7
 +#include "chrome_motd_input.h"
 +#include "chrome_motd_utf.h"
 +#include "chrome_runtime.h"
++#include "motd_layout.h"
++#include "../hud/spectator_layout.h"
 +#include "../hud/motd_util.h"
 +
 +#include <algorithm>
@@ -1005,8 +1007,8 @@ index 0000000..42f22d7
 +#include "triangleapi.h"
 +
 +// MOTD_text_gdi.cpp
-+bool MOTD_RenderText( const char *utf8, int pixelHeight, bool bold, int maxWidth,
-+					  std::vector<unsigned char> &alpha, int &width, int &height, int &ascent );
++bool MOTD_RenderTextFont( const char *utf8, const char *face, int pixelHeight, int weight, bool antialias, int maxWidth,
++						  std::vector<unsigned char> &alpha, int &width, int &height, int &ascent );
 +
 +namespace
 +{
@@ -1216,9 +1218,10 @@ index 0000000..42f22d7
 +
 +// Makes the picture of a text, or keeps the old one if nothing has changed.
 +// Returns false if the text cannot be drawn this way (then the font of the HUD is used).
-+bool UpdateMotdText( MotdTextSlot& slot, const std::string& utf8, int pixelHeight, bool bold, int maxWidth )
++bool UpdateMotdText( MotdTextSlot& slot, const std::string& utf8, const char* face, int pixelHeight, int weight, bool antialias, int maxWidth )
 +{
-+	const std::string key = utf8 + "|" + std::to_string( pixelHeight ) + "|" + ( bold ? "b" : "n" ) + "|" + std::to_string( maxWidth );
++	const std::string key = utf8 + "|" + face + "|" + std::to_string( pixelHeight ) + "|" + std::to_string( weight ) + "|"
++		+ ( antialias ? "a" : "n" ) + "|" + std::to_string( maxWidth );
 +
 +	if( slot.key == key )
 +		return slot.tex > 0; // also remembers that it did not work, no retries every frame
@@ -1229,7 +1232,7 @@ index 0000000..42f22d7
 +	std::vector<unsigned char> alpha;
 +	int w = 0, h = 0, ascent = 0;
 +
-+	if( !gRenderAPI.GL_CreateTexture || !MOTD_RenderText( utf8.c_str(), pixelHeight, bold, maxWidth, alpha, w, h, ascent ))
++	if( !gRenderAPI.GL_CreateTexture || !MOTD_RenderTextFont( utf8.c_str(), face, pixelHeight, weight, antialias, maxWidth, alpha, w, h, ascent ))
 +		return false;
 +
 +	// white pixels, the glyphs are in the alpha channel (the colour is set when the text is drawn)
@@ -1266,10 +1269,56 @@ index 0000000..42f22d7
 +	DrawUtils::Draw2DQuad( (float)x, (float)y, (float)( x + slot.w ), (float)( y + slot.h ));
 +}
 +
++// The CS icon of the title: gfx/vgui/CS_logo.tga of the game (a white figure, painted with "TitleIcon"
++// of ClientScheme.res, 255 174 0, as in the Steam version). Nothing is drawn if the game has no such file.
++int g_motd_icon = 0;
++bool g_motd_icon_tried = false;
++
++void DrawMotdIcon( int x, int y, int size )
++{
++	if( !g_motd_icon_tried && gRenderAPI.GL_LoadTexture && gEngfuncs.COM_LoadFile )
++	{
++		g_motd_icon_tried = true;
++
++		static const char *const names[] =
++		{
++			"gfx/vgui/CS_logo.tga",
++			"gfx/vgui/cs_logo.tga",
++		};
++
++		for( const char *name : names )
++		{
++			int len = 0;
++			byte *probe = gEngfuncs.COM_LoadFile( name, 5, &len );
++
++			if( !probe )
++				continue;
++
++			gEngfuncs.COM_FreeFile( probe );
++			g_motd_icon = gRenderAPI.GL_LoadTexture( name, NULL, 0, TF_NOMIPMAP | TF_CLAMP );
++
++			if( g_motd_icon > 0 )
++			{
++				gEngfuncs.Con_DPrintf( "[motd] icon: %s\n", name );
++				break;
++			}
++		}
++	}
++
++	if( g_motd_icon <= 0 || size <= 0 )
++		return;
++
++	gRenderAPI.GL_SelectTexture( 0 );
++	gRenderAPI.GL_Bind( 0, g_motd_icon );
++	gEngfuncs.pTriAPI->RenderMode( kRenderTransAlpha );
++	gEngfuncs.pTriAPI->Color4f( 1.0f, 174 / 255.0f, 0.0f, 1.0f );
++	DrawUtils::Draw2DQuad( (float)x, (float)y, (float)( x + size ), (float)( y + size ));
++}
++
 +// The server MOTD is shown as a window like the one of the Steam version of the game:
 +// a dark rounded panel with a cut through it, the server name, the page and the OK button.
-+// All sizes are measured on the window of the Steam version (1126x824 for a page of 900x450 pixels)
-+// and are scaled with the window.
++// All sizes are measured on the window of the Steam version at 1920x1080 and grow with the screen
++// height like in the Steam version (see motd_layout.h).
 +void PresentMotdWindow( ChromeInstance* inst )
 +{
 +	if( !inst )
@@ -1292,65 +1341,49 @@ index 0000000..42f22d7
 +
 +	inst->set_viewport( ChromeRect{ 0, 0, bw, bh } );
 +
-+	// layout (in pixels of the unscaled window)
-+	const int marginL = 108, marginR = 118, marginT = 163;
-+	const int buttonGap = 15, buttonW = 240, buttonH = 37, marginB = 159;
-+	const int slitY = 99, slitH = 2;       // a cut through the panel: the game is seen through it
-+	const int panelW = marginL + bw + marginR;
-+	const int panelH = marginT + bh + buttonGap + buttonH + marginB;
++	// the window of the Steam version, sized in units of 1/480 of the screen height (see motd_layout.h)
++	const MotdWin::Layout L = MotdWin::Compute( ext.w, ext.h );
 +
-+	const float scale = std::min( 1.0f, std::min( ext.w * 0.95f / panelW, ext.h * 0.95f / panelH ));
-+	auto S = [scale]( int v ) { return (int)( v * scale + 0.5f ); };
-+
-+	const int panelX = (int)(( ext.w - panelW * scale ) * 0.5f );
-+	const int panelY = std::max( 0, (int)(( ext.h - panelH * scale ) * 0.5f + ext.h * 0.0216f ));
-+
-+	const int pageX = panelX + S( marginL );
-+	const int pageY = panelY + S( marginT );
-+	const int pageW = S( bw );
-+	const int pageH = S( bh );
-+
-+	const int btnX = pageX;
-+	const int btnY = pageY + pageH + S( buttonGap );
-+	const int btnW = S( buttonW );
-+	const int btnH = S( buttonH );
++	// the browser draws the page pixel for pixel: it gets the size the page has on the screen
++	if( bw != L.pageW || bh != L.pageH )
++		inst->Resize( L.pageW, L.pageH );
 +
 +	MotdLayout lay;
 +	lay.valid = true;
-+	lay.x = (float)pageX;
-+	lay.y = (float)pageY;
-+	lay.w = (float)pageW;
-+	lay.h = (float)pageH;
-+	lay.scale = (float)pageW / bw;
-+	lay.close_x = (float)btnX;
-+	lay.close_y = (float)btnY;
-+	lay.close_w = (float)btnW;
-+	lay.close_h = (float)btnH;
++	lay.x = (float)L.pageX;
++	lay.y = (float)L.pageY;
++	lay.w = (float)L.pageW;
++	lay.h = (float)L.pageH;
++	lay.scale = (float)L.pageW / bw;
++	lay.close_x = (float)L.btnX;
++	lay.close_y = (float)L.btnY;
++	lay.close_w = (float)L.btnW;
++	lay.close_h = (float)L.btnH;
 +	g_motd_input.SetScreen( ext.w, ext.h );
 +	g_motd_input.SetLayout( lay );
 +
-+	// panel: two parts with a cut between them
-+	const int cutH = std::max( 1, S( slitH ));
-+	const int upperH = S( slitY );
-+	const int lowerY = panelY + upperH + cutH;
-+	DrawUtils::FillRoundedRect( panelX, panelY, S( panelW ), upperH, S( 14 ), true, false, 0, 0, 0, 204 );
-+	DrawUtils::FillRoundedRect( panelX, lowerY, S( panelW ), panelY + S( panelH ) - lowerY, S( 14 ), false, true, 0, 0, 0, 204 );
++	// panel: two parts with a cut between them ("ViewportBG" of the scheme: black, alpha 200)
++	const int upperH = L.cutY - L.panelY;
++	const int lowerY = L.cutY + L.cutH;
++	DrawUtils::FillRoundedRect( L.panelX, L.panelY, L.panelW, upperH, L.radius, true, false, 0, 0, 0, 204 );
++	DrawUtils::FillRoundedRect( L.panelX, lowerY, L.panelW, L.panelY + L.panelH - lowerY, L.radius, false, true, 0, 0, 0, 204 );
 +
-+	// title: the name of the server, with the same indent as in the Steam version
++	// the CS icon on the left of the title (a picture of the game, if it has one)
++	DrawMotdIcon( L.iconX, L.iconY, L.iconSize );
++
++	// title: the name of the server
 +	const std::string title = ToUtf8( gHUD.m_szServerName[0] ? gHUD.m_szServerName : "MOTD" );
-+	const int titleX = panelX + S( 110 );
-+	const int titleBase = panelY + S( 41 );
 +
-+	if( UpdateMotdText( g_motd_title, title, std::max( 10, S( 28 )), false, S( panelW - 110 - 40 )))
++	if( UpdateMotdText( g_motd_title, title, "Trebuchet MS", std::max( 8, L.titleEm ), 400, true, L.titleMaxW ))
 +	{
-+		DrawMotdText( g_motd_title, titleX, titleBase, 255, 176, 0 );
++		DrawMotdText( g_motd_title, L.titleX, L.titleBaseline, 255, 176, 0 );
 +	}
 +	else
 +	{
 +		// no Windows fonts: the font of the HUD
-+		const float titleScale = 1.4f * std::max( 0.6f, scale );
-+		const int titleY = panelY + S( 31 ) - (int)( gHUD.GetCharHeight() * titleScale * 0.5f );
-+		DrawUtils::DrawHudString( titleX, titleY, 9999, title.c_str(), 255, 176, 0, titleScale );
++		const float titleScale = 1.4f * std::max( 0.6f, L.u / 1.875f );
++		const int titleY = L.titleBaseline - (int)( gHUD.GetCharHeight() * titleScale );
++		DrawUtils::DrawHudString( L.titleX, titleY, 9999, title.c_str(), 255, 176, 0, titleScale );
 +	}
 +
 +	// the page
@@ -1358,29 +1391,30 @@ index 0000000..42f22d7
 +	gRenderAPI.GL_Bind( 0, tex );
 +	gEngfuncs.pTriAPI->RenderMode( kRenderTransAlpha );
 +	gEngfuncs.pTriAPI->Color4f( 1.0f, 1.0f, 1.0f, 1.0f );
-+	DrawUtils::Draw2DQuad( (float)pageX, (float)pageY, (float)( pageX + pageW ), (float)( pageY + pageH ));
++	DrawUtils::Draw2DQuad( (float)L.pageX, (float)L.pageY, (float)( L.pageX + L.pageW ), (float)( L.pageY + L.pageH ));
 +
 +	// OK button
 +	const bool hover = g_motd_input.cursor_over_close();
-+	FillRGBABlend( btnX, btnY, btnW, btnH, 0, 0, 0, hover ? 230 : 200 );
++	FillRGBABlend( L.btnX, L.btnY, L.btnW, L.btnH, 0, 0, 0, hover ? 230 : 200 );
 +	if( hover )
-+		FillFrame( btnX, btnY, btnW, btnH, 214, 147, 0, 255 );
++		FillFrame( L.btnX, L.btnY, L.btnW, L.btnH, 214, 147, 0, 255 );
 +	else
-+		FillFrame( btnX, btnY, btnW, btnH, 84, 58, 0, 255 );
++		FillFrame( L.btnX, L.btnY, L.btnW, L.btnH, 84, 58, 0, 255 );
 +
-+	const int okHeight = std::max( 8, S( 13 ));
++	// "OK" in the font "Default" of resource/ClientScheme.res (Verdana, weight 600, its size depends on the screen)
++	const SpecBar::Font okFont = SpecBar::FontFor( ext.h );
++	const int okEm = SpecBar::FontEm( okFont.tall );
 +
-+	if( UpdateMotdText( g_motd_ok, "OK", okHeight, true, 0 ))
++	if( UpdateMotdText( g_motd_ok, "OK", "Verdana", okEm, 600, okFont.antialias, 0 ))
 +	{
-+		const int cap = (int)( okHeight * 0.72f + 0.5f );
-+		DrawMotdText( g_motd_ok, btnX + ( btnW - g_motd_ok.w ) / 2, btnY + ( btnH + cap ) / 2, 255, 176, 0 );
++		DrawMotdText( g_motd_ok, L.okCenterX - g_motd_ok.w / 2, L.okBaseline, 255, 176, 0 );
 +	}
 +	else
 +	{
-+		const float okScale = 0.85f * std::max( 0.6f, scale );
++		const float okScale = 0.85f * std::max( 0.6f, L.u / 1.875f );
 +		const int fbW = (int)( DrawUtils::HudStringLen( "OK" ) * okScale );
-+		const int fbY = btnY + ( btnH - (int)( gHUD.GetCharHeight() * okScale )) / 2;
-+		DrawUtils::DrawHudString( btnX + ( btnW - fbW ) / 2, fbY, 9999, "OK", 255, 176, 0, okScale );
++		const int fbY = L.btnY + ( L.btnH - (int)( gHUD.GetCharHeight() * okScale )) / 2;
++		DrawUtils::DrawHudString( L.okCenterX - fbW / 2, fbY, 9999, "OK", 255, 176, 0, okScale );
 +	}
 +
 +	DrawMotdCursor( (int)g_motd_input.cursor_x(), (int)g_motd_input.cursor_y() );
@@ -1645,8 +1679,10 @@ index 0000000..42f22d7
 +	{
 +		HideMotd();
 +
-+		// the page gets the size of the page of the Steam version, not the whole screen
-+		const int id = Chrome::Create( url, 900, 450, nullptr, nullptr );
++		// the page gets the size of the page of the Steam version (480 x 240 units, 1080 x 540 at 1080)
++		const RenderExtents ext0 = VisibleRenderExtents();
++		const MotdWin::Layout L0 = MotdWin::Compute( ext0.w > 1 ? ext0.w : 1920, ext0.h > 1 ? ext0.h : 1080 );
++		const int id = Chrome::Create( url, L0.pageW, L0.pageH, nullptr, nullptr );
 +		if( id < 0 )
 +			return false;
 +
@@ -3444,6 +3480,103 @@ index 0000000..e5e0e81
 +};
 +} // namespace CEF
 +} // namespace iHTMLChrome
+diff --git a/cl_dll/chrome/motd_layout.h b/cl_dll/chrome/motd_layout.h
+new file mode 100644
+index 0000000..a761746
+--- /dev/null
++++ b/cl_dll/chrome/motd_layout.h
+@@ -0,0 +1,91 @@
++#pragma once
++
++// The window of the server MOTD as in the Steam version of CS 1.6, measured on its screenshot at 1920x1080.
++// Like the other VGUI2 panels of the Steam version it is sized in units of 1/480 of the screen height
++// (2.25 pixels at 1080) and grows with the resolution:
++//
++//   panel 1345 x 985 at (285, 45), rounded with the radius 20, a cut of 2 pixels at 117 from its top
++//   the CS icon (gfx/vgui/CS_logo.tga, 64 x 64) as a square of 85 at (13, 13), the name of the server (cap height 22) from x 126, its baseline at 70
++//   the page 1080 x 540 at (126, 216)
++//   the OK button 288 x 45 at (126, 774), "OK" in the font of the scheme, its baseline at 28 of the button
++//
++// No dependencies on the engine, so it can be tested alone.
++
++namespace MotdWin {
++
++struct Layout
++{
++	float u = 1.0f;                    // pixels per unit
++	int panelX = 0, panelY = 0, panelW = 0, panelH = 0;
++	int radius = 0;
++	int cutY = 0, cutH = 1;            // the cut: cutY .. cutY + cutH (absolute)
++	int iconX = 0, iconY = 0, iconSize = 0;
++	int titleX = 0, titleBaseline = 0, titleEm = 0, titleMaxW = 0;
++	int pageX = 0, pageY = 0, pageW = 0, pageH = 0;
++	int btnX = 0, btnY = 0, btnW = 0, btnH = 0;
++	int okCenterX = 0, okBaseline = 0; // "OK": its middle and its baseline
++};
++
++// The size of the page (the browser draws it pixel for pixel): 480 x 240 units
++inline void PageSize( int screenH, int& w, int& h )
++{
++	const float u = screenH / 480.0f;
++	w = int( 480.0f * u + 0.5f );
++	h = int( 240.0f * u + 0.5f );
++}
++
++inline Layout Compute( int screenW, int screenH )
++{
++	Layout l;
++
++	// on a screen narrower than 4:3 x 1.25 the window is made smaller to fit
++	float u = screenH / 480.0f;
++	if( 600.0f * u > screenW )
++		u = screenW / 600.0f;
++	l.u = u;
++
++	auto U = [u]( float v ) { return int( v * u + 0.5f ); };
++
++	// the frame of VGUI2 is 600 x 440 units in the middle of the screen; its background ends
++	// 2.2 units before its right and bottom edges
++	l.panelX = int( screenW * 0.5f - 300.0f * u );
++	l.panelY = int( screenH * 0.5f - 220.0f * u );
++	if( l.panelX < 0 ) l.panelX = 0;
++	if( l.panelY < 0 ) l.panelY = 0;
++	l.panelW = U( 597.8f );
++	l.panelH = U( 437.8f );
++	l.radius = U( 9.0f );
++
++	l.cutY = l.panelY + U( 52.0f );
++	l.cutH = int( u ) > 0 ? int( u ) : 1;
++
++	// the figure of CS_logo.tga is 12..53 x 4..57 of 64: seen at 314..368 x 63..135
++	l.iconX = l.panelX + U( 5.8f );
++	l.iconY = l.panelY + U( 5.8f );
++	l.iconSize = U( 37.9f );
++
++	l.titleX = l.panelX + U( 56.0f );
++	l.titleBaseline = l.panelY + U( 31.1f );
++	l.titleEm = U( 13.8f );
++	l.titleMaxW = l.panelW - U( 56.0f ) - U( 20.0f );
++
++	l.pageX = l.panelX + U( 56.0f );
++	l.pageY = l.panelY + U( 96.0f );
++	PageSize( screenH, l.pageW, l.pageH );
++	if( u < screenH / 480.0f )
++	{
++		l.pageW = U( 480.0f );
++		l.pageH = U( 240.0f );
++	}
++
++	l.btnX = l.pageX;
++	l.btnY = l.panelY + U( 344.0f );
++	l.btnW = U( 128.0f );
++	l.btnH = U( 20.0f );
++
++	l.okCenterX = l.btnX + U( 66.7f );   // a little right of the middle, as in the Steam version
++	l.okBaseline = l.btnY + U( 12.4f );
++	return l;
++}
++
++} // namespace MotdWin
 diff --git a/cl_dll/draw_util.cpp b/cl_dll/draw_util.cpp
 index c585f3c..625ccf3 100644
 --- a/cl_dll/draw_util.cpp
@@ -4102,10 +4235,10 @@ index 0000000..0c32b91
 +#endif
 diff --git a/cl_dll/hud/MOTD_text_gdi.cpp b/cl_dll/hud/MOTD_text_gdi.cpp
 new file mode 100644
-index 0000000..668a375
+index 0000000..026a43d
 --- /dev/null
 +++ b/cl_dll/hud/MOTD_text_gdi.cpp
-@@ -0,0 +1,160 @@
+@@ -0,0 +1,190 @@
 +//
 +// MOTD_text_gdi.cpp
 +//
@@ -4127,6 +4260,11 @@ index 0000000..668a375
 +bool MOTD_RenderText( const char *utf8, int pixelHeight, bool bold, int maxWidth,
 +					  std::vector<unsigned char> &alpha, int &width, int &height, int &ascent );
 +
++// The same with the font given: face (tried first, then the usual list), weight (400 normal, 700 bold) and
++// antialiasing
++bool MOTD_RenderTextFont( const char *utf8, const char *face, int pixelHeight, int weight, bool antialias, int maxWidth,
++						  std::vector<unsigned char> &alpha, int &width, int &height, int &ascent );
++
 +#if defined( _WIN32 )
 +
 +#define WIN32_LEAN_AND_MEAN
@@ -4136,15 +4274,25 @@ index 0000000..668a375
 +#include <windows.h>
 +#include <wchar.h>
 +
-+// a font the system really has is searched in this order
-+static HFONT CreateUiFont( HDC dc, int pixelHeight, bool bold )
++// a font the system really has is searched in this order (the wanted one first)
++static HFONT CreateUiFont( HDC dc, int pixelHeight, int weight, bool antialias, const wchar_t *wanted )
 +{
-+	static const wchar_t *faces[] = { L"Trebuchet MS", L"Tahoma", L"Segoe UI", L"Verdana", L"Arial" };
++	static const wchar_t *defaults[] = { L"Trebuchet MS", L"Tahoma", L"Segoe UI", L"Verdana", L"Arial" };
++	const wchar_t *faces[6];
++	int count = 0;
 +
-+	for( const wchar_t *face : faces )
++	if( wanted && wanted[0] )
++		faces[count++] = wanted;
++	for( const wchar_t *f : defaults )
++		faces[count++] = f;
++
++	const DWORD quality = antialias ? ANTIALIASED_QUALITY : NONANTIALIASED_QUALITY;
++
++	for( int i = 0; i < count; ++i )
 +	{
-+		HFONT font = CreateFontW( -pixelHeight, 0, 0, 0, bold ? FW_BOLD : FW_NORMAL, FALSE, FALSE, FALSE,
-+			DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_SWISS, face );
++		const wchar_t *face = faces[i];
++		HFONT font = CreateFontW( -pixelHeight, 0, 0, 0, weight, FALSE, FALSE, FALSE,
++			DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, quality, DEFAULT_PITCH | FF_SWISS, face );
 +
 +		if( !font )
 +			continue;
@@ -4161,12 +4309,18 @@ index 0000000..668a375
 +	}
 +
 +	// none of them: whatever the system has
-+	return CreateFontW( -pixelHeight, 0, 0, 0, bold ? FW_BOLD : FW_NORMAL, FALSE, FALSE, FALSE,
-+		DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Arial" );
++	return CreateFontW( -pixelHeight, 0, 0, 0, weight, FALSE, FALSE, FALSE,
++		DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, quality, DEFAULT_PITCH | FF_SWISS, L"Arial" );
 +}
 +
 +bool MOTD_RenderText( const char *utf8, int pixelHeight, bool bold, int maxWidth,
 +					  std::vector<unsigned char> &alpha, int &width, int &height, int &ascent )
++{
++	return MOTD_RenderTextFont( utf8, nullptr, pixelHeight, bold ? FW_BOLD : FW_NORMAL, true, maxWidth, alpha, width, height, ascent );
++}
++
++bool MOTD_RenderTextFont( const char *utf8, const char *faceUtf8, int pixelHeight, int weight, bool antialias, int maxWidth,
++						  std::vector<unsigned char> &alpha, int &width, int &height, int &ascent )
 +{
 +	if( !utf8 || !utf8[0] || pixelHeight < 4 )
 +		return false;
@@ -4188,7 +4342,11 @@ index 0000000..668a375
 +		return false;
 +
 +	bool ok = false;
-+	HFONT font = CreateUiFont( dc, pixelHeight, bold );
++	wchar_t face[LF_FACESIZE] = {};
++	if( faceUtf8 && faceUtf8[0] )
++		MultiByteToWideChar( CP_UTF8, 0, faceUtf8, -1, face, LF_FACESIZE - 1 );
++
++	HFONT font = CreateUiFont( dc, pixelHeight, weight, antialias, face );
 +	HGDIOBJ oldFont = font ? SelectObject( dc, font ) : nullptr;
 +
 +	TEXTMETRICW tm = {};
@@ -4261,6 +4419,11 @@ index 0000000..668a375
 +#else // not implemented on other platforms: the font of the HUD is used there
 +
 +bool MOTD_RenderText( const char *, int, bool, int, std::vector<unsigned char> &, int &, int &, int & )
++{
++	return false;
++}
++
++bool MOTD_RenderTextFont( const char *, const char *, int, int, bool, int, std::vector<unsigned char> &, int &, int &, int & )
 +{
 +	return false;
 +}
@@ -4865,7 +5028,7 @@ index 991ebdd..3cc6e8a 100644
  
 diff --git a/cl_dll/hud/spectator_layout.h b/cl_dll/hud/spectator_layout.h
 new file mode 100644
-index 0000000..84c825d
+index 0000000..d2f3d2b
 --- /dev/null
 +++ b/cl_dll/hud/spectator_layout.h
 @@ -0,0 +1,90 @@
@@ -4954,7 +5117,7 @@ index 0000000..84c825d
 +	l.timerIconX = fromRight( 56.0f );      // the picture of the icon is seen at 1798..1814 x 59..81
 +	l.timerIconY = int( 25.3f * u + 0.5f );
 +	l.timerIconSize = int( 12.4f * u + 0.5f );
-+	l.timerTextX = fromRight( 41.6f );      // 1826
++	l.timerTextX = fromRight( 42.1f );      // 1825: "0:09" is seen from 1827 (2 pixels of bearing)
 +	return l;
 +}
 +
