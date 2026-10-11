@@ -3578,7 +3578,7 @@ index 0000000..9fa8ab7
 +
 +} // namespace MotdWin
 diff --git a/cl_dll/draw_util.cpp b/cl_dll/draw_util.cpp
-index c585f3c..625ccf3 100644
+index dcd392f..6057c89 100644
 --- a/cl_dll/draw_util.cpp
 +++ b/cl_dll/draw_util.cpp
 @@ -33,6 +33,7 @@ version.
@@ -3589,7 +3589,7 @@ index c585f3c..625ccf3 100644
  #include "utflib.h"
  #include "utlvector.h"
  
-@@ -368,6 +369,111 @@ int DrawUtils::DrawHudNumber2( int x, int y, int iNumber, int r, int g, int b )
+@@ -376,6 +377,111 @@ int DrawUtils::DrawHudNumber2( int x, int y, int iNumber, int r, int g, int b )
  	return ResX;
  }
  
@@ -3702,7 +3702,7 @@ index c585f3c..625ccf3 100644
  {
  	// REMOVE WHEN NANOGL BUG WILL BE FIXED
 diff --git a/cl_dll/hud.cpp b/cl_dll/hud.cpp
-index 9ae956c..6e0f1d9 100644
+index 9ae956c..bc4b2ac 100644
 --- a/cl_dll/hud.cpp
 +++ b/cl_dll/hud.cpp
 @@ -363,7 +363,14 @@ void CHud :: Init( void )
@@ -3716,7 +3716,7 @@ index 9ae956c..6e0f1d9 100644
 +	// the client sources this patch was made for and it does not depend on the day of compilation.
 +	// When the patch is moved to another client version change it here and in CLIENT_BUILD of the
 +	// workflow (the workflow checks that both are the same).
-+	static char cscl_ver[] = "3998-CEF";
++	static char cscl_ver[] = "3999-CEF";
 +	CVAR_CREATE( "cscl_ver", cscl_ver, 1<<14 | FCVAR_USERINFO ); // init and userinfo
  
  	m_iLogo = 0;
