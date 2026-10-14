@@ -10,8 +10,8 @@ jobs:
       # The client version these patches are made for. When you move to another client version change BOTH
       # values below and the label "<number>-CEF" in cl_dll/hud.cpp inside the patch (see the README).
       # The check at the end of the build fails if the built client does not have the label "<CLIENT_BUILD>-CEF".
-      CLIENT_BUILD: "3999"
-      CLIENT_REF: 6a49bcc6f5292dec13046b23140c1e555dca8b31
+      CLIENT_BUILD: "4000"
+      CLIENT_REF: 9778fec4c6f956d2b483949feb704fb479c92f7f
       # The CEF version the client is built with. If the CDN does not have exactly this version, the newest
       # stable build of the same major version (147.x) is taken; another major version is never taken.
       # The archive is always checked by its SHA-1 from the index of the CDN.
@@ -29,7 +29,7 @@ jobs:
         with:
           path: mypatch
 
-      - name: Get cs16-client sources (build 3999)
+      - name: Get cs16-client sources (build 4000)
         uses: actions/checkout@v5
         with:
           repository: Velaron/cs16-client
