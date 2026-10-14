@@ -4754,7 +4754,7 @@ index 0000000..53fcfae
 +
 +} // namespace MotdUtil
 diff --git a/cl_dll/hud/scoreboard.cpp b/cl_dll/hud/scoreboard.cpp
-index cdbde46..50b4323 100644
+index cdbde46..558865b 100644
 --- a/cl_dll/hud/scoreboard.cpp
 +++ b/cl_dll/hud/scoreboard.cpp
 @@ -29,6 +29,14 @@
@@ -4781,7 +4781,7 @@ index cdbde46..50b4323 100644
  	xstart = ScreenWidth * 0.125f;
  	xend = ScreenWidth - xstart;
  	ystart = 100;
-@@ -163,6 +173,412 @@ bool CHudScoreboard :: ShouldDrawScoreboard() const
+@@ -163,6 +173,442 @@ bool CHudScoreboard :: ShouldDrawScoreboard() const
  	return false;
  }
  
@@ -4948,9 +4948,11 @@ index cdbde46..50b4323 100644
 +			g_TeamInfo[j].players++;
 +		}
 +
++		// as in the Steam version: the terrorists, the counter-terrorists, other teams (the most frags first),
++		// the spectators at the end
 +		while( sections < SB_MAX_SECTIONS )
 +		{
-+			int best = 0, spectators = 0;
++			int best = 0, spectators = 0, terrorists = 0, cts = 0;
 +			int highest_frags = -99999, lowest_deaths = 99999;
 +
 +			for( int i = 1; i <= m_iNumTeams; i++ )
@@ -4964,6 +4966,11 @@ index cdbde46..50b4323 100644
 +					continue;
 +				}
 +
++				if( g_TeamInfo[i].teamnumber == TEAM_TERRORIST && !terrorists )
++					terrorists = i;
++				else if( g_TeamInfo[i].teamnumber == TEAM_CT && !cts )
++					cts = i;
++
 +				if( g_TeamInfo[i].frags > highest_frags
 +					|| ( g_TeamInfo[i].frags == highest_frags && g_TeamInfo[i].deaths < lowest_deaths ))
 +				{
@@ -4972,6 +4979,11 @@ index cdbde46..50b4323 100644
 +					lowest_deaths = g_TeamInfo[i].deaths;
 +				}
 +			}
++
++			if( terrorists )
++				best = terrorists;
++			else if( cts )
++				best = cts;
 +
 +			if( !best )
 +				best = spectators;
@@ -4994,6 +5006,15 @@ index cdbde46..50b4323 100644
 +	const int capHeight = (int)( paint.em * 0.727f / scale + 0.5f );
 +	SbLayout::Fit( l, ScreenHeight, sections, players, capHeight );
 +
++	// what the local player may see: a spectator has no columns of HP and Money; the bomb is shown to the
++	// terrorists, the defuse kits to the counter-terrorists (and both to the spectators)
++	const int localTeam = ( m_iPlayerNum > 0 && m_iPlayerNum <= MAX_PLAYERS ) ? g_PlayerExtraInfo[m_iPlayerNum].teamnumber : TEAM_UNASSIGNED;
++	const bool localSpectator = localTeam != TEAM_TERRORIST && localTeam != TEAM_CT && gHUD.m_Teamplay;
++	const bool moneyColumns = !localSpectator;
++	const bool seeBomb = localTeam != TEAM_CT;
++	const bool seeKits = localTeam != TEAM_TERRORIST;
++	const int statusX = moneyColumns ? l.statusX : l.statusXNoMoney;
++
 +	// the window: "ListBG", the left column and the top row of it are half covered
 +	DrawUtils::FillRoundedRect( l.bgX, l.bgY, l.bgW, l.bgH, l.radius, true, true, 0, 0, 0, 128 );
 +	FillRGBABlend( l.panelX, l.bgY + l.radius, 1, l.bgH - l.radius * 2, 0, 0, 0, 64 );
@@ -5012,7 +5033,10 @@ index cdbde46..50b4323 100644
 +	};
 +
 +	for( int i = 0; i < SbLayout::NUM_COLUMNS; ++i )
-+		paint.Text( g_sbHead[i], TextUtf::ToUtf8( heads[i] ), l.colRight[i], l.headCapTop, headR, headG, headB, true );
++	{
++		const bool hidden = !moneyColumns && ( i == SbLayout::COL_HP || i == SbLayout::COL_MONEY );
++		paint.Text( g_sbHead[i], hidden ? "" : TextUtf::ToUtf8( heads[i] ), l.colRight[i], l.headCapTop, headR, headG, headB, true );
++	}
 +
 +	// the line under the headers: "BorderDark"
 +	FillRGBABlend( l.lineX, l.headLineY, l.lineW, 1, 188, 112, 0, 128 );
@@ -5068,8 +5092,9 @@ index cdbde46..50b4323 100644
 +			const int capTop = y + l.rowCapTop;
 +
 +			paint.Text( tex[PT_NAME], TextUtf::ToUtf8( pl_info->name ), l.nameX, capTop, r, g, b, false,
-+						l.attribRight - l.nameX - (int)( 45 * l.u ));
++						statusX - l.nameX - (int)( 4 * l.u ));
 +
++			// the status, left aligned (the old keys of the strings of the game, "D. Kit" as in the Steam version)
 +			const char *attrib = "";
 +
 +			if( cl_showplayerversion->value != 0.0f )
@@ -5077,23 +5102,25 @@ index cdbde46..50b4323 100644
 +			else if( !spectators && team )
 +			{
 +				if( extra->dead )
-+					attrib = Localize( "#Cstrike_DEAD" );
-+				else if( extra->has_c4 )
-+					attrib = Localize( "#Cstrike_BOMB" );
++					attrib = LocalizeOrDefault( "#Cstrike_DEAD", "Dead" );
++				else if( extra->has_c4 && seeBomb )
++					attrib = LocalizeOrDefault( "#Cstrike_BOMB", "Bomb" );
 +				else if( extra->vip )
-+					attrib = Localize( "#Cstrike_VIP" );
-+				else if( extra->has_defuse_kit )
-+					attrib = Localize( "#Cstrike_DEFUSE_KIT" );
++					attrib = LocalizeOrDefault( "#Cstrike_VIP", "VIP" );
++				else if( extra->has_defuse_kit && seeKits )
++					attrib = LocalizeOrDefault( "#Cstrike_DEFUSE_KIT", "D. Kit" );
 +			}
 +
-+			paint.Text( tex[PT_ATTRIB], TextUtf::ToUtf8( attrib ? attrib : "" ), l.attribRight, capTop, r, g, b, true );
++			paint.Text( tex[PT_ATTRIB], TextUtf::ToUtf8( attrib ? attrib : "" ), statusX, capTop, r, g, b, false,
++						l.colRight[SbLayout::COL_SCORE] - statusX );
 +
++			// HP and Money: not for the spectators (neither in their rows nor in their table)
 +			std::string hp, money;
 +
-+			if( extra->sb_health >= 0 && !extra->dead && gHUD.m_pShowHealth->value )
++			if( moneyColumns && !spectators && extra->sb_health >= 0 && !extra->dead && gHUD.m_pShowHealth->value )
 +				hp = NumberText( extra->sb_health );
 +
-+			if( extra->sb_account >= 0 && gHUD.m_pShowMoney->value )
++			if( moneyColumns && !spectators && extra->sb_account >= 0 && gHUD.m_pShowMoney->value )
 +				money = "$" + NumberText( extra->sb_account );
 +
 +			paint.Text( tex[PT_HP], hp, l.colRight[SbLayout::COL_HP], capTop, r, g, b, true );
@@ -5176,17 +5203,20 @@ index cdbde46..50b4323 100644
 +		paint.Text( tex[TT_NAME], TextUtf::ToUtf8( teamName ), l.nameX, capTop, r, g, b, false,
 +					l.colRight[SbLayout::COL_HP] - l.nameX );
 +		paint.Text( tex[TT_SCORE], isSpectators ? "" : NumberText( team_info->frags ), l.colRight[SbLayout::COL_SCORE], capTop, r, g, b, true );
-+		paint.Text( tex[TT_PING], NumberText( team_info->sumping / team_info->players ), l.colRight[SbLayout::COL_PING], capTop, r, g, b, true );
++		// the average ping of a team only if it is above 0 (as in the Steam version), none for the spectators
++		const int avgPing = team_info->players > 0 ? team_info->sumping / team_info->players : 0;
++		paint.Text( tex[TT_PING], ( isSpectators || avgPing <= 0 ) ? "" : NumberText( avgPing ), l.colRight[SbLayout::COL_PING], capTop, r, g, b, true );
 +
 +		// the line of the team: its colour, 1 pixel
 +		FillRGBABlend( l.lineX, sectionTop + l.teamLineY, l.lineW, 1, r, g, b, 255 );
 +
-+		sectionTop = drawPlayers( team_info->name, isSpectators, sectionTop + l.teamRows );
++		// the next team starts 2 pixels higher than the end of the rows (its capitals 15 pixels below them)
++		sectionTop = drawPlayers( team_info->name, isSpectators, sectionTop + l.teamRows ) - 2;
 +	}
 +
 +	// the players who are not in a team
 +	if( !full )
-+		drawPlayers( NULL, false, sections > 0 ? sectionTop : sectionTop + l.teamRows );
++		drawPlayers( NULL, false, sections > 0 ? sectionTop + 2 : sectionTop + l.teamRows );
 +
 +	return true;
 +}
@@ -5194,7 +5224,7 @@ index cdbde46..50b4323 100644
  // Y positions
  #define ROW_GAP  15
  
-@@ -190,6 +606,10 @@ int CHudScoreboard :: Draw( float flTime )
+@@ -190,6 +636,10 @@ int CHudScoreboard :: Draw( float flTime )
  int CHudScoreboard :: DrawScoreboard( float fTime )
  {
  	GetAllPlayersInfo();
@@ -5205,7 +5235,7 @@ index cdbde46..50b4323 100644
  	char ServerName[90];
  
  //	Packetloss removed on Kelly 'shipping nazi' Bailey's orders
-@@ -212,10 +632,10 @@ int CHudScoreboard :: DrawScoreboard( float fTime )
+@@ -212,10 +662,10 @@ int CHudScoreboard :: DrawScoreboard( float fTime )
  	g_Columns[COL_KILLS] = Column( g_Columns[COL_DEATHS].end - 10, Localize( "#PlayerScore" ) );
  	g_Columns[COL_KILLS].end = min( g_Columns[COL_KILLS].end, g_Columns[COL_KILLS].start - DrawUtils::HudStringLen( "9999" ) );
  
@@ -5218,7 +5248,7 @@ index cdbde46..50b4323 100644
  	g_Columns[COL_HP].end = min( g_Columns[COL_HP].end, g_Columns[COL_HP].start - DrawUtils::HudStringLen( "999999" ) );
  
  	g_Columns[COL_ATTRIB] = Column( g_Columns[COL_HP].end - 10 );
-@@ -226,7 +646,13 @@ int CHudScoreboard :: DrawScoreboard( float fTime )
+@@ -226,7 +676,13 @@ int CHudScoreboard :: DrawScoreboard( float fTime )
  
  	// print the heading line
  
@@ -5235,10 +5265,10 @@ index cdbde46..50b4323 100644
  	int ypos = ystart + (list_slot * ROW_GAP) + 5;
 diff --git a/cl_dll/hud/scoreboard_layout.h b/cl_dll/hud/scoreboard_layout.h
 new file mode 100644
-index 0000000..861a1b3
+index 0000000..19bb2e6
 --- /dev/null
 +++ b/cl_dll/hud/scoreboard_layout.h
-@@ -0,0 +1,193 @@
+@@ -0,0 +1,211 @@
 +//
 +// scoreboard_layout.h
 +//
@@ -5257,6 +5287,10 @@ index 0000000..861a1b3
 +//   the players: rows of 47 pixels from 220, capitals 18 pixels below the top of a row, the row of the local
 +//   player is lit (white, 10 %) at 380..1539
 +//   the right edges of the columns: HP 1073, Money 1201, Score 1302, Deaths 1405, Latency 1517
++//   the status ("Dead", "Bomb", "D. Kit", "VIP") is left aligned: at 855, or at 1074 if there are no columns of
++//   HP and Money (a spectator doesn't have them)
++//   many players (31, at 1080): rows of 24 pixels instead of 47, the window grows to fit them and stays in the
++//   middle of the screen (117..963 for 2 teams); the next team: its capitals 15 pixels below the last row
 +//
 +// No dependencies on the engine, so it can be tested alone.
 +//
@@ -5290,7 +5324,8 @@ index 0000000..861a1b3
 +
 +	int nameX = 0;                        // the names of the teams and the players
 +	int colRight[NUM_COLUMNS] = {};       // right edges of the columns
-+	int attribRight = 0;                  // "Dead", "Bomb", "VIP": right aligned before the HP
++	int statusX = 0;                      // "Dead", "Bomb", "D. Kit", "VIP": left aligned before the HP
++	int statusXNoMoney = 0;               // the same if there are no columns of HP and Money
 +
 +	int litX = 0, litW = 0;               // the light of the row of the local player
 +
@@ -5345,7 +5380,8 @@ index 0000000..861a1b3
 +	for( int i = 0; i < NUM_COLUMNS; ++i )
 +		l.colRight[i] = l.panelX + U( colRight[i] );
 +
-+	l.attribRight = l.panelX + U( 255.0f );
++	l.statusX = l.panelX + U( 213.3f );
++	l.statusXNoMoney = l.panelX + U( 310.7f );
 +
 +	l.litX = l.panelX + U( 2.22f );
 +	l.litW = l.panelX + U( 517.8f ) - l.litX;
@@ -5361,11 +5397,18 @@ index 0000000..861a1b3
 +	return l;
 +}
 +
-+// Makes room for all the players: sections - the teams with a header (0 if the players are listed without
-+// teams), players - all the rows, capHeight - the height of the capitals of the font (pixels of the layout).
-+// Like the Steam version the window grows downwards and upwards (it stays in the middle of the screen) up to
-+// almost the whole height of the screen; if that is not enough, the rows are made lower, down to the height
-+// of the text. The text stays in the middle of its row.
++// The low rows of the Steam version for many players (24 pixels at 1080)
++inline int SmallRowHeight( float u )
++{
++	return int( 10.67f * u + 0.5f );
++}
++
++// The height of the rows and the window for all the players: sections - the teams with a header (0 if the
++// players are listed without teams), players - all the rows, capHeight - the height of the capitals of the font
++// (pixels of the layout). Like the Steam version: the rows are high (47 pixels at 1080) if all of them fit,
++// else low (24); the window grows to fit them up to almost the whole height of the screen and stays in the
++// middle of it. If even the low rows don't fit, they are made lower, down to the height of the text.
++// The text stays in the middle of its row.
 +inline void Fit( Layout &l, int screenH, int sections, int players, int capHeight )
 +{
 +	const float u = l.u;
@@ -5376,27 +5419,32 @@ index 0000000..861a1b3
 +	if( sections < 0 )
 +		sections = 0;
 +
-+	// the parts that don't depend on the rows: the headers, the headers of the teams, the space at the bottom
++	// the parts that don't depend on the rows: the headers, the headers of the teams (the next team starts
++	// 2 pixels higher than the end of the rows above it), the space at the bottom
 +	const int top = l.headLineY - l.panelY;
-+	const int fixed = top + ( sections > 0 ? sections : 1 ) * l.teamRows + U( 4.0f );
++	const int headers = sections > 0 ? sections * l.teamRows - ( sections - 1 ) * 2 : l.teamRows;
++	const int fixed = top + headers + U( 3.0f );
 +
 +	// the highest window: 10 units from the top and the bottom of the screen
 +	const int maxH = screenH - U( 10.0f ) * 2;
 +
 +	int rowH = l.rowH;
-+	int panelH = fixed + players * rowH;
 +
-+	if( panelH > maxH )
++	if( fixed + players * rowH > maxH )
 +	{
-+		// the window can't grow more: lower rows, but not lower than the text with a little space
-+		const int minRow = capHeight * 2 > 4 ? capHeight * 2 : 4;
-+		rowH = ( maxH - fixed ) / players;
-+		if( rowH < minRow )
-+			rowH = minRow;
-+		if( rowH > l.rowH )
-+			rowH = l.rowH;
-+		panelH = fixed + players * rowH;
++		rowH = SmallRowHeight( u );
++
++		if( fixed + players * rowH > maxH )
++		{
++			// even the low rows don't fit: lower, but not lower than the text with a little space
++			const int minRow = capHeight * 2 > 4 ? capHeight * 2 : 4;
++			rowH = ( maxH - fixed ) / players;
++			if( rowH < minRow )
++				rowH = minRow;
++		}
 +	}
++
++	int panelH = fixed + players * rowH;
 +
 +	if( panelH < l.panelH )
 +		panelH = l.panelH;  // never smaller than in ScoreBoard.res
@@ -5420,9 +5468,9 @@ index 0000000..861a1b3
 +
 +	l.panelH = panelH;
 +	l.bgH = panelH - 2;
-+	l.bottom = l.bgY + l.bgH - U( 2.0f );
++	l.bottom = l.bgY + l.bgH - U( 1.0f );
 +
-+	// the text in the middle of the row (as in the Steam version: 18 pixels in a row of 47 at 1080)
++	// the text in the middle of the row (as in the Steam version: 18 pixels in a row of 47 at 1080, 7 in 24)
 +	if( rowH != l.rowH )
 +	{
 +		const int capTop = ( rowH - capHeight + 1 ) / 2;
