@@ -7538,10 +7538,10 @@ index 0000000..9f67fd6
 +if __name__ == "__main__":
 +	sys.exit(main())
 diff --git a/3rdparty/mainui_cpp/menus/client/ClientWindow.cpp b/3rdparty/mainui_cpp/menus/client/ClientWindow.cpp
-index 7d67022..1944a12 100644
+index 7d67022..50a875d 100644
 --- a/3rdparty/mainui_cpp/menus/client/ClientWindow.cpp
 +++ b/3rdparty/mainui_cpp/menus/client/ClientWindow.cpp
-@@ -16,38 +16,187 @@ GNU General Public License for more details.
+@@ -16,47 +16,218 @@ GNU General Public License for more details.
  
  #include "BaseMenu.h"
  #include "ClientWindow.h"
@@ -7570,8 +7570,9 @@ index 7d67022..1944a12 100644
 +	m_scPos = Point( m_frame.panelX, m_frame.panelY );
 +	m_scSize = Size( m_frame.panelW, m_frame.panelH );
 +
-+	// the title: Trebuchet MS (its cell is 1.161 of its letters)
-+	m_hTitleFont = CreateSteamFont( "Trebuchet MS", m_frame.titleEm, 1.161f, 400 );
++	// the title: Trebuchet MS; the size is fitted to the screenshot of the Steam version (capitals 93..114 and
++	// 183 pixels for "SELECT TEAM" at 1080)
++	m_hTitleFont = CreateSteamFont( "Trebuchet MS", m_frame.titleEm, 1.29f, 400 );
 +
 +	// "Default": Verdana 600 (its cell is 1.215 of its letters, its capitals 0.727)
 +	m_hTextFont = CreateSteamFont( "Verdana", m_frame.textEm, 1.215f, 600 );
@@ -7584,9 +7585,8 @@ index 7d67022..1944a12 100644
 +		m_steamButtons[i]->textFont = m_hTextFont;
 +		m_steamButtons[i]->capHeight = m_iCapHeight;
 +	}
- }
- 
--void CClientWindow::Draw()
++}
++
 +void CClientWindow::SetButtonShown( CMenuAction *button, int key, bool shown )
 +{
 +	if( !button || key <= 0 || key >= 256 )
@@ -7641,18 +7641,12 @@ index 7d67022..1944a12 100644
 +}
 +
 +HFont CClientWindow::CreateSteamFont( const char *name, int em, float cellPerEm, int weight )
- {
--	UI_DrawPic( m_scPos, roundCornerSize, uiColorBlack, "gfx/vgui/round_corner_nw.tga", QM_DRAWTRANS );
--	UI_DrawPic( m_scPos + Size( m_scSize.w - roundCornerSize.w, 0 ), roundCornerSize, uiColorBlack, "gfx/vgui/round_corner_ne.tga", QM_DRAWTRANS );
--	UI_DrawPic( m_scPos + Size( 0, m_scSize.h - roundCornerSize.h ), roundCornerSize, uiColorBlack, "gfx/vgui/round_corner_sw.tga", QM_DRAWTRANS );
--	UI_DrawPic( m_scPos + ( m_scSize - roundCornerSize ), roundCornerSize, uiColorBlack, "gfx/vgui/round_corner_se.tga", QM_DRAWTRANS );
++{
 +	// the fonts of Windows get "tall + 6" as the height of their cell
 +	int cell = (int)( em * cellPerEm + 0.5f );
 +	if( cell < 8 )
 +		cell = 8;
- 
--	UI_FillRect( m_scPos + Size( roundCornerSize.w, 0 ), Size( m_scSize.w - roundCornerSize.w * 2, roundCornerSize.h ), uiColorBlack );
--	UI_FillRect( m_scPos + Size( 0, roundCornerSize.h ), Size( m_scSize.w, iTitleHeight - roundCornerSize.h ), uiColorBlack );
++
 +	HFont font = CFontBuilder( name, cell - 6, weight ).Create();
 +	if( font <= 0 || g_FontMgr->GetFontTall( font ) <= 0 )
 +		return 0;
@@ -7663,9 +7657,7 @@ index 7d67022..1944a12 100644
 +{
 +	if( !text || !text[0] || font <= 0 )
 +		return;
- 
--	UI_FillRect( m_scPos + Size( 0, iTitleHeight + iGap ), Size( m_scSize.w, m_scSize.h - roundCornerSize.h - iTitleHeight - iGap ), uiColorBlack );
--	UI_FillRect( m_scPos + Size( roundCornerSize.w, m_scSize.h - roundCornerSize.h ), Size( m_scSize.w - roundCornerSize.w * 2, roundCornerSize.h ), uiColorBlack );
++
 +	const int tall = g_FontMgr->GetFontTall( font );
 +	const int ascent = g_FontMgr->GetFontAscent( font );
 +	const int y = capTop - ( ascent - capHeight );
@@ -7677,14 +7669,11 @@ index 7d67022..1944a12 100644
 +{
 +	if( w <= 0 || h <= 0 )
 +		return;
- 
--	UI_DrawPic( m_scPos + roundCornerSize, roundCornerSize * 4, PackAlpha( uiPromptTextColor, 255 ), "gfx/vgui/CS_logo.tga", QM_DRAWTRANS );
++
 +	if( radius > w / 2 ) radius = w / 2;
 +	if( radius > h / 2 ) radius = h / 2;
 +	if( radius < 0 ) radius = 0;
- 
--	UI_DrawString( font, m_scPos + Size( roundCornerSize.w * 6, roundCornerSize.h ), Size( m_scSize.w - roundCornerSize.w * 6, roundCornerSize.h * 4 ),
--	               szName, PackAlpha( uiPromptTextColor, 255 ), m_scChSize, QM_LEFT, ETF_NOSIZELIMIT );
++
 +	const int rt = roundTop ? radius : 0;
 +	const int rb = roundBottom ? radius : 0;
 +
@@ -7717,27 +7706,41 @@ index 7d67022..1944a12 100644
 +		if( w > 1 )
 +			UI_FillRect( x + w - 1, y + 1, 1, h - 2, color );
 +	}
-+}
-+
-+void CClientWindow::Draw()
-+{
+ }
+ 
+ void CClientWindow::Draw()
+ {
+-	UI_DrawPic( m_scPos, roundCornerSize, uiColorBlack, "gfx/vgui/round_corner_nw.tga", QM_DRAWTRANS );
+-	UI_DrawPic( m_scPos + Size( m_scSize.w - roundCornerSize.w, 0 ), roundCornerSize, uiColorBlack, "gfx/vgui/round_corner_ne.tga", QM_DRAWTRANS );
+-	UI_DrawPic( m_scPos + Size( 0, m_scSize.h - roundCornerSize.h ), roundCornerSize, uiColorBlack, "gfx/vgui/round_corner_sw.tga", QM_DRAWTRANS );
+-	UI_DrawPic( m_scPos + ( m_scSize - roundCornerSize ), roundCornerSize, uiColorBlack, "gfx/vgui/round_corner_se.tga", QM_DRAWTRANS );
++	if( m_bShowScores )
++		return; // the table of the players is shown instead
+ 
+-	UI_FillRect( m_scPos + Size( roundCornerSize.w, 0 ), Size( m_scSize.w - roundCornerSize.w * 2, roundCornerSize.h ), uiColorBlack );
+-	UI_FillRect( m_scPos + Size( 0, roundCornerSize.h ), Size( m_scSize.w, iTitleHeight - roundCornerSize.h ), uiColorBlack );
 +	const SteamFrame::Layout &l = m_frame;
-+
+ 
+-	UI_FillRect( m_scPos + Size( 0, iTitleHeight + iGap ), Size( m_scSize.w, m_scSize.h - roundCornerSize.h - iTitleHeight - iGap ), uiColorBlack );
+-	UI_FillRect( m_scPos + Size( roundCornerSize.w, m_scSize.h - roundCornerSize.h ), Size( m_scSize.w - roundCornerSize.w * 2, roundCornerSize.h ), uiColorBlack );
 +	// the panel ("ViewportBG": black, 200) in two parts with a cut between them
 +	const unsigned int bg = PackRGBA( 0, 0, 0, 200 );
 +	const int lowerY = l.cutY + l.cutH;
 +	FillRoundedRect( l.panelX, l.panelY, l.panelW, l.cutY - l.panelY, l.radius, true, false, bg );
 +	FillRoundedRect( l.panelX, lowerY, l.panelW, l.panelY + l.panelH - lowerY, l.radius, false, true, bg );
-+
+ 
+-	UI_DrawPic( m_scPos + roundCornerSize, roundCornerSize * 4, PackAlpha( uiPromptTextColor, 255 ), "gfx/vgui/CS_logo.tga", QM_DRAWTRANS );
 +	// the icon ("TitleIcon": 255 174 0)
 +	UI_DrawPic( l.iconX, l.iconY, l.iconSize, l.iconSize, PackRGBA( 255, 174, 0, 255 ), "gfx/vgui/CS_logo.tga", QM_DRAWTRANS );
-+
+ 
+-	UI_DrawString( font, m_scPos + Size( roundCornerSize.w * 6, roundCornerSize.h ), Size( m_scSize.w - roundCornerSize.w * 6, roundCornerSize.h * 4 ),
+-	               szName, PackAlpha( uiPromptTextColor, 255 ), m_scChSize, QM_LEFT, ETF_NOSIZELIMIT );
 +	// the title ("BaseText": 255 176 0)
 +	if( m_hTitleFont > 0 )
 +	{
 +		const int ascent = g_FontMgr->GetFontAscent( m_hTitleFont );
 +		const int tall = g_FontMgr->GetFontTall( m_hTitleFont );
-+		UI_DrawString( m_hTitleFont, l.titleX, l.titleBaseline - ascent, l.panelX + l.panelW - l.titleX, tall,
++		UI_DrawString( m_hTitleFont, l.titleX, l.titleBaseline + 1 - ascent, l.panelX + l.panelW - l.titleX, tall,
 +		               szName, PackRGBA( 255, 176, 0, 255 ), tall, QM_LEFT | QM_TOP, ETF_NO_WRAP | ETF_FORCECOL );
 +	}
 +	else
@@ -7748,8 +7751,60 @@ index 7d67022..1944a12 100644
  
  	BaseClass::Draw();
  }
+ 
++// The key of the table of the players ("+showscores", Tab by default) works in the menus as in the game
++// (as in the Steam version): while it is held the table is shown and the menu is not drawn.
++static bool IsShowScoresKey( int key )
++{
++	const char *binding = EngFuncs::KEY_GetBinding( key );
++	return binding && !stricmp( binding, "+showscores" );
++}
++
+ bool CClientWindow::KeyDown( int key )
+ {
+ 	if ( eTransitionType == ANIM_CLOSING )
+ 		return false;
+ 
++	if ( IsShowScoresKey( key ))
++	{
++		if ( !m_bShowScores )
++		{
++			m_bShowScores = true;
++			EngFuncs::ClientCmd( false, "+showscores" );
++		}
++		return true;
++	}
++
+ 	if ( key == K_ENTER || key == K_KP_ENTER )
+ 	{
+ 		CMenuBaseItem *item = ItemAtCursor();
+@@ -90,9 +261,24 @@ bool CClientWindow::KeyDown( int key )
+ 
+ bool CClientWindow::KeyUp( int key )
+ {
++	if ( IsShowScoresKey( key ))
++	{
++		StopShowScores();
++		return true;
++	}
++
+ 	return BaseClass::KeyUp( key );
+ }
+ 
++void CClientWindow::StopShowScores()
++{
++	if ( m_bShowScores )
++	{
++		m_bShowScores = false;
++		EngFuncs::ClientCmd( false, "-showscores" );
++	}
++}
++
+ CMenuAction *CClientWindow::AddButton( int key, const char *name, Point pos, CEventCallback callback )
+ {
+ 	CMenuAction *act = new CMenuAction();
 diff --git a/3rdparty/mainui_cpp/menus/client/ClientWindow.h b/3rdparty/mainui_cpp/menus/client/ClientWindow.h
-index 1683dca..1a4dbf6 100644
+index 1683dca..ef26824 100644
 --- a/3rdparty/mainui_cpp/menus/client/ClientWindow.h
 +++ b/3rdparty/mainui_cpp/menus/client/ClientWindow.h
 @@ -18,6 +18,9 @@ GNU General Public License for more details.
@@ -7762,7 +7817,23 @@ index 1683dca..1a4dbf6 100644
  
  class CClientWindow : public CMenuBaseClientWindow
  {
-@@ -79,8 +82,23 @@ protected:
+@@ -49,6 +52,7 @@ public:
+ 	}
+ 	void Hide() override
+ 	{
++		StopShowScores();
+ 		BaseClass::Hide();
+ 		if ( m_pStack->Count() <= 1 )
+ 		{
+@@ -69,6 +73,7 @@ public:
+ 	CMenuAction *AddButton( int key, const char *name, Point pos, CEventCallback callback );
+ 
+ 	bool KeyUp( int key ) override;
++	void StopShowScores( void ); // the key of the table of the players was released or the menu is closed
+ 	bool KeyDown( int key ) override;
+ 	void VidInit() override;
+ 	void Draw() override;
+@@ -79,8 +84,24 @@ protected:
  	CMenuBaseItem *keyButtons[256];
  	int m_iNumBtns;
  
@@ -7773,6 +7844,7 @@ index 1683dca..1a4dbf6 100644
 +	// the frame of the Steam version (see SteamFrame.h), in pixels of the screen
 +	SteamFrame::Layout m_frame;
 +	HFont m_hTitleFont = 0;
++	bool m_bShowScores = false;
 +
 +	// the buttons of the Steam version (SteamButton.h) and their font ("Default": Verdana 600)
 +	CSteamMenuButton *AddSteamButton( int key, const char *name, int slot, CEventCallback callback );
@@ -8486,7 +8558,7 @@ index c413e90..2352fb8 100644
  	uiJoinGame.hasSpectator = param1 & 1;
 diff --git a/3rdparty/mainui_cpp/menus/client/SteamButton.h b/3rdparty/mainui_cpp/menus/client/SteamButton.h
 new file mode 100644
-index 0000000..14a1022
+index 0000000..ae26864
 --- /dev/null
 +++ b/3rdparty/mainui_cpp/menus/client/SteamButton.h
 @@ -0,0 +1,64 @@
@@ -8510,7 +8582,7 @@ index 0000000..14a1022
 +
 +// A frame of 1 pixel ("BorderBright" 188 112 0 128), the text in "Default" (Verdana 600, "BaseText" 255 176 0)
 +// with its capitals in the middle of the button. Under the cursor (or chosen, like the class whose picture is
-+// shown) it is filled with "SelectionBG" (255 176 0, 45 % as measured on the screenshots).
++// shown) it is filled with "SelectionBG" (255 176 0, 41 % as measured on the screenshots).
 +// Its place is set in pixels of the screen: the buttons are one under another (see SteamFrame::TeamMenu).
 +class CSteamMenuButton : public CMenuAction
 +{
@@ -8542,12 +8614,12 @@ index 0000000..14a1022
 +		const bool hover = this == m_pParent->ItemAtCursor() && ( iFlags & ( QMF_HASMOUSEFOCUS | QMF_HASKEYBOARDFOCUS ));
 +		const bool lit = hover || chosen;
 +
-+		UI_FillRect( m_scPos, m_scSize, lit ? PackRGBA( 255, 176, 0, 115 ) : PackRGBA( 0, 0, 0, 96 ));
++		UI_FillRect( m_scPos, m_scSize, lit ? PackRGBA( 255, 176, 0, 105 ) : PackRGBA( 0, 0, 0, 96 ));
 +		CClientWindow::DrawFrame( m_scPos.x, m_scPos.y, m_scSize.w, m_scSize.h, PackRGBA( 188, 112, 0, lit ? 255 : 128 ));
 +
 +		if( frame )
 +		{
-+			const int capTop = m_scPos.y + ( m_scSize.h - capHeight + 1 ) / 2;
++			const int capTop = m_scPos.y + ( m_scSize.h - capHeight + 1 ) / 2 + 1; // 278 at 1080, as in Steam
 +			const int x = m_scPos.x + SteamFrame::TeamMenu::ButtonTextInset( *frame );
 +			CClientWindow::DrawSteamText( textFont, x, capTop, capHeight, m_scPos.x + m_scSize.w - x - 1, label,
 +			                              PackRGBA( 255, 176, 0, 255 ));
@@ -8556,7 +8628,7 @@ index 0000000..14a1022
 +};
 diff --git a/3rdparty/mainui_cpp/menus/client/SteamFrame.h b/3rdparty/mainui_cpp/menus/client/SteamFrame.h
 new file mode 100644
-index 0000000..be17719
+index 0000000..5b33713
 --- /dev/null
 +++ b/3rdparty/mainui_cpp/menus/client/SteamFrame.h
 @@ -0,0 +1,160 @@
@@ -8686,8 +8758,8 @@ index 0000000..be17719
 +
 +	static int ScrollBarWidth( const Layout &l )   { return l.U( 24.0f ); }  // 54 at 1080
 +	static int ScrollButtonHeight( const Layout &l ) { return l.U( 23.5f ); } // 53 at 1080
-+	static int TextInset( const Layout &l )        { return l.U( 4.0f ); }   // 9 at 1080
-+	static int FirstCapTop( const Layout &l )      { return l.U( 3.1f ); }   // 7 at 1080
++	static int TextInset( const Layout &l )        { return l.U( 4.4f ); }   // 10 at 1080 ("D" at 799)
++	static int FirstCapTop( const Layout &l )      { return l.U( 3.6f ); }   // 8 at 1080 (capitals at 268)
 +	static int LineHeight( const Layout &l )       { return l.textTall + 1; } // 21 at 1080
 +};
 +
@@ -8707,8 +8779,8 @@ index 0000000..be17719
 +
 +	static int PictureCenterX( const Layout &l ) { return l.panelX + l.U( 352.7f ); }
 +
-+	static int DescriptionX( const Layout &l )      { return l.panelX + l.U( 224.4f ); }
-+	static int DescriptionCapTop( const Layout &l ) { return l.panelY + l.U( 325.8f ); }
++	static int DescriptionX( const Layout &l )      { return l.panelX + l.U( 224.0f ); } // 789 at 1080
++	static int DescriptionCapTop( const Layout &l ) { return l.panelY + l.U( 326.2f ); } // 779 at 1080
 +};
 +
 +// How far the rounded corner is from the side of the rectangle in the row i (0 is the outermost row);
