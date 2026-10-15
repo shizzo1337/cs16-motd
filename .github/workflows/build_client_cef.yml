@@ -131,11 +131,11 @@ jobs:
         env:
           MSYS_NO_PATHCONV: "1"
         run: |
-          cmake --preset win32-release-amd64 "-DCEF_ROOT=${CEF_ROOT}" -DCEF_RUNTIME_LIBRARY_FLAG=/MD -DBUILD_MAINUI=OFF -DBUILD_SERVER=OFF
+          cmake --preset win32-release-amd64 "-DCEF_ROOT=${CEF_ROOT}" -DCEF_RUNTIME_LIBRARY_FLAG=/MD -DBUILD_MAINUI=ON -DBUILD_SERVER=OFF
 
       - name: Build client only
         working-directory: cs16
-        run: cmake --build build --target client cs16_cef_helper
+        run: cmake --build build --target client menu cs16_cef_helper
 
       - name: Collect result
         working-directory: cs16
@@ -143,6 +143,7 @@ jobs:
           OUT="$GITHUB_WORKSPACE/result"
           mkdir -p "$OUT/cstrike/cl_dlls" "$OUT/cstrike/cef/locales"
           find build -name "client*.dll" -exec cp -v {} "$OUT/cstrike/cl_dlls/" \;
+          find build -name "menu*.dll" -exec cp -v {} "$OUT/cstrike/cl_dlls/" \;
           find build -name "cs16_cef_helper.exe" -exec cp -v {} "$OUT/cstrike/cef/" \;
           find "$CEF_ROOT/Release" -maxdepth 1 \( -name '*.dll' -o -name '*.bin' -o -name '*.json' \) -exec cp -v {} "$OUT/cstrike/cef/" \;
           find "$CEF_ROOT/Resources" -maxdepth 1 \( -name '*.pak' -o -name '*.dat' -o -name '*.bin' \) -exec cp -v {} "$OUT/cstrike/cef/" \;
@@ -156,6 +157,9 @@ jobs:
         run: |
           set -eu
           f=$(ls cstrike/cl_dlls/client*.dll | head -n1)
+          m=$(ls cstrike/cl_dlls/menu*.dll | head -n1)
+          echo "menu: $m"
+          grep -aq "Trebuchet MS" "$m" || { echo "ERROR: the menu library has no team menu of the Steam version"; exit 1; }
           echo "client: $f"
           python - "$f" <<'PY'
           import struct, sys
