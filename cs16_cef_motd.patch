@@ -7863,7 +7863,7 @@ index 1683dca..ef26824 100644
 +	static HFont CreateSteamFont( const char *name, int em, float cellPerEm, int weight );
  };
 diff --git a/3rdparty/mainui_cpp/menus/client/JoinClass.cpp b/3rdparty/mainui_cpp/menus/client/JoinClass.cpp
-index 9234322..b46c68d 100644
+index 9234322..ac7cad2 100644
 --- a/3rdparty/mainui_cpp/menus/client/JoinClass.cpp
 +++ b/3rdparty/mainui_cpp/menus/client/JoinClass.cpp
 @@ -16,8 +16,45 @@ GNU General Public License for more details.
@@ -8009,7 +8009,7 @@ index 9234322..b46c68d 100644
  	}
  
  	void classPressedCb( void *pExtra )
-@@ -172,126 +218,187 @@ private:
+@@ -172,126 +218,190 @@ private:
  		classFocusCb( pExtra );
  		ConfirmSelection();
  	}
@@ -8093,6 +8093,9 @@ index 9234322..b46c68d 100644
  
 +void CClientJoinClass::Draw()
 +{
++	if( m_bShowScores )
++		return; // the table of the players is shown instead of the menu
++
 +	BaseClass::Draw(); // the frame and the buttons
 +
 +	int bx, by, bw, bh;
@@ -8247,7 +8250,7 @@ index 9234322..b46c68d 100644
  	EngFuncs::KEY_SetDest( KEY_MENU );
  	uiJoinClassT.Show();
  }
-@@ -299,6 +406,7 @@ void UI_JoinClassT_Show( int param1, int param2 )
+@@ -299,6 +409,7 @@ void UI_JoinClassT_Show( int param1, int param2 )
  void UI_JoinClassCT_Show( int param1, int param2 )
  {
  	uiJoinClassCT.hasCzero = param1;
@@ -8256,7 +8259,7 @@ index 9234322..b46c68d 100644
  	uiJoinClassCT.Show();
  }
 diff --git a/3rdparty/mainui_cpp/menus/client/JoinGame.cpp b/3rdparty/mainui_cpp/menus/client/JoinGame.cpp
-index c413e90..2352fb8 100644
+index c413e90..0c1cc44 100644
 --- a/3rdparty/mainui_cpp/menus/client/JoinGame.cpp
 +++ b/3rdparty/mainui_cpp/menus/client/JoinGame.cpp
 @@ -16,7 +16,7 @@ GNU General Public License for more details.
@@ -8306,7 +8309,7 @@ index c413e90..2352fb8 100644
  	void ConfirmSelection()
  	{
  		Hide();
-@@ -60,106 +69,180 @@ private:
+@@ -60,106 +69,183 @@ private:
  
  void CClientJoinGame::_Init()
  {
@@ -8369,16 +8372,17 @@ index c413e90..2352fb8 100644
 -	text.m_bLimitBySize = false;
 +void CClientJoinGame::Draw()
 +{
-+	BaseClass::Draw(); // the frame and the buttons
++	if( m_bShowScores )
++		return; // the table of the players is shown instead of the menu
  
 -	scroll.AddItem( text );
 -	AddItem( scroll );
-+	int bx, by, bw, bh, sx, sbh;
-+	InfoBoxRects( bx, by, bw, bh, sx, sbh );
++	BaseClass::Draw(); // the frame and the buttons
  
 -	szName = L("Cstrike_Join_Team");
 -}
-+	const unsigned int border = PackRGBA( 188, 112, 0, 128 );
++	int bx, by, bw, bh, sx, sbh;
++	InfoBoxRects( bx, by, bw, bh, sx, sbh );
  
 -void CClientJoinGame::Reload()
 -{
@@ -8392,6 +8396,8 @@ index c413e90..2352fb8 100644
 -		keys[6].Reset();
 -		spectate->Hide();
 -	}
++	const unsigned int border = PackRGBA( 188, 112, 0, 128 );
++
 +	// the box: "WindowBG" (black, 200) with a frame of 1 pixel
 +	UI_FillRect( bx + 1, by + 1, bw - 2, bh - 2, PackRGBA( 0, 0, 0, 200 ));
 +	DrawFrame( bx, by, bw, bh, border );
@@ -8464,12 +8470,12 @@ index c413e90..2352fb8 100644
 +{
 +	int bx, by, bw, bh, sx, sbh;
 +	InfoBoxRects( bx, by, bw, bh, sx, sbh );
-+
+ 
+-	if( hasCancel )
 +	const int cx = uiStatic.cursorX, cy = uiStatic.cursorY;
 +	const bool inBox = cx >= bx && cx < bx + bw && cy >= by && cy < by + bh;
 +	const int maxScroll = m_iInfoLines - VisibleLines() > 0 ? m_iInfoLines - VisibleLines() : 0;
- 
--	if( hasCancel )
++
 +	if( inBox && ( key == K_MWHEELUP || key == K_MWHEELDOWN ))
  	{
 -		keys[0] = cancel->onPressed;
