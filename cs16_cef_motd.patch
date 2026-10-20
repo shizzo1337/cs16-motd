@@ -3702,7 +3702,7 @@ index dcd392f..6057c89 100644
  {
  	// REMOVE WHEN NANOGL BUG WILL BE FIXED
 diff --git a/cl_dll/hud.cpp b/cl_dll/hud.cpp
-index 9ae956c..f4f4980 100644
+index 9ae956c..a840147 100644
 --- a/cl_dll/hud.cpp
 +++ b/cl_dll/hud.cpp
 @@ -363,7 +363,14 @@ void CHud :: Init( void )
@@ -3716,7 +3716,7 @@ index 9ae956c..f4f4980 100644
 +	// the client sources this patch was made for and it does not depend on the day of compilation.
 +	// When the patch is moved to another client version change it here and in CLIENT_BUILD of the
 +	// workflow (the workflow checks that both are the same).
-+	static char cscl_ver[] = "4000-CEF";
++	static char cscl_ver[] = "4006-CEF";
 +	CVAR_CREATE( "cscl_ver", cscl_ver, 1<<14 | FCVAR_USERINFO ); // init and userinfo
  
  	m_iLogo = 0;
@@ -3732,7 +3732,7 @@ index 9ae956c..f4f4980 100644
  
  	GetClientVoice()->Init( &g_VoiceStatusHelper );
 diff --git a/cl_dll/hud.h b/cl_dll/hud.h
-index f23bb7c..ce38d32 100644
+index bcfdf6e..981332b 100644
 --- a/cl_dll/hud.h
 +++ b/cl_dll/hud.h
 @@ -37,6 +37,10 @@
@@ -3783,7 +3783,7 @@ index f23bb7c..ce38d32 100644
  	int DrawTeams( float listslot );
  	int DrawPlayers( float listslot, int nameoffset = 0, const char *team = NULL ); // returns the ypos where it finishes drawing
  
-@@ -764,6 +782,8 @@ public:
+@@ -765,6 +783,8 @@ public:
  	CHudMsgFunc(Money);
  	CHudMsgFunc(BlinkAcct);
  
@@ -3792,7 +3792,7 @@ index f23bb7c..ce38d32 100644
  private:
  	int m_iMoneyCount;
  	int m_iDelta;
-@@ -885,6 +905,50 @@ private:
+@@ -886,6 +906,50 @@ private:
  //-----------------------------------------------------
  //
  
@@ -3843,12 +3843,13 @@ index f23bb7c..ce38d32 100644
  class CHudScenario : public CHudBase
  {
  public:
-@@ -909,6 +973,13 @@ private:
+@@ -910,6 +974,14 @@ private:
  class CHudSpectatorGui: public CHudBase
  {
  public:
 +	static int BarHeight( void ); // the height of the black bars of the spectator mode (as in the Steam version)
 +	void DrawStatusBar( void );   // the upper bar: scores, money and time (as in the Steam version)
++	void DrawSteamMenus( void );  // the menus at the bottom (as in the Steam version)
 +	void FreeStatusBarText( void );
 +
 +	// the texts of the upper bar drawn by Windows fonts
@@ -3857,7 +3858,7 @@ index f23bb7c..ce38d32 100644
  	int Init();
  	int VidInit();
  	int Draw( float flTime );
-@@ -1089,6 +1160,7 @@ public:
+@@ -1090,6 +1162,7 @@ public:
  	CHudRadar       m_Radar;
  	CHudSpectatorGui m_SpectatorGui;
  	CHudScenario	m_Scenario;
@@ -4754,7 +4755,7 @@ index 0000000..53fcfae
 +
 +} // namespace MotdUtil
 diff --git a/cl_dll/hud/scoreboard.cpp b/cl_dll/hud/scoreboard.cpp
-index cdbde46..558865b 100644
+index e1feea4..a4ab2b0 100644
 --- a/cl_dll/hud/scoreboard.cpp
 +++ b/cl_dll/hud/scoreboard.cpp
 @@ -29,6 +29,14 @@
@@ -4772,7 +4773,7 @@ index cdbde46..558865b 100644
  
  hud_player_info_t   g_PlayerInfoList[MAX_PLAYERS+1]; // player info from the engine
  extra_player_info_t	g_PlayerExtraInfo[MAX_PLAYERS+1]; // additional player info sent directly to the client dll
-@@ -114,6 +122,8 @@ int CHudScoreboard :: Init( void )
+@@ -154,6 +162,8 @@ int CHudScoreboard :: Init( void )
  
  int CHudScoreboard :: VidInit( void )
  {
@@ -4781,7 +4782,7 @@ index cdbde46..558865b 100644
  	xstart = ScreenWidth * 0.125f;
  	xend = ScreenWidth - xstart;
  	ystart = 100;
-@@ -163,6 +173,442 @@ bool CHudScoreboard :: ShouldDrawScoreboard() const
+@@ -204,6 +214,442 @@ bool CHudScoreboard :: ShouldDrawScoreboard() const
  	return false;
  }
  
@@ -5224,7 +5225,7 @@ index cdbde46..558865b 100644
  // Y positions
  #define ROW_GAP  15
  
-@@ -190,6 +636,10 @@ int CHudScoreboard :: Draw( float flTime )
+@@ -247,6 +693,10 @@ int CHudScoreboard :: Draw( float flTime )
  int CHudScoreboard :: DrawScoreboard( float fTime )
  {
  	GetAllPlayersInfo();
@@ -5235,7 +5236,7 @@ index cdbde46..558865b 100644
  	char ServerName[90];
  
  //	Packetloss removed on Kelly 'shipping nazi' Bailey's orders
-@@ -212,10 +662,10 @@ int CHudScoreboard :: DrawScoreboard( float fTime )
+@@ -269,10 +719,10 @@ int CHudScoreboard :: DrawScoreboard( float fTime )
  	g_Columns[COL_KILLS] = Column( g_Columns[COL_DEATHS].end - 10, Localize( "#PlayerScore" ) );
  	g_Columns[COL_KILLS].end = min( g_Columns[COL_KILLS].end, g_Columns[COL_KILLS].start - DrawUtils::HudStringLen( "9999" ) );
  
@@ -5248,7 +5249,7 @@ index cdbde46..558865b 100644
  	g_Columns[COL_HP].end = min( g_Columns[COL_HP].end, g_Columns[COL_HP].start - DrawUtils::HudStringLen( "999999" ) );
  
  	g_Columns[COL_ATTRIB] = Column( g_Columns[COL_HP].end - 10 );
-@@ -226,7 +676,13 @@ int CHudScoreboard :: DrawScoreboard( float fTime )
+@@ -283,7 +733,13 @@ int CHudScoreboard :: DrawScoreboard( float fTime )
  
  	// print the heading line
  
@@ -5481,18 +5482,21 @@ index 0000000..19bb2e6
 +
 +} // namespace SbLayout
 diff --git a/cl_dll/hud/spectator_gui.cpp b/cl_dll/hud/spectator_gui.cpp
-index 991ebdd..3cc6e8a 100644
+index 991ebdd..cb816db 100644
 --- a/cl_dll/hud/spectator_gui.cpp
 +++ b/cl_dll/hud/spectator_gui.cpp
-@@ -36,6 +36,7 @@ version.
+@@ -36,6 +36,10 @@ version.
  #include "vgui_parser.h"
  #include "triangleapi.h"
  #include "draw_util.h"
 +#include "spectator_layout.h"
++#include "text_utf8.h"
++
++#include <string>
  
  /*
   * We will draw all elements inside a box. It's size 16x10.
-@@ -47,6 +48,15 @@ version.
+@@ -47,6 +51,15 @@ version.
  #define INT_XPOS(x) int(XPOS(x) * ScreenWidth)
  #define INT_YPOS(y) int(YPOS(y) * ScreenHeight)
  
@@ -5508,7 +5512,7 @@ index 991ebdd..3cc6e8a 100644
  int CHudSpectatorGui::Init()
  {
  	if( !g_iXash )
-@@ -98,7 +108,10 @@ int CHudSpectatorGui::VidInit()
+@@ -98,7 +111,10 @@ int CHudSpectatorGui::VidInit()
  		return 0;
  	}
  
@@ -5520,7 +5524,7 @@ index 991ebdd..3cc6e8a 100644
  	m_hChecked     = gRenderAPI.GL_LoadTexture("gfx/vgui/640_checked.tga", NULL, 0, TF_NEAREST | TF_NOMIPMAP | TF_CLAMP );
  	m_hArrowDown   = gRenderAPI.GL_LoadTexture("gfx/vgui/1920_arrowdown.tga", NULL, 0, TF_NEAREST | TF_NOMIPMAP | TF_CLAMP );
  	m_hArrowUp     = gRenderAPI.GL_LoadTexture("gfx/vgui/1920_arrowup.tga", NULL, 0, TF_NEAREST | TF_NOMIPMAP | TF_CLAMP );
-@@ -109,6 +122,7 @@ int CHudSpectatorGui::VidInit()
+@@ -109,6 +125,7 @@ int CHudSpectatorGui::VidInit()
  
  void CHudSpectatorGui::Shutdown()
  {
@@ -5528,10 +5532,143 @@ index 991ebdd..3cc6e8a 100644
  	gRenderAPI.GL_FreeTexture( m_hTimerTexture );
  	gRenderAPI.GL_FreeTexture( m_hChecked );
  	gRenderAPI.GL_FreeTexture( m_hArrowDown );
-@@ -162,6 +176,99 @@ static void DrawIconOnButton( int x1, int y1, int wide, int tall, int hTex, int
- 						   (quadY + (float)uploadH) * gHUD.m_flScale );
+@@ -117,49 +134,223 @@ void CHudSpectatorGui::Shutdown()
+ 	gRenderAPI.GL_FreeTexture( m_hArrowRight );
  }
  
+-inline void DrawButtonWithText( int x1, int y1, int wide, int tall, const char *sz, int r, int g, int b, bool highlight = false )
++
++
++//
++// The menus at the bottom as in the Steam version (see SpecMenu in spectator_layout.h)
++//
++namespace {
++
++enum
++{
++	ST_OPTIONS = 0, ST_PLAYER, ST_VIEW,
++	ST_CLOSE, ST_HELP, ST_SETTINGS, ST_PIP, ST_AUTODIRECTOR, ST_SHOWSCORES,
++	ST_CHAT, ST_STATUS, ST_CONE, ST_NAMES,
++	ST_MODE1, ST_MODE2, ST_MODE3, ST_MODE4, ST_MODE5, ST_MODE6,
++	ST_COUNT
++};
++
++CTextTexture g_specMenuText[ST_COUNT];
++
++const int MENU_R = 255, MENU_G = 176, MENU_B = 0; // "BaseText"
++
++void FrameRect( const SpecMenu::Rect &r, int red, int green, int blue, int alpha )
++{
++	FillRGBABlend( r.x, r.y, r.w, 1, red, green, blue, alpha );
++	FillRGBABlend( r.x, r.y + r.h - 1, r.w, 1, red, green, blue, alpha );
++	FillRGBABlend( r.x, r.y + 1, 1, r.h - 2, red, green, blue, alpha );
++	FillRGBABlend( r.x + r.w - 1, r.y + 1, 1, r.h - 2, red, green, blue, alpha );
++}
++
++// a box of the Steam version: dark, a frame of 1 pixel ("BorderBright")
++void Box( const SpecMenu::Rect &r, int bgAlpha )
++{
++	FillRGBABlend( r.x + 1, r.y + 1, r.w - 2, r.h - 2, 0, 0, 0, bgAlpha );
++	FrameRect( r, 188, 112, 0, 128 );
++}
++
++// triangles of 1 pixel rows: dir 0 - left, 1 - right, 2 - down
++void Triangle( int x, int y, int w, int h, int dir, int red, int green, int blue )
+ {
+-	DrawUtils::DrawRectangle(x1, y1, wide, tall);
++	if( dir == 2 )
++	{
++		for( int i = 0; i < h; ++i )
++			FillRGBABlend( x + i, y + i, w - i * 2, 1, red, green, blue, 255 );
++		return;
++	}
+ 
+-	if ( highlight )
++	const int half = h / 2;
++	for( int i = 0; i < h; ++i )
+ 	{
+-		FillRGBABlend(x1, y1, wide, tall, r, g, b, 48);
++		const int d = i <= half ? i : h - 1 - i; // 0 at the top and the bottom, half in the middle
++		const int len = w * ( d + 1 ) / ( half + 1 );
++		if( len <= 0 )
++			continue;
++		if( dir == 1 )
++			FillRGBABlend( x, y + i, len, 1, red, green, blue, 255 );
++		else
++			FillRGBABlend( x + w - len, y + i, len, 1, red, green, blue, 255 );
+ 	}
++}
+ 
+-	DrawUtils::DrawHudString(x1 + INT_XPOS(0.5), y1 + tall*0.5 - gHUD.GetCharHeight() * 0.5, x1 + wide, sz,
+-							 r, g, b );
++// the check mark of a menu item (10 x 11 at 1080)
++void CheckMark( int x, int y, int size, int red, int green, int blue )
++{
++	const int t = size / 5 > 1 ? size / 5 : 1;          // the thickness
++	const int knee = size * 2 / 5;                       // the short stroke goes down to the right
++	for( int i = 0; i <= knee; ++i )
++		FillRGBABlend( x + i, y + size / 2 + i, t, t, red, green, blue, 255 );
++	for( int i = 0; i <= size - knee; ++i )               // the long stroke goes up to the right
++		FillRGBABlend( x + knee + i, y + size / 2 + knee - i * ( size / 2 + knee ) / ( size - knee ), t, t, red, green, blue, 255 );
+ }
+ 
+-// Unified icon drawing helper. align: -1 = left, 0 = center, 1 = right
+-static void DrawIconOnButton( int x1, int y1, int wide, int tall, int hTex, int align = -1, int r = 255, int g = 255, int b = 255, float alpha = 1.0f, int pad = 15 )
++struct SpecPainter
+ {
+-	if( !hTex )
+-		return;
++	float scale;
++	int em, emHud;
++	bool antialias;
++
++	// a text of the menus: "DefaultSmall" (Verdana, thin); x and capTop in the units of the HUD
++	void Text( int slot, const char *text, int x, int capTop, int maxW, int red, int green, int blue ) const
++	{
++		CTextTexture &tex = g_specMenuText[slot];
++		const std::string utf8 = TextUtf::ToUtf8( text ? text : "" );
++
++		if( tex.Update( utf8, "Verdana", em, 400, antialias, (int)( maxW * scale )))
++		{
++			if( tex.Valid() )
++			{
++				const int top = SpecBar::CellTopFromCapTop( (float)capTop, emHud );
++				tex.Draw( x * scale, top * scale, red, green, blue );
++			}
++		}
++		else if( text && text[0] )
++		{
++			DrawUtils::DrawHudString( x, capTop - gHUD.GetCharHeight() / 4, x + maxW, text, red, green, blue );
++		}
++	}
++};
++
++const char *SpecModeName( int mode )
++{
++	switch( mode )
++	{
++	case 1: return "Locked Chase Camera";
++	case 2: return "Free Chase Camera";
++	case 3: return "Free look";
++	case 4: return "First Person";
++	case 5: return "Free Map Overview";
++	case 6: return "Chase Map Overview";
++	}
++	return "Spectate Options";
++}
++
++// a touch button over a rectangle of the layout (the touch buttons are placed in parts of the screen)
++void AddTouch( const char *name, const char *command, const SpecMenu::Rect &r )
++{
++	static byte color[4] = { 0, 0, 0, 0 };
++	const float w = (float)ScreenWidth, h = (float)ScreenHeight;
++	gMobileAPI.pfnTouchAddClientButton( name, "*white", command,
++		r.x / w, r.y / h, ( r.x + r.w ) / w, ( r.y + r.h ) / h, color, 0, 1.0f, 0 );
++}
++
++} // namespace
++
++
 +// The upper bar as in the Steam version (see spectator_layout.h): the scores of the teams on the left of the
 +// divider, the money (or the map name for HLTV) and the time on the right of it, in the font of
 +// resource/ClientScheme.res drawn by Windows. Without the Windows fonts the font of the HUD is used.
@@ -5555,14 +5692,20 @@ index 991ebdd..3cc6e8a 100644
 +	char ct[32], t[32], info[96];
 +	snprintf( ct, sizeof( ct ), "%d", label.m_iCounterTerrorists );
 +	snprintf( t, sizeof( t ), "%d", label.m_iTerrorists );
-+
+ 
+-	gRenderAPI.GL_SelectTexture( 0 );
+-	gRenderAPI.GL_Bind( 0, hTex );
+-	gEngfuncs.pTriAPI->RenderMode( kRenderTransAlpha );
+-	gEngfuncs.pTriAPI->Color4f( r / 255.0f, g / 255.0f, b / 255.0f, alpha );
 +	if( gEngfuncs.IsSpectateOnly() )
 +		snprintf( info, sizeof( info ), "%s", label.m_szMap );
 +	else
 +		snprintf( info, sizeof( info ), "$%d", gHUD.m_Money.GetMoney() );
-+
+ 
+-	int uploadW = (int)gRenderAPI.RenderGetParm( PARM_TEX_WIDTH, hTex );
+-	int uploadH = (int)gRenderAPI.RenderGetParm( PARM_TEX_HEIGHT, hTex );
 +	const bool showTimer = !m_bBombPlanted;
-+
+ 
 +	struct Item
 +	{
 +		CTextTexture *tex;
@@ -5570,7 +5713,10 @@ index 991ebdd..3cc6e8a 100644
 +		int x, y;
 +		bool rightAligned;
 +	};
-+
+ 
+-	// compute quad position in pixels
+-	float quadX = x1;
+-	float quadY = y1 + ( tall - uploadH ) / 2.0f;
 +	const Item items[] =
 +	{
 +		{ &m_txtCTLabel, "Counter-Terrorists :", l.teamLabelRight, row1, true },
@@ -5587,7 +5733,13 @@ index 991ebdd..3cc6e8a 100644
 +		{
 +			if( !it.tex->Valid() )
 +				continue;
-+
+ 
+-	if( align == -1 ) // left
+-		quadX = x1 + pad; // small padding from left
+-	else if( align == 0 ) // center
+-		quadX = x1 + ( wide - uploadW ) * 0.5f;
+-	else if( align == 1 ) // right
+-		quadX = x1 + wide - uploadW - pad; // small padding from right
 +			const float w = it.tex->Width() / scale;
 +			const float x = it.rightAligned ? it.x - w : (float)it.x;
 +			it.tex->Draw( x * scale, it.y * scale, textR, textG, textB );
@@ -5614,21 +5766,26 @@ index 991ebdd..3cc6e8a 100644
 +		gEngfuncs.pTriAPI->RenderMode( kRenderNormal );
 +	}
 +}
-+
+ 
+-	DrawUtils::Draw2DQuad( quadX * gHUD.m_flScale,
+-						   quadY * gHUD.m_flScale,
+-						   (quadX + (float)uploadW) * gHUD.m_flScale,
+-						   (quadY + (float)uploadH) * gHUD.m_flScale );
 +void CHudSpectatorGui::FreeStatusBarText( void )
 +{
++	for( CTextTexture &t : g_specMenuText )
++		t.Free();
++
 +	m_txtCTLabel.Free();
 +	m_txtTLabel.Free();
 +	m_txtCTValue.Free();
 +	m_txtTValue.Free();
 +	m_txtInfo.Free();
 +	m_txtTimer.Free();
-+}
-+
+ }
+ 
  int CHudSpectatorGui::Draw( float flTime )
- {
- 	if( !g_iUser1 )
-@@ -186,70 +293,12 @@ int CHudSpectatorGui::Draw( float flTime )
+@@ -186,180 +377,155 @@ int CHudSpectatorGui::Draw( float flTime )
  		startpos = XRES(gHUD.m_Spectator.m_OverviewData.insetWindowWidth) + XRES(gHUD.m_Spectator.m_OverviewData.insetWindowX);
  		startpos *= ScreenWidth / TrueWidth; // hud_scale adjust
  	}
@@ -5647,7 +5804,8 @@ index 991ebdd..3cc6e8a 100644
 -			int divBottom = INT_YPOS(2) * 0.5 + gHUD.GetCharHeight();
 -			int divH = divBottom - divTop;
 -			if (divH < gHUD.GetCharHeight()) divH = gHUD.GetCharHeight();
--
++		DrawStatusBar();
+ 
 -			int pad = (gHUD.GetCharHeight() * 2) / 3;
 -			if (pad < 1) pad = 1;
 -
@@ -5661,7 +5819,19 @@ index 991ebdd..3cc6e8a 100644
 -
 -		{ // mapname. extradata
 -			DrawUtils::DrawHudString( INT_XPOS(12.5) + 10, INT_YPOS(2) * 0.25, ScreenWidth, label.m_szMap, r, g, b );
--
++	if( m_menuFlags & ROOT_MENU )
++	{
++		DrawSteamMenus();
++	}
++	else
++	{
++		// the name of the player in the middle of the lower bar
++		int iLen = DrawUtils::HudStringLen( label.m_szNameAndHealth );
++		GetTeamColor( r, g, b, g_PlayerExtraInfo[ g_iUser2 ].teamnumber );
++		DrawUtils::DrawHudString( ScreenWidth * 0.5 - iLen * 0.5, ScreenHeight - BarHeight() / 2 - gHUD.GetCharHeight() * 0.5 , ScreenWidth,
++								  label.m_szNameAndHealth, r, g, b );
++	}
+ 
 -			if( !m_bBombPlanted ) // timer remaining
 -			{
 -				if( m_hTimerTexture )
@@ -5687,11 +5857,24 @@ index 991ebdd..3cc6e8a 100644
 -										label.m_szTimer, r, g, b );
 -			}
 -		}
--
--
++	return 1;
++}
+ 
++// The menus as in the Steam version: three lists and two buttons at the bottom, the menus open above them
++void CHudSpectatorGui::DrawSteamMenus( void )
++{
++	const SpecMenu::Layout l = SpecMenu::Compute( ScreenWidth, ScreenHeight );
++	const SpecBar::Font font = SpecBar::FontFor( TrueHeight );
+ 
 -		{ // draw team here
 -			int iLen = DrawUtils::HudStringLen("Counter-Terrorists:" );
--
++	SpecPainter paint;
++	paint.scale = gHUD.m_flScale > 0.0f ? gHUD.m_flScale : 1.0f;
++	paint.em = SpecBar::FontEm( font.tall );
++	paint.emHud = (int)( paint.em / paint.scale + 0.5f );
++	paint.antialias = font.antialias;
++	const int capH = (int)( paint.emHud * 0.727f + 0.5f );
+ 
 -			DrawUtils::DrawHudString( INT_XPOS(12.5) - iLen - 50 , INT_YPOS(2) * 0.25, INT_XPOS(12.5) - 50, "Counter-Terrorists:", r, g, b );
 -			DrawUtils::DrawHudString( INT_XPOS(12.5) - iLen - 50, INT_YPOS(2) * 0.5, INT_XPOS(12.5) - 50, "Terrorists:", r, g, b );
 -			// count
@@ -5699,25 +5882,358 @@ index 991ebdd..3cc6e8a 100644
 -			DrawUtils::DrawHudNumberString( INT_XPOS(12.5) - 10, INT_YPOS(2) * 0.5,  INT_XPOS(12.5) - 50, label.m_iTerrorists,        r, g, b );
 -		}
 -	}
-+		DrawStatusBar();
++	const int arrowW = l.U( 3.1f ) | 1;   // 7 at 1080
++	const int arrowH = ( arrowW + 1 ) / 2; // 4
  
- 	if( m_menuFlags & ROOT_MENU )
+-	if( m_menuFlags & ROOT_MENU )
++	// a list: its text and a small grey arrow on the right
++	auto list = [&]( const SpecMenu::Rect &r, int slot, const char *text, int red, int green, int blue )
  	{
-@@ -355,7 +404,7 @@ int CHudSpectatorGui::Draw( float flTime )
- 	//{
- 		int iLen = DrawUtils::HudStringLen( label.m_szNameAndHealth );
- 		GetTeamColor( r, g, b, g_PlayerExtraInfo[ g_iUser2 ].teamnumber );
--		DrawUtils::DrawHudString( ScreenWidth * 0.5 - iLen * 0.5, INT_YPOS(9) - gHUD.GetCharHeight() * 0.5 , ScreenWidth,
-+		DrawUtils::DrawHudString( ScreenWidth * 0.5 - iLen * 0.5, ScreenHeight - BarHeight() / 2 - gHUD.GetCharHeight() * 0.5 , ScreenWidth,
- 								  label.m_szNameAndHealth, r, g, b );
- 	//}
+-		// draw the root menu
++		Box( r, 230 );
++		const int arrowX = r.x + r.w - 1 - l.U( 4.0f ) - arrowW / 2;
++		paint.Text( slot, text, r.x + l.comboTextInset, r.y + l.comboCapTop, arrowX - r.x - l.comboTextInset - 2, red, green, blue );
++		Triangle( arrowX, r.y + ( r.h - arrowH + 1 ) / 2 + 1, arrowW, arrowH, 2, 176, 175, 173 );
++	};
++
++	// a button with an orange triangle (7 x 13 at 1080)
++	auto button = [&]( const SpecMenu::Rect &r, int dir, int inset )
++	{
++		Box( r, 230 );
++		const int h = l.U( 5.8f ) | 1;
++		Triangle( r.x + inset, r.y + ( r.h - h ) / 2, l.U( 3.1f ), h, dir, MENU_R, MENU_G, MENU_B );
++	};
++
++	// a menu: the items, a check mark or a submenu arrow; lit - the item whose submenu is open
++	struct Item { int slot; const char *text; int check; bool submenu; };
++	auto menu = [&]( const SpecMenu::Rect &m, const Item *items, int count, bool checks, int lit )
++	{
++		FillRGBABlend( m.x + 1, m.y + 1, m.w - 2, m.h - 2, 0, 0, 0, 245 );
++		FrameRect( m, 188, 112, 0, 128 );
  
+-		// options
++		for( int i = 0; i < count; ++i )
+ 		{
+-			// highlight when opened
+-			if( m_menuFlags & MENU_OPTIONS )
+-				DrawButtonWithText(INT_XPOS(0.5),  INT_YPOS(8.5), INT_XPOS(4), INT_YPOS(1), "Options", r, g, b, true);
+-			else
+-				DrawButtonWithText(INT_XPOS(0.5),  INT_YPOS(8.5), INT_XPOS(4), INT_YPOS(1), "Options", r, g, b );
+-			// arrow on right part of button: down when closed, up when open
+-			if( m_menuFlags & MENU_OPTIONS )
+-				DrawIconOnButton( INT_XPOS(0.5), INT_YPOS(8.5), INT_XPOS(4), INT_YPOS(1), m_hArrowUp, 1, r, g, b );
+-			else
+-				DrawIconOnButton( INT_XPOS(0.5), INT_YPOS(8.5), INT_XPOS(4), INT_YPOS(1), m_hArrowDown, 1, r, g, b );
+-		}
+-
+-		DrawUtils::DrawRectangle(INT_XPOS(5), INT_YPOS(8.5), INT_XPOS(1), INT_YPOS(1));
+-		DrawIconOnButton( INT_XPOS(5), INT_YPOS(8.5), INT_XPOS(1), INT_YPOS(1), m_hArrowLeft, 0, r, g, b );
++			const SpecMenu::Rect it = SpecMenu::MenuItem( l, m, i );
+ 
+-		DrawUtils::DrawRectangle(INT_XPOS(6), INT_YPOS(8.5), INT_XPOS(4), INT_YPOS(1));
+-		// name will be drawn later
++			if( i == lit )
++				FillRGBABlend( it.x, it.y, it.w, it.h, MENU_R, MENU_G, MENU_B, 122 );
+ 
+-		DrawUtils::DrawRectangle(INT_XPOS(10), INT_YPOS(8.5), INT_XPOS(1), INT_YPOS(1));
+-		DrawIconOnButton( INT_XPOS(10), INT_YPOS(8.5), INT_XPOS(1), INT_YPOS(1), m_hArrowRight, 0, r, g, b );
+-
+-		// spectate options
+-		{
+-			// highlight when opened
+-			if( m_menuFlags & MENU_SPEC_OPTIONS )
+-				DrawButtonWithText(INT_XPOS(11.5), INT_YPOS(8.5), INT_XPOS(4), INT_YPOS(1), "Spectate Options", r, g, b, true);
+-			else
+-				DrawButtonWithText(INT_XPOS(11.5), INT_YPOS(8.5), INT_XPOS(4), INT_YPOS(1), "Spectate Options", r, g, b );
+-			// arrow on right part of button: down when closed, up when open
+-			if( m_menuFlags & MENU_SPEC_OPTIONS )
+-				DrawIconOnButton( INT_XPOS(11.5), INT_YPOS(8.5), INT_XPOS(4), INT_YPOS(1), m_hArrowUp, 1, r, g, b );
+-			else
+-				DrawIconOnButton( INT_XPOS(11.5), INT_YPOS(8.5), INT_XPOS(4), INT_YPOS(1), m_hArrowDown, 1, r, g, b );
+-		}
++			const int capTop = it.y + ( it.h - capH + 1 ) / 2;
++			const int x = m.x + ( checks ? l.menuCheckTextInset : l.menuTextInset );
++			paint.Text( items[i].slot, items[i].text, x, capTop, m.x + m.w - x - l.U( 8.0f ), MENU_R, MENU_G, MENU_B );
+ 
+-		if( m_menuFlags & MENU_OPTIONS )
+-		{
+-			DrawButtonWithText(INT_XPOS(0.5), INT_YPOS(2.5), INT_XPOS(4), INT_YPOS(1), "Close", r, g, b );
+-			DrawButtonWithText(INT_XPOS(0.5), INT_YPOS(3.5), INT_XPOS(4), INT_YPOS(1), "Help", r, g, b );
+-			
+-			// settings
++			if( items[i].check > 0 )
+ 			{
+-				// highlight when opened
+-				if( m_menuFlags & MENU_OPTIONS_SETTINGS )
+-					DrawButtonWithText(INT_XPOS(0.5), INT_YPOS(4.5), INT_XPOS(4), INT_YPOS(1), "Settings", r, g, b, true );
+-				else
+-					DrawButtonWithText(INT_XPOS(0.5), INT_YPOS(4.5), INT_XPOS(4), INT_YPOS(1), "Settings", r, g, b );
+-
+-				DrawIconOnButton( INT_XPOS(0.5), INT_YPOS(4.5), INT_XPOS(4), INT_YPOS(1), m_hArrowRight, 1, r, g, b );
++				const int size = l.U( 4.6f ); // 10 at 1080
++				CheckMark( m.x + l.menuCheckX, it.y + ( it.h - size ) / 2, size, MENU_R, MENU_G, MENU_B );
+ 			}
+ 
+-			DrawButtonWithText(INT_XPOS(0.5), INT_YPOS(5.5), INT_XPOS(4), INT_YPOS(1), "Picture-in-Picture", r, g, b );
+-			if( gHUD.m_Spectator.m_pip && gHUD.m_Spectator.m_pip->value != INSET_OFF )
+-				DrawIconOnButton( INT_XPOS(0.5), INT_YPOS(5.5), INT_XPOS(4), INT_YPOS(1), m_hChecked, -1, r, g, b );
+-
+-			DrawButtonWithText(INT_XPOS(0.5), INT_YPOS(6.5), INT_XPOS(4), INT_YPOS(1), "Autodirector", r, g, b );
+-			if( gHUD.m_Spectator.m_autoDirector && gHUD.m_Spectator.m_autoDirector->value )
+-				DrawIconOnButton( INT_XPOS(0.5), INT_YPOS(6.5), INT_XPOS(4), INT_YPOS(1), m_hChecked, -1, r, g, b );
+-
+-			DrawButtonWithText(INT_XPOS(0.5), INT_YPOS(7.5), INT_XPOS(4), INT_YPOS(1), "Show scores", r, g, b );
+-			if( gHUD.m_Scoreboard.m_bForceDraw || gHUD.m_Scoreboard.m_bShowscoresHeld )
+-				DrawIconOnButton( INT_XPOS(0.5), INT_YPOS(7.5), INT_XPOS(4), INT_YPOS(1), m_hChecked, -1, r, g, b );
+-
+-			if( m_menuFlags & MENU_OPTIONS_SETTINGS )
++			if( items[i].submenu )
+ 			{
+-				DrawButtonWithText(INT_XPOS(4.5), INT_YPOS(4.5), INT_XPOS(4), INT_YPOS(1), "Chat messages", r, g, b );
+-				if( gHUD.m_Spectator.m_HUD_saytext && gHUD.m_Spectator.m_HUD_saytext->value )
+-					DrawIconOnButton( INT_XPOS(4.5), INT_YPOS(4.5), INT_XPOS(4), INT_YPOS(1), m_hChecked, -1, r, g, b );
+-
+-				DrawButtonWithText(INT_XPOS(4.5), INT_YPOS(5.5), INT_XPOS(4), INT_YPOS(1), "Show status", r, g, b );
+-				if( gHUD.m_Spectator.m_drawstatus && gHUD.m_Spectator.m_drawstatus->value )
+-					DrawIconOnButton( INT_XPOS(4.5), INT_YPOS(5.5), INT_XPOS(4), INT_YPOS(1), m_hChecked, -1, r, g, b );
+-
+-				DrawButtonWithText(INT_XPOS(4.5), INT_YPOS(6.5), INT_XPOS(4), INT_YPOS(1), "View cone", r, g, b );
+-				if( gHUD.m_Spectator.m_drawcone && gHUD.m_Spectator.m_drawcone->value )
+-					DrawIconOnButton( INT_XPOS(4.5), INT_YPOS(6.5), INT_XPOS(4), INT_YPOS(1), m_hChecked, -1, r, g, b );
+-
+-				DrawButtonWithText(INT_XPOS(4.5), INT_YPOS(7.5), INT_XPOS(4), INT_YPOS(1), "Player names", r, g, b );
+-				if( gHUD.m_Spectator.m_drawnames && gHUD.m_Spectator.m_drawnames->value )
+-					DrawIconOnButton( INT_XPOS(4.5), INT_YPOS(7.5), INT_XPOS(4), INT_YPOS(1), m_hChecked, -1, r, g, b );
++				const int h = l.U( 6.7f ) | 1; // 15 at 1080
++				Triangle( m.x + m.w - l.U( 6.7f ), it.y + ( it.h - h ) / 2, l.U( 3.6f ), h, 1, MENU_R, MENU_G, MENU_B );
+ 			}
+ 		}
++	};
+ 
+-		if( m_menuFlags & MENU_SPEC_OPTIONS )
++	// the controls at the bottom
++	list( l.options, ST_OPTIONS, "Options", MENU_R, MENU_G, MENU_B );
++	button( l.prev, 0, l.U( 5.3f ));
++
++	{
++		int r, g, b;
++		GetTeamColor( r, g, b, g_PlayerExtraInfo[g_iUser2].teamnumber );
++		char name[64] = "";
++		if( g_iUser2 > 0 && g_iUser2 < MAX_PLAYERS )
+ 		{
+-			DrawButtonWithText(INT_XPOS(11.5), INT_YPOS(2.5), INT_XPOS(4), INT_YPOS(1), "Chase Map Overview", r, g, b );
+-			DrawButtonWithText(INT_XPOS(11.5), INT_YPOS(3.5), INT_XPOS(4), INT_YPOS(1), "Free Map Overview", r, g, b );
+-			DrawButtonWithText(INT_XPOS(11.5), INT_YPOS(4.5), INT_XPOS(4), INT_YPOS(1), "First Person", r, g, b );
+-			DrawButtonWithText(INT_XPOS(11.5), INT_YPOS(5.5), INT_XPOS(4), INT_YPOS(1), "Free look", r, g, b );
+-			DrawButtonWithText(INT_XPOS(11.5), INT_YPOS(6.5), INT_XPOS(4), INT_YPOS(1), "Free Chase Camera", r, g, b );
+-			DrawButtonWithText(INT_XPOS(11.5), INT_YPOS(7.5), INT_XPOS(4), INT_YPOS(1), "Locked Chase Camera", r, g, b );
++			hud_player_info_t info;
++			GetPlayerInfo( g_iUser2, &info );
++			if( info.name )
++				snprintf( name, sizeof( name ), "%s", info.name );
+ 		}
++		list( l.player, ST_PLAYER, name, r, g, b );
+ 	}
+ 
+-	//if( !label.m_szNameAndHealth[0] )
+-	//{
+-		int iLen = DrawUtils::HudStringLen( label.m_szNameAndHealth );
+-		GetTeamColor( r, g, b, g_PlayerExtraInfo[ g_iUser2 ].teamnumber );
+-		DrawUtils::DrawHudString( ScreenWidth * 0.5 - iLen * 0.5, INT_YPOS(9) - gHUD.GetCharHeight() * 0.5 , ScreenWidth,
+-								  label.m_szNameAndHealth, r, g, b );
+-	//}
++	button( l.next, 1, l.U( 6.7f ));
++	list( l.view, ST_VIEW, SpecModeName( g_iUser1 ), MENU_R, MENU_G, MENU_B );
+ 
+-	return 1;
++	if( m_menuFlags & MENU_OPTIONS )
++	{
++		const Item items[] =
++		{
++			{ ST_CLOSE, "Close", 0, false },
++			{ ST_HELP, "Help", 0, false },
++			{ ST_SETTINGS, "Settings", 0, true },
++			{ ST_PIP, "Picture-in-Picture", gHUD.m_Spectator.m_pip && gHUD.m_Spectator.m_pip->value != INSET_OFF, false },
++			{ ST_AUTODIRECTOR, "Autodirector", gHUD.m_Spectator.m_autoDirector && gHUD.m_Spectator.m_autoDirector->value, false },
++			{ ST_SHOWSCORES, "Show scores", gHUD.m_Scoreboard.m_bForceDraw || gHUD.m_Scoreboard.m_bShowscoresHeld, false },
++		};
++		const SpecMenu::Rect m = SpecMenu::MenuAbove( l, l.options, 6 );
++		menu( m, items, 6, true, ( m_menuFlags & MENU_OPTIONS_SETTINGS ) ? 2 : -1 );
++
++		if( m_menuFlags & MENU_OPTIONS_SETTINGS )
++		{
++			const Item settings[] =
++			{
++				{ ST_CHAT, "Chat messages", gHUD.m_Spectator.m_HUD_saytext && gHUD.m_Spectator.m_HUD_saytext->value, false },
++				{ ST_STATUS, "Show status", gHUD.m_Spectator.m_drawstatus && gHUD.m_Spectator.m_drawstatus->value, false },
++				{ ST_CONE, "View cone", gHUD.m_Spectator.m_drawcone && gHUD.m_Spectator.m_drawcone->value, false },
++				{ ST_NAMES, "Player names", gHUD.m_Spectator.m_drawnames && gHUD.m_Spectator.m_drawnames->value, false },
++			};
++			menu( SpecMenu::SubmenuRight( l, m, 2, 4 ), settings, 4, true, -1 );
++		}
++	}
++
++	if( m_menuFlags & MENU_SPEC_OPTIONS )
++	{
++		const Item modes[] =
++		{
++			{ ST_MODE6, SpecModeName( 6 ), 0, false },
++			{ ST_MODE5, SpecModeName( 5 ), 0, false },
++			{ ST_MODE4, SpecModeName( 4 ), 0, false },
++			{ ST_MODE3, SpecModeName( 3 ), 0, false },
++			{ ST_MODE2, SpecModeName( 2 ), 0, false },
++			{ ST_MODE1, SpecModeName( 1 ), 0, false },
++		};
++		menu( SpecMenu::MenuAbove( l, l.view, 6 ), modes, 6, false, -1 );
++	}
+ }
+ 
+ void CHudSpectatorGui::CalcAllNeededData( )
+@@ -471,12 +637,9 @@ int CHudSpectatorGui::MsgFunc_SpecHealth2(const char *pszName, int iSize, void *
+ 	return 1;
+ }
+ 
+-#define PLACE_DEFAULT_SIZE_BUTTON_AT_X_Y(x, y) XPOS(x), YPOS(y), XPOS(x + 4.0f), YPOS(y + 1.0f)
+-
++// The touch buttons (they take the mouse clicks) lie over the controls drawn by DrawSteamMenus()
+ void CHudSpectatorGui::UserCmd_ToggleSpectatorMenu()
+ {
+-	static byte color[4] = {0, 0, 0, 0};
+-
+ 	if( !g_iMobileAPIVersion )
+ 		return;
+ 
+@@ -486,17 +649,11 @@ void CHudSpectatorGui::UserCmd_ToggleSpectatorMenu()
+ 	{
+ 		m_menuFlags |= ROOT_MENU;
+ 
+-		gMobileAPI.pfnTouchAddClientButton( "_spec_menu_options", "*white", "_spec_toggle_menu_options",
+-			PLACE_DEFAULT_SIZE_BUTTON_AT_X_Y( 0.5f, 8.5f ), color, 0, 1.0f, 0 );
+-
+-		gMobileAPI.pfnTouchAddClientButton( "_spec_menu_find_next_player_reverse", "*white", "_spec_find_next_player_reverse",
+-			XPOS(5.0f), YPOS(8.5f), XPOS(6.0f), YPOS(9.5f), color, 0, 1.0f, 0 );
+-
+-		gMobileAPI.pfnTouchAddClientButton( "_spec_menu_find_next_player", "*white", "_spec_find_next_player",
+-			XPOS(10.0f),YPOS(8.5f), XPOS(11.0f),YPOS(9.5f), color, 0, 1.0f, 0 );
+-
+-		gMobileAPI.pfnTouchAddClientButton( "_spec_menu_spectate_options", "*white", "_spec_toggle_menu_spectate_options",
+-			PLACE_DEFAULT_SIZE_BUTTON_AT_X_Y( 11.5f, 8.5f ),color, 0, 1.0f, 0 );
++		const SpecMenu::Layout l = SpecMenu::Compute( ScreenWidth, ScreenHeight );
++		AddTouch( "_spec_menu_options", "_spec_toggle_menu_options", l.options );
++		AddTouch( "_spec_menu_find_next_player_reverse", "_spec_find_next_player_reverse", l.prev );
++		AddTouch( "_spec_menu_find_next_player", "_spec_find_next_player", l.next );
++		AddTouch( "_spec_menu_spectate_options", "_spec_toggle_menu_spectate_options", l.view );
+ 	}
+ 	else
+ 	{
+@@ -510,26 +667,21 @@ void CHudSpectatorGui::UserCmd_ToggleSpectatorMenu()
+ 
+ void CHudSpectatorGui::UserCmd_ToggleSpectatorMenuOptions()
+ {
+-	static byte color[4] = {0, 0, 0, 0};
+-
+ 	if( !(m_menuFlags & ROOT_MENU) || !g_iMobileAPIVersion )
+ 		return;
+ 
+ 	if( !(m_menuFlags & MENU_OPTIONS) )
+ 	{
+ 		m_menuFlags |= MENU_OPTIONS;
+-		gMobileAPI.pfnTouchAddClientButton( "_spec_opt_close", "*white", "_spec_toggle_menu",
+-			PLACE_DEFAULT_SIZE_BUTTON_AT_X_Y( 0.5f, 2.5f ), color, 0, 1.0f, 0 );
+-		gMobileAPI.pfnTouchAddClientButton( "_spec_opt_help", "*white", "spec_help; _spec_toggle_menu_options",
+-			PLACE_DEFAULT_SIZE_BUTTON_AT_X_Y( 0.5f, 3.5f ), color, 0, 1.0f, 0 );
+-		gMobileAPI.pfnTouchAddClientButton( "_spec_opt_settings", "*white", "_spec_toggle_menu_options_settings",
+-			PLACE_DEFAULT_SIZE_BUTTON_AT_X_Y( 0.5f, 4.5f ), color, 0, 1.0f, 0 );
+-		gMobileAPI.pfnTouchAddClientButton( "_spec_opt_pip", "*white", "spec_pip t; _spec_toggle_menu_options",
+-			PLACE_DEFAULT_SIZE_BUTTON_AT_X_Y( 0.5f, 5.5f ), color, 0, 1.0f, 0 );
+-		gMobileAPI.pfnTouchAddClientButton( "_spec_opt_ad", "*white", "spec_autodirector t; _spec_toggle_menu_options",
+-			PLACE_DEFAULT_SIZE_BUTTON_AT_X_Y( 0.5f, 6.5f ), color, 0, 1.0f, 0 );
+-		gMobileAPI.pfnTouchAddClientButton( "_spec_opt_showscores", "*white", "_spec_toggle_menu_options; scoreboard",
+-			PLACE_DEFAULT_SIZE_BUTTON_AT_X_Y( 0.5f, 7.5f ), color, 0, 1.0f, 0 );
++
++		const SpecMenu::Layout l = SpecMenu::Compute( ScreenWidth, ScreenHeight );
++		const SpecMenu::Rect m = SpecMenu::MenuAbove( l, l.options, 6 );
++		AddTouch( "_spec_opt_close", "_spec_toggle_menu", SpecMenu::MenuItem( l, m, 0 ));
++		AddTouch( "_spec_opt_help", "spec_help; _spec_toggle_menu_options", SpecMenu::MenuItem( l, m, 1 ));
++		AddTouch( "_spec_opt_settings", "_spec_toggle_menu_options_settings", SpecMenu::MenuItem( l, m, 2 ));
++		AddTouch( "_spec_opt_pip", "spec_pip t; _spec_toggle_menu_options", SpecMenu::MenuItem( l, m, 3 ));
++		AddTouch( "_spec_opt_ad", "spec_autodirector t; _spec_toggle_menu_options", SpecMenu::MenuItem( l, m, 4 ));
++		AddTouch( "_spec_opt_showscores", "_spec_toggle_menu_options; scoreboard", SpecMenu::MenuItem( l, m, 5 ));
+ 	}
+ 	else
+ 	{
+@@ -541,22 +693,19 @@ void CHudSpectatorGui::UserCmd_ToggleSpectatorMenuOptions()
+ 
+ void CHudSpectatorGui::UserCmd_ToggleSpectatorMenuOptionsSettings()
+ {
+-	static byte color[4] = {0, 0, 0, 0};
+-
+ 	if( !(m_menuFlags & ROOT_MENU) || !g_iMobileAPIVersion )
+ 		return;
+ 
+ 	if( !(m_menuFlags & MENU_OPTIONS_SETTINGS) )
+ 	{
+ 		m_menuFlags |= MENU_OPTIONS_SETTINGS;
+-		gMobileAPI.pfnTouchAddClientButton( "_spec_opt_chat_msgs", "*white", "hud_saytext t; _spec_toggle_menu_options_settings",
+-			PLACE_DEFAULT_SIZE_BUTTON_AT_X_Y( 4.5f, 4.5f ), color, 0, 1.0f, 0 );
+-		gMobileAPI.pfnTouchAddClientButton( "_spec_opt_set_status", "*white", "spec_drawstatus t; _spec_toggle_menu_options_settings",
+-			PLACE_DEFAULT_SIZE_BUTTON_AT_X_Y( 4.5f, 5.5f ), color, 0, 1.0f, 0 );
+-		gMobileAPI.pfnTouchAddClientButton( "_spec_opt_draw_cones", "*white", "spec_drawcone t; _spec_toggle_menu_options_settings",
+-			PLACE_DEFAULT_SIZE_BUTTON_AT_X_Y( 4.5f, 6.5f ), color, 0, 1.0f, 0 );
+-		gMobileAPI.pfnTouchAddClientButton( "_spec_opt_draw_names", "*white", "spec_drawnames t; _spec_toggle_menu_options_settings",
+-			PLACE_DEFAULT_SIZE_BUTTON_AT_X_Y( 4.5f, 7.5f ), color, 0, 1.0f, 0 );
++
++		const SpecMenu::Layout l = SpecMenu::Compute( ScreenWidth, ScreenHeight );
++		const SpecMenu::Rect sub = SpecMenu::SubmenuRight( l, SpecMenu::MenuAbove( l, l.options, 6 ), 2, 4 );
++		AddTouch( "_spec_opt_set_chat_msgs", "hud_saytext t; _spec_toggle_menu_options_settings", SpecMenu::MenuItem( l, sub, 0 ));
++		AddTouch( "_spec_opt_set_status", "spec_drawstatus t; _spec_toggle_menu_options_settings", SpecMenu::MenuItem( l, sub, 1 ));
++		AddTouch( "_spec_opt_set_draw_cones", "spec_drawcone t; _spec_toggle_menu_options_settings", SpecMenu::MenuItem( l, sub, 2 ));
++		AddTouch( "_spec_opt_set_draw_names", "spec_drawnames t; _spec_toggle_menu_options_settings", SpecMenu::MenuItem( l, sub, 3 ));
+ 	}
+ 	else
+ 	{
+@@ -567,26 +716,21 @@ void CHudSpectatorGui::UserCmd_ToggleSpectatorMenuOptionsSettings()
+ 
+ void CHudSpectatorGui::UserCmd_ToggleSpectatorMenuSpectateOptions()
+ {
+-	static byte color[4] = {0, 0, 0, 0};
+-
+ 	if( !(m_menuFlags & ROOT_MENU) || !g_iMobileAPIVersion )
+ 		return;
+ 
+ 	if( !(m_menuFlags & MENU_SPEC_OPTIONS) )
+ 	{
+ 		m_menuFlags |= MENU_SPEC_OPTIONS;
+-		gMobileAPI.pfnTouchAddClientButton( "_spec_spec_6", "*white", "spec_mode 6; _spec_toggle_menu_spectate_options",
+-			PLACE_DEFAULT_SIZE_BUTTON_AT_X_Y( 11.5f, 2.5f ), color, 0, 1.0f, 0 );
+-		gMobileAPI.pfnTouchAddClientButton( "_spec_spec_5", "*white", "spec_mode 5; _spec_toggle_menu_spectate_options",
+-			PLACE_DEFAULT_SIZE_BUTTON_AT_X_Y( 11.5f, 3.5f ), color, 0, 1.0f, 0 );
+-		gMobileAPI.pfnTouchAddClientButton( "_spec_spec_4", "*white", "spec_mode 4; _spec_toggle_menu_spectate_options",
+-			PLACE_DEFAULT_SIZE_BUTTON_AT_X_Y( 11.5f, 4.5f ), color, 0, 1.0f, 0 );
+-		gMobileAPI.pfnTouchAddClientButton( "_spec_spec_3", "*white", "spec_mode 3; _spec_toggle_menu_spectate_options",
+-			PLACE_DEFAULT_SIZE_BUTTON_AT_X_Y( 11.5f, 5.5f ), color, 0, 1.0f, 0 );
+-		gMobileAPI.pfnTouchAddClientButton( "_spec_spec_2", "*white", "spec_mode 2; _spec_toggle_menu_spectate_options",
+-			PLACE_DEFAULT_SIZE_BUTTON_AT_X_Y( 11.5f, 6.5f ), color, 0, 1.0f, 0 );
+-		gMobileAPI.pfnTouchAddClientButton( "_spec_spec_1", "*white", "spec_mode 1; _spec_toggle_menu_spectate_options",
+-			PLACE_DEFAULT_SIZE_BUTTON_AT_X_Y( 11.5f, 7.5f ), color, 0, 1.0f, 0 );
++
++		const SpecMenu::Layout l = SpecMenu::Compute( ScreenWidth, ScreenHeight );
++		const SpecMenu::Rect m = SpecMenu::MenuAbove( l, l.view, 6 );
++		AddTouch( "_spec_spec_6", "spec_mode 6; _spec_toggle_menu_spectate_options", SpecMenu::MenuItem( l, m, 0 ));
++		AddTouch( "_spec_spec_5", "spec_mode 5; _spec_toggle_menu_spectate_options", SpecMenu::MenuItem( l, m, 1 ));
++		AddTouch( "_spec_spec_4", "spec_mode 4; _spec_toggle_menu_spectate_options", SpecMenu::MenuItem( l, m, 2 ));
++		AddTouch( "_spec_spec_3", "spec_mode 3; _spec_toggle_menu_spectate_options", SpecMenu::MenuItem( l, m, 3 ));
++		AddTouch( "_spec_spec_2", "spec_mode 2; _spec_toggle_menu_spectate_options", SpecMenu::MenuItem( l, m, 4 ));
++		AddTouch( "_spec_spec_1", "spec_mode 1; _spec_toggle_menu_spectate_options", SpecMenu::MenuItem( l, m, 5 ));
+ 	}
+ 	else
+ 	{
 diff --git a/cl_dll/hud/spectator_layout.h b/cl_dll/hud/spectator_layout.h
 new file mode 100644
-index 0000000..bdca025
+index 0000000..7e7996f
 --- /dev/null
 +++ b/cl_dll/hud/spectator_layout.h
-@@ -0,0 +1,90 @@
+@@ -0,0 +1,188 @@
 +//
 +// spectator_layout.h
 +//
@@ -5808,6 +6324,104 @@ index 0000000..bdca025
 +}
 +
 +} // namespace SpecBar
++
++// The menus of the spectator mode as in the Steam version (measured on its screenshots at 1920x1080):
++//   at the bottom: "Options" 11..313, the previous player 567..611, the player 623..1297 (in the middle of the
++//   screen), the next player 1308..1352, the camera mode 1605..1907, all of them 1003..1051 (frames of 1 pixel,
++//   "BorderBright"); the lists have a small grey arrow on the right, the buttons orange triangles
++//   a menu opens above its list (its frame ends 2 pixels above it) and is as wide; its items are 66 pixels high,
++//   the text in "DefaultSmall" (Verdana, thin) with its capitals in the middle of the item, 31 pixels from the
++//   edge if the menu has check marks (they are at 15), else 7; an open submenu is lit (255 176 0, 48 %)
++namespace SpecMenu {
++
++struct Rect
++{
++	int x = 0, y = 0, w = 0, h = 0;
++};
++
++struct Layout
++{
++	float u = 1.0f;
++	Rect options, prev, player, next, view; // the controls at the bottom
++	int itemH = 0;                          // an item of a menu
++	int comboTextInset = 0, comboCapTop = 0;
++	int menuTextInset = 0, menuCheckTextInset = 0, menuCheckX = 0;
++
++	int U( float v ) const { return int( v * u + 0.5f ); }
++};
++
++inline Layout Compute( int screenW, int screenH )
++{
++	Layout l;
++	l.u = screenH / 480.0f;
++
++	const int y = screenH - l.U( 34.2f );
++	const int h = l.U( 21.8f );
++	const int comboW = l.U( 134.7f );
++	const int buttonW = l.U( 20.0f );
++	const int mid = screenW / 2;
++
++	l.options = { l.U( 4.9f ), y, comboW, h };
++	l.prev    = { mid - l.U( 174.7f ), y, buttonW, h };
++	l.player  = { mid - l.U( 149.8f ), y, l.U( 300.0f ), h };
++	l.next    = { mid + l.U( 154.7f ), y, buttonW, h };
++	l.view    = { screenW - l.U( 140.0f ), y, comboW, h };
++
++	// a narrow screen (4:3, 5:4): the lists on the sides are made narrower to keep the gap of the Steam version
++	// (12 pixels at 1080) to the buttons in the middle
++	const int gap = l.U( 5.3f );
++	if( l.options.x + l.options.w > l.prev.x - gap )
++		l.options.w = l.prev.x - gap - l.options.x;
++	if( l.view.x < l.next.x + l.next.w + gap )
++	{
++		const int right = l.view.x + l.view.w;
++		l.view.x = l.next.x + l.next.w + gap;
++		l.view.w = right - l.view.x;
++	}
++
++	l.itemH = l.U( 29.33f );
++	l.comboTextInset = l.U( 1.3f );
++	l.comboCapTop = l.U( 8.0f );
++	l.menuTextInset = l.U( 3.1f );
++	l.menuCheckTextInset = l.U( 13.8f );
++	l.menuCheckX = l.U( 6.7f );
++	return l;
++}
++
++// The frame of a menu of "items" items opened above the list "combo"
++inline Rect MenuAbove( const Layout &l, const Rect &combo, int items )
++{
++	Rect r;
++	r.x = combo.x;
++	r.w = combo.w;
++	r.h = items * l.itemH + 2;
++	r.y = combo.y - 2 - ( r.h - 1 );
++	return r;
++}
++
++// The frame of a submenu opened to the right of the item "item" of the menu "menu"
++inline Rect SubmenuRight( const Layout &l, const Rect &menu, int item, int items )
++{
++	Rect r;
++	r.x = menu.x + menu.w;
++	r.w = menu.w;
++	r.h = items * l.itemH + 2;
++	r.y = menu.y + item * l.itemH;
++	return r;
++}
++
++// The item i of a menu
++inline Rect MenuItem( const Layout &l, const Rect &menu, int i )
++{
++	Rect r;
++	r.x = menu.x + 1;
++	r.w = menu.w - 2;
++	r.y = menu.y + 1 + i * l.itemH;
++	r.h = l.itemH;
++	return r;
++}
++
++} // namespace SpecMenu
 diff --git a/cl_dll/hud/text_gdi.cpp b/cl_dll/hud/text_gdi.cpp
 new file mode 100644
 index 0000000..d28491e
