@@ -5521,7 +5521,7 @@ index 0000000..19bb2e6
 +
 +} // namespace SbLayout
 diff --git a/cl_dll/hud/spectator_gui.cpp b/cl_dll/hud/spectator_gui.cpp
-index 991ebdd..c43755a 100644
+index 991ebdd..fe75316 100644
 --- a/cl_dll/hud/spectator_gui.cpp
 +++ b/cl_dll/hud/spectator_gui.cpp
 @@ -36,6 +36,28 @@ version.
@@ -5635,8 +5635,7 @@ index 991ebdd..c43755a 100644
 +	ST_PLAYER_ITEM,
 +	ST_COUNT = ST_PLAYER_ITEM + SpecMenu::PLAYERS_VISIBLE
 +};
- 
--	if ( highlight )
++
 +CTextTexture g_specMenuText[ST_COUNT];
 +
 +const int MENU_R = 255, MENU_G = 176, MENU_B = 0; // "BaseText"
@@ -5660,21 +5659,20 @@ index 991ebdd..c43755a 100644
 +void Triangle( int x, int y, int w, int h, int dir, int red, int green, int blue )
 +{
 +	if( dir == 2 || dir == 3 )
- 	{
--		FillRGBABlend(x1, y1, wide, tall, r, g, b, 48);
++	{
 +		for( int i = 0; i < h; ++i )
 +		{
 +			const int row = dir == 2 ? i : h - 1 - i;
 +			FillRGBABlend( x + row, y + i, w - row * 2, 1, red, green, blue, 255 );
 +		}
 +		return;
- 	}
++	}
  
--	DrawUtils::DrawHudString(x1 + INT_XPOS(0.5), y1 + tall*0.5 - gHUD.GetCharHeight() * 0.5, x1 + wide, sz,
--							 r, g, b );
+-	if ( highlight )
 +	const int half = h / 2;
 +	for( int i = 0; i < h; ++i )
-+	{
+ 	{
+-		FillRGBABlend(x1, y1, wide, tall, r, g, b, 48);
 +		const int d = i <= half ? i : h - 1 - i; // 0 at the top and the bottom, half in the middle
 +		const int len = w * ( d + 1 ) / ( half + 1 );
 +		if( len <= 0 )
@@ -5683,30 +5681,36 @@ index 991ebdd..c43755a 100644
 +			FillRGBABlend( x, y + i, len, 1, red, green, blue, 255 );
 +		else
 +			FillRGBABlend( x + w - len, y + i, len, 1, red, green, blue, 255 );
-+	}
- }
+ 	}
++}
  
--// Unified icon drawing helper. align: -1 = left, 0 = center, 1 = right
--static void DrawIconOnButton( int x1, int y1, int wide, int tall, int hTex, int align = -1, int r = 255, int g = 255, int b = 255, float alpha = 1.0f, int pad = 15 )
+-	DrawUtils::DrawHudString(x1 + INT_XPOS(0.5), y1 + tall*0.5 - gHUD.GetCharHeight() * 0.5, x1 + wide, sz,
+-							 r, g, b );
 +// the check mark of a menu item (10 x 11 at 1080)
 +void CheckMark( int x, int y, int size, int red, int green, int blue )
- {
--	if( !hTex )
--		return;
++{
 +	const int t = size / 5 > 1 ? size / 5 : 1;          // the thickness
 +	const int knee = size * 2 / 5;                       // the short stroke goes down to the right
 +	for( int i = 0; i <= knee; ++i )
 +		FillRGBABlend( x + i, y + size / 2 + i, t, t, red, green, blue, 255 );
 +	for( int i = 0; i <= size - knee; ++i )               // the long stroke goes up to the right
 +		FillRGBABlend( x + knee + i, y + size / 2 + knee - i * ( size / 2 + knee ) / ( size - knee ), t, t, red, green, blue, 255 );
-+}
-+
+ }
+ 
+-// Unified icon drawing helper. align: -1 = left, 0 = center, 1 = right
+-static void DrawIconOnButton( int x1, int y1, int wide, int tall, int hTex, int align = -1, int r = 255, int g = 255, int b = 255, float alpha = 1.0f, int pad = 15 )
 +struct SpecPainter
-+{
+ {
+-	if( !hTex )
+-		return;
 +	float scale;
 +	int em, emHud;
 +	bool antialias;
-+
+ 
+-	gRenderAPI.GL_SelectTexture( 0 );
+-	gRenderAPI.GL_Bind( 0, hTex );
+-	gEngfuncs.pTriAPI->RenderMode( kRenderTransAlpha );
+-	gEngfuncs.pTriAPI->Color4f( r / 255.0f, g / 255.0f, b / 255.0f, alpha );
 +	// the width of a text in the units of the HUD (0 without the Windows fonts)
 +	int Width( int slot, const char *text, int maxW ) const
 +	{
@@ -5716,13 +5720,15 @@ index 991ebdd..c43755a 100644
 +			return 0;
 +		return (int)( tex.Width() / scale + 0.999f );
 +	}
-+
+ 
+-	int uploadW = (int)gRenderAPI.RenderGetParm( PARM_TEX_WIDTH, hTex );
+-	int uploadH = (int)gRenderAPI.RenderGetParm( PARM_TEX_HEIGHT, hTex );
 +	// a text of the menus: "DefaultSmall" (Verdana, thin); x and capTop in the units of the HUD
 +	void Text( int slot, const char *text, int x, int capTop, int maxW, int red, int green, int blue ) const
 +	{
 +		CTextTexture &tex = g_specMenuText[slot];
 +		const std::string utf8 = TextUtf::ToUtf8( text ? text : "" );
-+
+ 
 +		if( tex.Update( utf8, "Verdana", em, 400, antialias, (int)( maxW * scale )))
 +		{
 +			if( tex.Valid() )
@@ -5737,7 +5743,10 @@ index 991ebdd..c43755a 100644
 +		}
 +	}
 +};
-+
+ 
+-	// compute quad position in pixels
+-	float quadX = x1;
+-	float quadY = y1 + ( tall - uploadH ) / 2.0f;
 +const char *SpecModeName( int mode )
 +{
 +	switch( mode )
@@ -5751,7 +5760,13 @@ index 991ebdd..c43755a 100644
 +	}
 +	return "Spectate Options";
 +}
-+
+ 
+-	if( align == -1 ) // left
+-		quadX = x1 + pad; // small padding from left
+-	else if( align == 0 ) // center
+-		quadX = x1 + ( wide - uploadW ) * 0.5f;
+-	else if( align == 1 ) // right
+-		quadX = x1 + wide - uploadW - pad; // small padding from right
 +// is the mouse cursor (seen while the menus are open) over the rectangle
 +bool CursorIn( const SpecMenu::Rect &r )
 +{
@@ -5764,10 +5779,10 @@ index 991ebdd..c43755a 100644
 +	return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
 +}
  
--	gRenderAPI.GL_SelectTexture( 0 );
--	gRenderAPI.GL_Bind( 0, hTex );
--	gEngfuncs.pTriAPI->RenderMode( kRenderTransAlpha );
--	gEngfuncs.pTriAPI->Color4f( r / 255.0f, g / 255.0f, b / 255.0f, alpha );
+-	DrawUtils::Draw2DQuad( quadX * gHUD.m_flScale,
+-						   quadY * gHUD.m_flScale,
+-						   (quadX + (float)uploadW) * gHUD.m_flScale,
+-						   (quadY + (float)uploadH) * gHUD.m_flScale );
 +// a touch button over a rectangle of the layout (the touch buttons are placed in parts of the screen)
 +void AddTouch( const char *name, const char *command, const SpecMenu::Rect &r )
 +{
@@ -5789,32 +5804,21 @@ index 991ebdd..c43755a 100644
 +
 +	const float scale = gHUD.m_flScale > 0.0f ? gHUD.m_flScale : 1.0f; // pixels of the screen per unit of the HUD
 +	const SpecBar::Layout l = SpecBar::Compute( ScreenWidth, ScreenHeight );
- 
--	int uploadW = (int)gRenderAPI.RenderGetParm( PARM_TEX_WIDTH, hTex );
--	int uploadH = (int)gRenderAPI.RenderGetParm( PARM_TEX_HEIGHT, hTex );
++
 +	// the font: its size depends on the real height of the screen
 +	const SpecBar::Font font = SpecBar::FontFor( TrueHeight );
 +	const int em = SpecBar::FontEm( font.tall );
 +	const int emHud = (int)( em / scale + 0.5f );
 +	const int row1 = SpecBar::CellTopFromCapTop( SpecBar::Row1CapTop( ScreenHeight ), emHud );
 +	const int row2 = SpecBar::CellTopFromCapTop( SpecBar::Row2CapTop( ScreenHeight ), emHud );
- 
++
 +	// the divider ("BorderBright" of the scheme)
 +	FillRGBABlend( l.dividerX, l.dividerY, l.dividerW, l.dividerH, 188, 112, 0, 128 );
- 
--	// compute quad position in pixels
--	float quadX = x1;
--	float quadY = y1 + ( tall - uploadH ) / 2.0f;
++
 +	char ct[32], t[32], info[96];
 +	snprintf( ct, sizeof( ct ), "%d", label.m_iCounterTerrorists );
 +	snprintf( t, sizeof( t ), "%d", label.m_iTerrorists );
- 
--	if( align == -1 ) // left
--		quadX = x1 + pad; // small padding from left
--	else if( align == 0 ) // center
--		quadX = x1 + ( wide - uploadW ) * 0.5f;
--	else if( align == 1 ) // right
--		quadX = x1 + wide - uploadW - pad; // small padding from right
++
 +	if( gEngfuncs.IsSpectateOnly() )
 +		snprintf( info, sizeof( info ), "%s", label.m_szMap );
 +	else
@@ -5829,11 +5833,7 @@ index 991ebdd..c43755a 100644
 +		int x, y;
 +		bool rightAligned;
 +	};
- 
--	DrawUtils::Draw2DQuad( quadX * gHUD.m_flScale,
--						   quadY * gHUD.m_flScale,
--						   (quadX + (float)uploadW) * gHUD.m_flScale,
--						   (quadY + (float)uploadH) * gHUD.m_flScale );
++
 +	const Item items[] =
 +	{
 +		{ &m_txtCTLabel, "Counter-Terrorists :", l.teamLabelRight, row1, true },
@@ -5905,7 +5905,7 @@ index 991ebdd..c43755a 100644
  	int r = 255, g = 140, b = 0;
  
  	// at first, draw these silly black bars
-@@ -186,180 +437,388 @@ int CHudSpectatorGui::Draw( float flTime )
+@@ -186,180 +437,397 @@ int CHudSpectatorGui::Draw( float flTime )
  		startpos = XRES(gHUD.m_Spectator.m_OverviewData.insetWindowWidth) + XRES(gHUD.m_Spectator.m_OverviewData.insetWindowX);
  		startpos *= ScreenWidth / TrueWidth; // hud_scale adjust
  	}
@@ -5996,12 +5996,12 @@ index 991ebdd..c43755a 100644
 +	{
 +		FillRGBABlend( m.x + 1, m.y + 1, m.w - 2, m.h - 2, 0, 0, 0, 245 );
 +		FrameRect( m, 188, 112, 0, 128 );
- 
--			if( !m_bBombPlanted ) // timer remaining
++
 +		for( int i = 0; i < count; ++i )
 +		{
 +			const SpecMenu::Rect it = SpecMenu::MenuItem( l, m, i );
-+
+ 
+-			if( !m_bBombPlanted ) // timer remaining
 +			if( i == lit || ( hover && CursorIn( it )))
 +				FillRGBABlend( it.x, it.y, it.w, it.h, MENU_R, MENU_G, MENU_B, litA );
 +
@@ -6206,7 +6206,8 @@ index 991ebdd..c43755a 100644
 +			if( scroll )
 +			{
 +				// the scroll bar of the Steam version: a line on its left, the buttons with small grey arrows
-+				// near their right side (as the arrows of the lists), the thumb in a frame
++				// (in the middle of the buttons, the Steam version has them near the right side), the thumb in
++				// a frame
 +				FillRGBABlend( bar.x, bar.y, 1, bar.h, 188, 112, 0, 128 );
 +
 +				const SpecMenu::Rect up = SpecMenu::ScrollUp( l, m ), down = SpecMenu::ScrollDown( l, m );
@@ -6214,9 +6215,8 @@ index 991ebdd..c43755a 100644
 +				FrameRect( up, 188, 112, 0, 128 );
 +				FrameRect( down, 188, 112, 0, 128 );
 +				const int aw = l.U( 3.1f ) | 1, ah = ( aw + 1 ) / 2;
-+				const int ax = bar.x + bar.w - 1 - l.U( 4.0f ) - aw / 2;
-+				Triangle( ax, up.y + ( up.h - ah ) / 2, aw, ah, 3, 176, 175, 173 );
-+				Triangle( ax, down.y + ( down.h - ah ) / 2 + 1, aw, ah, 2, 176, 175, 173 );
++				Triangle( up.x + ( up.w - aw ) / 2, up.y + ( up.h - ah ) / 2, aw, ah, 3, 176, 175, 173 );
++				Triangle( down.x + ( down.w - aw ) / 2, down.y + ( down.h - ah ) / 2, aw, ah, 2, 176, 175, 173 );
 +				FillRGBABlend( thumb.x + 1, thumb.y + 1, thumb.w - 2, thumb.h - 2, 24, 14, 0, 160 );
 +				FrameRect( thumb, 188, 112, 0, 128 );
 +			}
@@ -6227,8 +6227,8 @@ index 991ebdd..c43755a 100644
 -			DrawButtonWithText(INT_XPOS(0.5), INT_YPOS(6.5), INT_XPOS(4), INT_YPOS(1), "Autodirector", r, g, b );
 -			if( gHUD.m_Spectator.m_autoDirector && gHUD.m_Spectator.m_autoDirector->value )
 -				DrawIconOnButton( INT_XPOS(0.5), INT_YPOS(6.5), INT_XPOS(4), INT_YPOS(1), m_hChecked, -1, r, g, b );
-+// All the players in the order of their numbers, the spectators and the dead too (as the list of the Steam
-+// version; the server does not follow those it can't)
++// The players that can be followed, in the order of their numbers: in a team, alive, not the local player
++// (the Steam version lists the spectators and the dead too, though the server does not follow them)
 +int CHudSpectatorGui::BuildPlayerList( int *list )
 +{
 +	gHUD.m_Scoreboard.GetAllPlayersInfo();
@@ -6236,24 +6236,50 @@ index 991ebdd..c43755a 100644
 -			DrawButtonWithText(INT_XPOS(0.5), INT_YPOS(7.5), INT_XPOS(4), INT_YPOS(1), "Show scores", r, g, b );
 -			if( gHUD.m_Scoreboard.m_bForceDraw || gHUD.m_Scoreboard.m_bShowscoresHeld )
 -				DrawIconOnButton( INT_XPOS(0.5), INT_YPOS(7.5), INT_XPOS(4), INT_YPOS(1), m_hChecked, -1, r, g, b );
++	const cl_entity_t *local = gEngfuncs.GetLocalPlayer();
++	const int localIndex = local ? local->index : 0;
 +	int n = 0;
-+	for( int i = 1; i <= MAX_PLAYERS; ++i )
-+	{
-+		if( g_PlayerInfoList[i].name && g_PlayerInfoList[i].name[0] )
-+			list[n++] = i;
-+	}
  
 -			if( m_menuFlags & MENU_OPTIONS_SETTINGS )
 -			{
 -				DrawButtonWithText(INT_XPOS(4.5), INT_YPOS(4.5), INT_XPOS(4), INT_YPOS(1), "Chat messages", r, g, b );
 -				if( gHUD.m_Spectator.m_HUD_saytext && gHUD.m_Spectator.m_HUD_saytext->value )
 -					DrawIconOnButton( INT_XPOS(4.5), INT_YPOS(4.5), INT_XPOS(4), INT_YPOS(1), m_hChecked, -1, r, g, b );
-+	return n;
-+}
++	for( int i = 1; i <= MAX_PLAYERS; ++i )
++	{
++		if( i == localIndex || i == gHUD.m_Scoreboard.m_iPlayerNum || !g_PlayerInfoList[i].name || !g_PlayerInfoList[i].name[0] )
++			continue;
  
 -				DrawButtonWithText(INT_XPOS(4.5), INT_YPOS(5.5), INT_XPOS(4), INT_YPOS(1), "Show status", r, g, b );
 -				if( gHUD.m_Spectator.m_drawstatus && gHUD.m_Spectator.m_drawstatus->value )
 -					DrawIconOnButton( INT_XPOS(4.5), INT_YPOS(5.5), INT_XPOS(4), INT_YPOS(1), m_hChecked, -1, r, g, b );
++		const int team = g_PlayerExtraInfo[i].teamnumber;
++		if(( team != TEAM_TERRORIST && team != TEAM_CT ) || g_PlayerExtraInfo[i].dead )
++			continue;
+ 
+-				DrawButtonWithText(INT_XPOS(4.5), INT_YPOS(6.5), INT_XPOS(4), INT_YPOS(1), "View cone", r, g, b );
+-				if( gHUD.m_Spectator.m_drawcone && gHUD.m_Spectator.m_drawcone->value )
+-					DrawIconOnButton( INT_XPOS(4.5), INT_YPOS(6.5), INT_XPOS(4), INT_YPOS(1), m_hChecked, -1, r, g, b );
++		list[n++] = i;
++	}
+ 
+-				DrawButtonWithText(INT_XPOS(4.5), INT_YPOS(7.5), INT_XPOS(4), INT_YPOS(1), "Player names", r, g, b );
+-				if( gHUD.m_Spectator.m_drawnames && gHUD.m_Spectator.m_drawnames->value )
+-					DrawIconOnButton( INT_XPOS(4.5), INT_YPOS(7.5), INT_XPOS(4), INT_YPOS(1), m_hChecked, -1, r, g, b );
+-			}
+-		}
++	return n;
++}
+ 
+-		if( m_menuFlags & MENU_SPEC_OPTIONS )
+-		{
+-			DrawButtonWithText(INT_XPOS(11.5), INT_YPOS(2.5), INT_XPOS(4), INT_YPOS(1), "Chase Map Overview", r, g, b );
+-			DrawButtonWithText(INT_XPOS(11.5), INT_YPOS(3.5), INT_XPOS(4), INT_YPOS(1), "Free Map Overview", r, g, b );
+-			DrawButtonWithText(INT_XPOS(11.5), INT_YPOS(4.5), INT_XPOS(4), INT_YPOS(1), "First Person", r, g, b );
+-			DrawButtonWithText(INT_XPOS(11.5), INT_YPOS(5.5), INT_XPOS(4), INT_YPOS(1), "Free look", r, g, b );
+-			DrawButtonWithText(INT_XPOS(11.5), INT_YPOS(6.5), INT_XPOS(4), INT_YPOS(1), "Free Chase Camera", r, g, b );
+-			DrawButtonWithText(INT_XPOS(11.5), INT_YPOS(7.5), INT_XPOS(4), INT_YPOS(1), "Locked Chase Camera", r, g, b );
+-		}
 +// The list of the players is made again every frame (players come, go and die); the touch buttons of its items
 +// are made again only when their places change
 +void CHudSpectatorGui::UpdatePlayerMenu( void )
@@ -6271,31 +6297,14 @@ index 991ebdd..c43755a 100644
 +	const int scroll = m_iPlayerCount > visible ? 1 : 0;
 +	if( !g_iMobileAPIVersion || ( visible == m_iPlayerTouch && scroll == m_iPlayerTouchScroll ))
 +		return;
- 
--				DrawButtonWithText(INT_XPOS(4.5), INT_YPOS(6.5), INT_XPOS(4), INT_YPOS(1), "View cone", r, g, b );
--				if( gHUD.m_Spectator.m_drawcone && gHUD.m_Spectator.m_drawcone->value )
--					DrawIconOnButton( INT_XPOS(4.5), INT_YPOS(6.5), INT_XPOS(4), INT_YPOS(1), m_hChecked, -1, r, g, b );
++
 +	gMobileAPI.pfnTouchRemoveButton( "_spec_pl_*" );
 +	m_iPlayerTouch = visible;
 +	m_iPlayerTouchScroll = scroll;
- 
--				DrawButtonWithText(INT_XPOS(4.5), INT_YPOS(7.5), INT_XPOS(4), INT_YPOS(1), "Player names", r, g, b );
--				if( gHUD.m_Spectator.m_drawnames && gHUD.m_Spectator.m_drawnames->value )
--					DrawIconOnButton( INT_XPOS(4.5), INT_YPOS(7.5), INT_XPOS(4), INT_YPOS(1), m_hChecked, -1, r, g, b );
--			}
--		}
++
 +	if( visible <= 0 )
 +		return;
- 
--		if( m_menuFlags & MENU_SPEC_OPTIONS )
--		{
--			DrawButtonWithText(INT_XPOS(11.5), INT_YPOS(2.5), INT_XPOS(4), INT_YPOS(1), "Chase Map Overview", r, g, b );
--			DrawButtonWithText(INT_XPOS(11.5), INT_YPOS(3.5), INT_XPOS(4), INT_YPOS(1), "Free Map Overview", r, g, b );
--			DrawButtonWithText(INT_XPOS(11.5), INT_YPOS(4.5), INT_XPOS(4), INT_YPOS(1), "First Person", r, g, b );
--			DrawButtonWithText(INT_XPOS(11.5), INT_YPOS(5.5), INT_XPOS(4), INT_YPOS(1), "Free look", r, g, b );
--			DrawButtonWithText(INT_XPOS(11.5), INT_YPOS(6.5), INT_XPOS(4), INT_YPOS(1), "Free Chase Camera", r, g, b );
--			DrawButtonWithText(INT_XPOS(11.5), INT_YPOS(7.5), INT_XPOS(4), INT_YPOS(1), "Locked Chase Camera", r, g, b );
--		}
++
 +	const SpecMenu::Rect m = SpecMenu::MenuAbove( l, l.player, visible );
 +	const SpecMenu::Rect bar = SpecMenu::ScrollBar( l, m );
 +
@@ -6430,7 +6439,7 @@ index 991ebdd..c43755a 100644
  }
  
  void CHudSpectatorGui::CalcAllNeededData( )
-@@ -471,32 +930,22 @@ int CHudSpectatorGui::MsgFunc_SpecHealth2(const char *pszName, int iSize, void *
+@@ -471,32 +939,22 @@ int CHudSpectatorGui::MsgFunc_SpecHealth2(const char *pszName, int iSize, void *
  	return 1;
  }
  
@@ -6470,7 +6479,7 @@ index 991ebdd..c43755a 100644
  	}
  	else
  	{
-@@ -504,32 +953,32 @@ void CHudSpectatorGui::UserCmd_ToggleSpectatorMenu()
+@@ -504,32 +962,32 @@ void CHudSpectatorGui::UserCmd_ToggleSpectatorMenu()
  		m_menuFlags &= ~MENU_OPTIONS;
  		m_menuFlags &= ~MENU_OPTIONS_SETTINGS;
  		m_menuFlags &= ~MENU_SPEC_OPTIONS;
@@ -6517,7 +6526,7 @@ index 991ebdd..c43755a 100644
  	}
  	else
  	{
-@@ -541,22 +990,19 @@ void CHudSpectatorGui::UserCmd_ToggleSpectatorMenuOptions()
+@@ -541,22 +999,19 @@ void CHudSpectatorGui::UserCmd_ToggleSpectatorMenuOptions()
  
  void CHudSpectatorGui::UserCmd_ToggleSpectatorMenuOptionsSettings()
  {
@@ -6547,7 +6556,7 @@ index 991ebdd..c43755a 100644
  	}
  	else
  	{
-@@ -567,26 +1013,22 @@ void CHudSpectatorGui::UserCmd_ToggleSpectatorMenuOptionsSettings()
+@@ -567,26 +1022,22 @@ void CHudSpectatorGui::UserCmd_ToggleSpectatorMenuOptionsSettings()
  
  void CHudSpectatorGui::UserCmd_ToggleSpectatorMenuSpectateOptions()
  {
