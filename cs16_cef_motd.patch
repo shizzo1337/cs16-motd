@@ -975,10 +975,10 @@ index 0000000..90f7f15
 +#endif
 diff --git a/cl_dll/chrome/chrome_host.cpp b/cl_dll/chrome/chrome_host.cpp
 new file mode 100644
-index 0000000..fc6e501
+index 0000000..325f238
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_host.cpp
-@@ -0,0 +1,775 @@
+@@ -0,0 +1,777 @@
 +#include "chrome_host.h"
 +#include "chrome_backend.h"
 +#include "chrome_debug.h"
@@ -989,6 +989,7 @@ index 0000000..fc6e501
 +#include "motd_layout.h"
 +#include "../hud/spectator_layout.h"
 +#include "../hud/motd_util.h"
++#include "../hud/client_texture.h"
 +
 +#include <algorithm>
 +#include <cmath>
@@ -1031,7 +1032,8 @@ index 0000000..fc6e501
 +{
 +	int tex = 0;
 +	int w = 0, h = 0, ascent = 0;
-+	std::string key; // what the picture was made for
++	std::string key;  // what the picture was made for
++	std::string name; // the name of the texture in the engine (see hud/client_texture.h)
 +};
 +
 +MotdTextSlot g_motd_title, g_motd_ok;
@@ -1210,9 +1212,7 @@ index 0000000..fc6e501
 +
 +void FreeMotdText( MotdTextSlot& slot )
 +{
-+	if( slot.tex > 0 && gRenderAPI.GL_FreeTexture )
-+		gRenderAPI.GL_FreeTexture( slot.tex );
-+
++	ClientTexture::Free( slot.tex, slot.name.c_str() );
 +	slot = MotdTextSlot();
 +}
 +
@@ -1223,7 +1223,8 @@ index 0000000..fc6e501
 +	const std::string key = utf8 + "|" + face + "|" + std::to_string( pixelHeight ) + "|" + std::to_string( weight ) + "|"
 +		+ ( antialias ? "a" : "n" ) + "|" + std::to_string( maxWidth );
 +
-+	if( slot.key == key )
++	// the same text: the old picture, unless the engine has freed it (then it is made again)
++	if( slot.key == key && ( slot.tex <= 0 || ClientTexture::Owned( slot.tex, slot.name.c_str() )))
 +		return slot.tex > 0; // also remembers that it did not work, no retries every frame
 +
 +	FreeMotdText( slot );
@@ -1251,6 +1252,7 @@ index 0000000..fc6e501
 +		return false;
 +
 +	slot.tex = tex;
++	slot.name = name;
 +	slot.w = w;
 +	slot.h = h;
 +	slot.ascent = ascent;
@@ -3254,14 +3256,15 @@ index 0000000..7cd7e01
 +#endif
 diff --git a/cl_dll/chrome/chrome_texture_bridge.cpp b/cl_dll/chrome/chrome_texture_bridge.cpp
 new file mode 100644
-index 0000000..aba0724
+index 0000000..f9af948
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_texture_bridge.cpp
-@@ -0,0 +1,118 @@
+@@ -0,0 +1,139 @@
 +#include "chrome_texture_bridge.h"
 +
 +#include "wrect.h"
 +#include "cl_dll.h"
++#include "../hud/client_texture.h"
 +
 +#include <cstdio>
 +#include <vector>
@@ -3290,10 +3293,22 @@ index 0000000..aba0724
 +	DestroyTexture();
 +}
 +
++unsigned int TextureBridge::texture_id() const
++{
++	return ClientTexture::Owned( (int)texture_id_, name_ ) ? texture_id_ : 0;
++}
++
 +void TextureBridge::EnsureSize( int width, int height )
 +{
 +	if( width <= 0 || height <= 0 )
 +		return;
++
++	// the engine has freed the texture: a page must never be drawn into a texture of the engine by the old number
++	if( texture_id_ != 0 && !ClientTexture::Owned( (int)texture_id_, name_ ))
++	{
++		texture_id_ = 0;
++		name_[0] = 0;
++	}
 +
 +	if( texture_id_ == 0 || width_ != width || height_ != height )
 +		CreateTexture( width, height );
@@ -3332,15 +3347,19 @@ index 0000000..aba0724
 +		rgba[d + 3] = bgra[s + 3];
 +	}
 +
-+	char name[48];
-+	MakeTextureName( name, sizeof( name ) );
++	MakeTextureName( name_, sizeof( name_ ) );
 +
 +	texture_id_ = gRenderAPI.GL_CreateTexture(
-+		name,
++		name_,
 +		frame.width,
 +		frame.height,
 +		rgba.data(),
 +		static_cast<texFlags_t>( TF_NOMIPMAP | TF_CLAMP | TF_HAS_ALPHA | TF_NEAREST ) );
++	if( (int)texture_id_ <= 0 )
++	{
++		texture_id_ = 0;
++		name_[0] = 0;
++	}
 +	width_ = frame.width;
 +	height_ = frame.height;
 +}
@@ -3352,24 +3371,28 @@ index 0000000..aba0724
 +	if( !gRenderAPI.GL_CreateTexture )
 +		return;
 +
-+	char name[48];
-+	MakeTextureName( name, sizeof( name ) );
++	MakeTextureName( name_, sizeof( name_ ) );
 +
 +	texture_id_ = gRenderAPI.GL_CreateTexture(
-+		name,
++		name_,
 +		width,
 +		height,
 +		nullptr,
 +		static_cast<texFlags_t>( TF_NOMIPMAP | TF_CLAMP | TF_HAS_ALPHA ) );
++	if( (int)texture_id_ <= 0 )
++	{
++		texture_id_ = 0;
++		name_[0] = 0;
++	}
 +	width_ = width;
 +	height_ = height;
 +}
 +
 +void TextureBridge::DestroyTexture()
 +{
-+	if( texture_id_ != 0 && gRenderAPI.GL_FreeTexture )
-+		gRenderAPI.GL_FreeTexture( texture_id_ );
-+
++	int tex = (int)texture_id_;
++	ClientTexture::Free( tex, name_ );
++	name_[0] = 0;
 +	texture_id_ = 0;
 +	width_ = 0;
 +	height_ = 0;
@@ -3378,10 +3401,10 @@ index 0000000..aba0724
 +} // namespace iHTMLChrome
 diff --git a/cl_dll/chrome/chrome_texture_bridge.h b/cl_dll/chrome/chrome_texture_bridge.h
 new file mode 100644
-index 0000000..29faab1
+index 0000000..5ddb8c9
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_texture_bridge.h
-@@ -0,0 +1,29 @@
+@@ -0,0 +1,31 @@
 +#pragma once
 +
 +#include "chrome_types.h"
@@ -3397,7 +3420,8 @@ index 0000000..29faab1
 +	void EnsureSize( int width, int height );
 +	void Upload( const FrameBuffer& frame );
 +
-+	unsigned int texture_id() const { return texture_id_; }
++	// 0 if the engine has freed the texture (its number may belong to another texture then)
++	unsigned int texture_id() const;
 +	int width() const { return width_; }
 +	int height() const { return height_; }
 +
@@ -3406,6 +3430,7 @@ index 0000000..29faab1
 +	void DestroyTexture();
 +
 +	unsigned int texture_id_ = 0;
++	char name_[48] = "";      // the name of the texture in the engine (see hud/client_texture.h)
 +	int width_ = 0;
 +	int height_ = 0;
 +};
@@ -3732,7 +3757,7 @@ index 9ae956c..a840147 100644
  
  	GetClientVoice()->Init( &g_VoiceStatusHelper );
 diff --git a/cl_dll/hud.h b/cl_dll/hud.h
-index bcfdf6e..a832d85 100644
+index bcfdf6e..8b65879 100644
 --- a/cl_dll/hud.h
 +++ b/cl_dll/hud.h
 @@ -37,6 +37,10 @@
@@ -3792,7 +3817,7 @@ index bcfdf6e..a832d85 100644
  private:
  	int m_iMoneyCount;
  	int m_iDelta;
-@@ -886,6 +906,50 @@ private:
+@@ -886,6 +906,51 @@ private:
  //-----------------------------------------------------
  //
  
@@ -3830,6 +3855,7 @@ index bcfdf6e..a832d85 100644
 +	bool m_bIconTried[Tutor::ICON_COUNT];
 +
 +	int m_iTextTex;          // the text drawn by a Windows font
++	char m_szTextTexName[48]; // its name in the engine (see hud/client_texture.h)
 +	int m_iTextW, m_iTextH;
 +	bool m_bTextDirty;
 +	int m_iTextureCounter;
@@ -3843,7 +3869,7 @@ index bcfdf6e..a832d85 100644
  class CHudScenario : public CHudBase
  {
  public:
-@@ -910,6 +974,14 @@ private:
+@@ -910,6 +975,14 @@ private:
  class CHudSpectatorGui: public CHudBase
  {
  public:
@@ -3858,7 +3884,7 @@ index bcfdf6e..a832d85 100644
  	int Init();
  	int VidInit();
  	int Draw( float flTime );
-@@ -924,6 +996,11 @@ public:
+@@ -924,6 +997,11 @@ public:
  	CHudUserCmd( ToggleSpectatorMenuOptions );
  	CHudUserCmd( ToggleSpectatorMenuOptionsSettings );
  	CHudUserCmd( ToggleSpectatorMenuSpectateOptions );
@@ -3870,7 +3896,7 @@ index bcfdf6e..a832d85 100644
  
  	void CalcAllNeededData( );
  
-@@ -951,9 +1028,25 @@ private:
+@@ -951,9 +1029,25 @@ private:
  		ROOT_MENU = (1<<0),
  		MENU_OPTIONS = (1<<1),
  		MENU_OPTIONS_SETTINGS = (1<<2),
@@ -3897,7 +3923,7 @@ index bcfdf6e..a832d85 100644
  };
  
  //
-@@ -1090,6 +1183,7 @@ public:
+@@ -1090,6 +1184,7 @@ public:
  	CHudRadar       m_Radar;
  	CHudSpectatorGui m_SpectatorGui;
  	CHudScenario	m_Scenario;
@@ -4479,6 +4505,59 @@ index 0000000..026a43d
 +}
 +
 +#endif
+diff --git a/cl_dll/hud/client_texture.h b/cl_dll/hud/client_texture.h
+new file mode 100644
+index 0000000..a8061c4
+--- /dev/null
++++ b/cl_dll/hud/client_texture.h
+@@ -0,0 +1,47 @@
++//
++// client_texture.h
++//
++// The textures the client makes itself (the texts drawn by Windows fonts, the MOTD window) are known by their
++// number and their name. The number alone is not enough: if the engine has freed the texture (a restart of the
++// renderer frees all of them), the same number may be given to a texture of the engine, for example a font.
++// Freeing it, drawing into it or showing it by the old number would break that texture: the texts of the chat
++// and the kill feed become black boxes. So the number is used only while the engine has our name for it.
++//
++
++#pragma once
++
++#include <string.h>
++
++#include "wrect.h"
++#include "cl_dll.h"
++
++namespace ClientTexture {
++
++// is the texture "tex" still the one we made with the name "name"
++inline bool Owned( int tex, const char *name )
++{
++	if( tex <= 0 || !name || !name[0] )
++		return false;
++
++	if( gRenderAPI.GL_FindTexture )
++		return gRenderAPI.GL_FindTexture( name ) == tex;
++
++	if( gRenderAPI.GL_TextureName )
++	{
++		const char *current = gRenderAPI.GL_TextureName( (unsigned int)tex );
++		return current && !strcmp( current, name );
++	}
++
++	return true; // an engine without these functions: trust the number
++}
++
++// frees the texture only if it is still ours; the number is forgotten anyway
++inline void Free( int &tex, const char *name )
++{
++	if( Owned( tex, name ) && gRenderAPI.GL_FreeTexture )
++		gRenderAPI.GL_FreeTexture( (unsigned int)tex );
++
++	tex = 0;
++}
++
++} // namespace ClientTexture
 diff --git a/cl_dll/hud/motd_util.h b/cl_dll/hud/motd_util.h
 new file mode 100644
 index 0000000..53fcfae
@@ -7069,10 +7148,10 @@ index 0000000..4034911
 +						  int maxWidth, std::vector<unsigned char> &alpha, int &width, int &height );
 diff --git a/cl_dll/hud/text_texture.cpp b/cl_dll/hud/text_texture.cpp
 new file mode 100644
-index 0000000..a01c090
+index 0000000..864e55b
 --- /dev/null
 +++ b/cl_dll/hud/text_texture.cpp
-@@ -0,0 +1,92 @@
+@@ -0,0 +1,98 @@
 +//
 +// text_texture.cpp
 +//
@@ -7087,15 +7166,14 @@ index 0000000..a01c090
 +
 +#include "text_texture.h"
 +#include "text_gdi.h"
++#include "client_texture.h"
 +
 +static int s_textTextureCounter = 0;
 +
 +void CTextTexture::Free()
 +{
-+	if( m_iTex > 0 && gRenderAPI.GL_FreeTexture )
-+		gRenderAPI.GL_FreeTexture( m_iTex );
-+
-+	m_iTex = 0;
++	ClientTexture::Free( m_iTex, m_name.c_str() );
++	m_name.clear();
 +	m_iWidth = m_iHeight = 0;
 +	m_bFailed = false;
 +	m_key.clear();
@@ -7110,7 +7188,8 @@ index 0000000..a01c090
 +	snprintf( extra, sizeof( extra ), "|%s|%d|%d|%d|%d", fontName ? fontName : "", emHeight, weight, antialias ? 1 : 0, maxWidth );
 +	const std::string key = utf8 + extra;
 +
-+	if( key == m_key )
++	// the same text: the old picture, unless the engine has freed it (then it is made again)
++	if( key == m_key && ( m_iTex <= 0 || ClientTexture::Owned( m_iTex, m_name.c_str() )))
 +		return m_iTex > 0 || ( utf8.empty() && !m_bFailed ); // also remembers that it did not work
 +
 +	Free();
@@ -7148,14 +7227,20 @@ index 0000000..a01c090
 +		return false;
 +	}
 +
++	m_name = name;
 +	m_iWidth = w;
 +	m_iHeight = h;
 +	return true;
 +}
 +
++bool CTextTexture::Valid() const
++{
++	return m_iTex > 0 && ClientTexture::Owned( m_iTex, m_name.c_str() );
++}
++
 +void CTextTexture::Draw( float x, float y, int r, int g, int b, int a ) const
 +{
-+	if( m_iTex <= 0 )
++	if( !Valid() )
 +		return;
 +
 +	gRenderAPI.GL_SelectTexture( 0 );
@@ -7167,10 +7252,10 @@ index 0000000..a01c090
 +}
 diff --git a/cl_dll/hud/text_texture.h b/cl_dll/hud/text_texture.h
 new file mode 100644
-index 0000000..8cac718
+index 0000000..fa28fe1
 --- /dev/null
 +++ b/cl_dll/hud/text_texture.h
-@@ -0,0 +1,35 @@
+@@ -0,0 +1,36 @@
 +//
 +// text_texture.h
 +//
@@ -7198,10 +7283,11 @@ index 0000000..8cac718
 +
 +	int Width() const { return m_iWidth; }
 +	int Height() const { return m_iHeight; }
-+	bool Valid() const { return m_iTex > 0; }
++	bool Valid() const;
 +
 +private:
 +	int m_iTex = 0;
++	std::string m_name;   // the name of the texture in the engine (see client_texture.h)
 +	int m_iWidth = 0, m_iHeight = 0;
 +	bool m_bFailed = false;
 +	std::string m_key;
@@ -7307,10 +7393,10 @@ index 0000000..7b712a8
 +} // namespace TextUtf
 diff --git a/cl_dll/hud/tutor.cpp b/cl_dll/hud/tutor.cpp
 new file mode 100644
-index 0000000..bdeceb1
+index 0000000..fe8bb6a
 --- /dev/null
 +++ b/cl_dll/hud/tutor.cpp
-@@ -0,0 +1,386 @@
+@@ -0,0 +1,396 @@
 +//
 +// tutor.cpp
 +//
@@ -7339,6 +7425,7 @@ index 0000000..bdeceb1
 +#include <vector>
 +
 +#include "tutor_logic.h"
++#include "client_texture.h"
 +#include "text_utf8.h"
 +#include "text_gdi.h"
 +
@@ -7362,6 +7449,7 @@ index 0000000..bdeceb1
 +	m_iType = Tutor::TYPE_DEFAULT;
 +	m_flShownAt = 0.0f;
 +	m_iTextTex = 0;
++	m_szTextTexName[0] = 0;
 +	m_iTextW = m_iTextH = 0;
 +	m_bTextDirty = false;
 +	m_bSchemeLoaded = false;
@@ -7409,10 +7497,8 @@ index 0000000..bdeceb1
 +
 +void CHudTutor::FreeText( void )
 +{
-+	if( m_iTextTex > 0 && gRenderAPI.GL_FreeTexture )
-+		gRenderAPI.GL_FreeTexture( m_iTextTex );
-+
-+	m_iTextTex = 0;
++	ClientTexture::Free( m_iTextTex, m_szTextTexName );
++	m_szTextTexName[0] = 0;
 +	m_iTextW = m_iTextH = 0;
 +	m_lines.clear();
 +	m_bTextDirty = true;
@@ -7563,6 +7649,7 @@ index 0000000..bdeceb1
 +
 +		if( m_iTextTex > 0 )
 +		{
++			snprintf( m_szTextTexName, sizeof( m_szTextTexName ), "%s", name );
 +			m_iTextW = w;
 +			m_iTextH = h;
 +			return;
@@ -7644,6 +7731,15 @@ index 0000000..bdeceb1
 +		m_flShownAt = flTime;
 +
 +	const float scale = gHUD.m_flScale > 0.0f ? gHUD.m_flScale : 1.0f;
++
++	// the engine has freed the picture of the text (its number may belong to another texture now): made again
++	if( m_iTextTex > 0 && !ClientTexture::Owned( m_iTextTex, m_szTextTexName ))
++	{
++		m_iTextTex = 0;
++		m_szTextTexName[0] = 0;
++		m_lines.clear();
++		m_bTextDirty = true;
++	}
 +
 +	if( m_bTextDirty )
 +		BuildText( Tutor::MaxTextWidth( ScreenWidth ));
@@ -9380,7 +9476,7 @@ index 9234322..ac7cad2 100644
  	uiJoinClassCT.Show();
  }
 diff --git a/3rdparty/mainui_cpp/menus/client/JoinGame.cpp b/3rdparty/mainui_cpp/menus/client/JoinGame.cpp
-index c413e90..0c1cc44 100644
+index c413e90..8d72a3f 100644
 --- a/3rdparty/mainui_cpp/menus/client/JoinGame.cpp
 +++ b/3rdparty/mainui_cpp/menus/client/JoinGame.cpp
 @@ -16,7 +16,7 @@ GNU General Public License for more details.
@@ -9430,7 +9526,7 @@ index c413e90..0c1cc44 100644
  	void ConfirmSelection()
  	{
  		Hide();
-@@ -60,106 +69,183 @@ private:
+@@ -60,106 +69,184 @@ private:
  
  void CClientJoinGame::_Init()
  {
@@ -9533,9 +9629,10 @@ index c413e90..0c1cc44 100644
 +	const unsigned int arrow = PackRGBA( 176, 175, 173, 255 );
 +	const int arrowW = m_frame.U( 3.1f ) | 1;        // 7 at 1080
 +	const int arrowH = ( arrowW + 1 ) / 2;           // 4
-+	const int arrowX = bx + bw - 1 - m_frame.U( 4.0f ); // its middle: 9 pixels from the right edge
-+	const int upY = trackY + ( sbh - 1 - arrowH ) / 2;
-+	const int downY = trackY + trackH - sbh + 1 + ( sbh - 1 - arrowH ) / 2;
++	// in the middle of the buttons (the Steam version has them 9 pixels from the right edge)
++	const int arrowX = sx + sbh / 2;
++	const int upY = trackY + ( sbh - arrowH ) / 2;
++	const int downY = trackY + trackH - sbh + ( sbh - arrowH ) / 2;
  
 -	if( hasVIP )
 +	for( int i = 0; i < arrowH; ++i )
