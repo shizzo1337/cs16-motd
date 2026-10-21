@@ -975,10 +975,10 @@ index 0000000..90f7f15
 +#endif
 diff --git a/cl_dll/chrome/chrome_host.cpp b/cl_dll/chrome/chrome_host.cpp
 new file mode 100644
-index 0000000..325f238
+index 0000000..8a5d4b7
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_host.cpp
-@@ -0,0 +1,777 @@
+@@ -0,0 +1,782 @@
 +#include "chrome_host.h"
 +#include "chrome_backend.h"
 +#include "chrome_debug.h"
@@ -1224,8 +1224,13 @@ index 0000000..325f238
 +		+ ( antialias ? "a" : "n" ) + "|" + std::to_string( maxWidth );
 +
 +	// the same text: the old picture, unless the engine has freed it (then it is made again)
-+	if( slot.key == key && ( slot.tex <= 0 || ClientTexture::Owned( slot.tex, slot.name.c_str() )))
-+		return slot.tex > 0; // also remembers that it did not work, no retries every frame
++	if( slot.key == key )
++	{
++		if( slot.tex <= 0 || ClientTexture::Owned( slot.tex, slot.name.c_str() ))
++			return slot.tex > 0; // also remembers that it did not work, no retries every frame
++
++		ClientTexture::ReportLost( slot.name.c_str() );
++	}
 +
 +	FreeMotdText( slot );
 +	slot.key = key;
@@ -3256,10 +3261,10 @@ index 0000000..7cd7e01
 +#endif
 diff --git a/cl_dll/chrome/chrome_texture_bridge.cpp b/cl_dll/chrome/chrome_texture_bridge.cpp
 new file mode 100644
-index 0000000..f9af948
+index 0000000..d7b309b
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_texture_bridge.cpp
-@@ -0,0 +1,139 @@
+@@ -0,0 +1,140 @@
 +#include "chrome_texture_bridge.h"
 +
 +#include "wrect.h"
@@ -3306,6 +3311,7 @@ index 0000000..f9af948
 +	// the engine has freed the texture: a page must never be drawn into a texture of the engine by the old number
 +	if( texture_id_ != 0 && !ClientTexture::Owned( (int)texture_id_, name_ ))
 +	{
++		ClientTexture::ReportLost( name_ );
 +		texture_id_ = 0;
 +		name_[0] = 0;
 +	}
@@ -3727,10 +3733,18 @@ index dcd392f..6057c89 100644
  {
  	// REMOVE WHEN NANOGL BUG WILL BE FIXED
 diff --git a/cl_dll/hud.cpp b/cl_dll/hud.cpp
-index 9ae956c..a840147 100644
+index 9ae956c..2a97375 100644
 --- a/cl_dll/hud.cpp
 +++ b/cl_dll/hud.cpp
-@@ -363,7 +363,14 @@ void CHud :: Init( void )
+@@ -285,6 +285,7 @@ void CHud :: Init( void )
+ 
+ 	HOOK_COMMAND_FUNC( "special", __CmdFunc_InputCommandSpecial, );
+ 	HOOK_COMMAND_FUNC( "gunsmoke", __CmdFunc_GunSmoke, );
++	TextTexture_RegisterCommands();
+ 
+ #ifdef __ANDROID__
+ 	HOOK_COMMAND_FUNC( "evdev_mouseopen", __CmdFunc_MouseSucksOpen );
+@@ -363,7 +364,14 @@ void CHud :: Init( void )
  		cl_fog_b = CVAR_CREATE( "cl_fog_b", "0", 0 );
  	}
  
@@ -3746,7 +3760,7 @@ index 9ae956c..a840147 100644
  
  	m_iLogo = 0;
  	m_iFOV = 0;
-@@ -423,6 +430,9 @@ void CHud :: Init( void )
+@@ -423,6 +431,9 @@ void CHud :: Init( void )
  	if( GetGameType() != GAME_CZERODS )
  		m_SpectatorGui.Init();
  
@@ -4507,10 +4521,10 @@ index 0000000..026a43d
 +#endif
 diff --git a/cl_dll/hud/client_texture.h b/cl_dll/hud/client_texture.h
 new file mode 100644
-index 0000000..a8061c4
+index 0000000..69729e4
 --- /dev/null
 +++ b/cl_dll/hud/client_texture.h
-@@ -0,0 +1,47 @@
+@@ -0,0 +1,59 @@
 +//
 +// client_texture.h
 +//
@@ -4546,6 +4560,18 @@ index 0000000..a8061c4
 +	}
 +
 +	return true; // an engine without these functions: trust the number
++}
++
++// tells in the console (a few times only) that the engine has freed a texture of the client: it helps to find
++// out what breaks the textures (see the command cl_textures_check)
++inline void ReportLost( const char *name )
++{
++	static int reported = 0;
++	if( reported < 8 && name && name[0] )
++	{
++		++reported;
++		gEngfuncs.Con_Printf( "[client textures] the engine has freed \"%s\", the client makes it again\n", name );
++	}
 +}
 +
 +// frees the texture only if it is still ours; the number is forgotten anyway
@@ -7148,10 +7174,10 @@ index 0000000..4034911
 +						  int maxWidth, std::vector<unsigned char> &alpha, int &width, int &height );
 diff --git a/cl_dll/hud/text_texture.cpp b/cl_dll/hud/text_texture.cpp
 new file mode 100644
-index 0000000..864e55b
+index 0000000..7319b82
 --- /dev/null
 +++ b/cl_dll/hud/text_texture.cpp
-@@ -0,0 +1,98 @@
+@@ -0,0 +1,156 @@
 +//
 +// text_texture.cpp
 +//
@@ -7162,6 +7188,8 @@ index 0000000..864e55b
 +#include "draw_util.h"
 +
 +#include <stdio.h>
++#include <string.h>
++#include <ctype.h>
 +#include <vector>
 +
 +#include "text_texture.h"
@@ -7189,8 +7217,13 @@ index 0000000..864e55b
 +	const std::string key = utf8 + extra;
 +
 +	// the same text: the old picture, unless the engine has freed it (then it is made again)
-+	if( key == m_key && ( m_iTex <= 0 || ClientTexture::Owned( m_iTex, m_name.c_str() )))
-+		return m_iTex > 0 || ( utf8.empty() && !m_bFailed ); // also remembers that it did not work
++	if( key == m_key )
++	{
++		if( m_iTex <= 0 || ClientTexture::Owned( m_iTex, m_name.c_str() ))
++			return m_iTex > 0 || ( utf8.empty() && !m_bFailed ); // also remembers that it did not work
++
++		ClientTexture::ReportLost( m_name.c_str() );
++	}
 +
 +	Free();
 +	m_key = key;
@@ -7233,6 +7266,57 @@ index 0000000..864e55b
 +	return true;
 +}
 +
++// cl_textures_check: the textures of the fonts of the engine (the chat and the kill feed are drawn with them)
++// and how many textures the client has made. A font whose texture is missing here is drawn as black boxes.
++static void TextTexturesCheck( void )
++{
++	if( !gRenderAPI.GL_TextureName )
++	{
++		gEngfuncs.Con_Printf( "cl_textures_check: the engine does not tell the names of the textures\n" );
++		return;
++	}
++
++	int total = 0, text = 0, motd = 0, tutor = 0, chrome = 0;
++
++	gEngfuncs.Con_Printf( "the textures of the fonts:\n" );
++	for( int i = 1; i < 8192; ++i )
++	{
++		const char *name = gRenderAPI.GL_TextureName( (unsigned int)i );
++		if( !name || !name[0] )
++			continue;
++
++		++total;
++		if( !strncmp( name, "*text_", 6 )) ++text;
++		else if( !strncmp( name, "*motd_text_", 11 )) ++motd;
++		else if( !strncmp( name, "*tutor_text_", 12 )) ++tutor;
++		else if( !strncmp( name, "*chrome_", 8 )) ++chrome;
++
++		char lower[256];
++		size_t n = 0;
++		for( ; name[n] && n + 1 < sizeof( lower ); ++n )
++			lower[n] = (char)tolower( (unsigned char)name[n] );
++		lower[n] = 0;
++
++		if( strstr( lower, "font" ) || strstr( lower, "conchars" ))
++		{
++			gEngfuncs.Con_Printf( "  %4d  %4d x %-4d  %s\n", i,
++				gRenderAPI.RenderGetParm ? gRenderAPI.RenderGetParm( PARM_TEX_WIDTH, i ) : 0,
++				gRenderAPI.RenderGetParm ? gRenderAPI.RenderGetParm( PARM_TEX_HEIGHT, i ) : 0, name );
++		}
++	}
++
++	gEngfuncs.Con_Printf( "all textures: %d; made by the client: texts %d, MOTD texts %d, tutor %d, browser %d\n",
++		total, text, motd, tutor, chrome );
++	gEngfuncs.Con_Printf( "con_fontsize %s, con_charset %s, cl_charset %s, hud_textmode %s\n",
++		gEngfuncs.pfnGetCvarString( "con_fontsize" ), gEngfuncs.pfnGetCvarString( "con_charset" ),
++		gEngfuncs.pfnGetCvarString( "cl_charset" ), gEngfuncs.pfnGetCvarString( "hud_textmode" ));
++}
++
++void TextTexture_RegisterCommands( void )
++{
++	gEngfuncs.pfnAddCommand( "cl_textures_check", TextTexturesCheck );
++}
++
 +bool CTextTexture::Valid() const
 +{
 +	return m_iTex > 0 && ClientTexture::Owned( m_iTex, m_name.c_str() );
@@ -7252,10 +7336,10 @@ index 0000000..864e55b
 +}
 diff --git a/cl_dll/hud/text_texture.h b/cl_dll/hud/text_texture.h
 new file mode 100644
-index 0000000..fa28fe1
+index 0000000..2a2805f
 --- /dev/null
 +++ b/cl_dll/hud/text_texture.h
-@@ -0,0 +1,36 @@
+@@ -0,0 +1,39 @@
 +//
 +// text_texture.h
 +//
@@ -7266,6 +7350,9 @@ index 0000000..fa28fe1
 +#pragma once
 +
 +#include <string>
++
++// adds the command cl_textures_check (the textures of the fonts of the engine, see client_texture.h)
++void TextTexture_RegisterCommands( void );
 +
 +class CTextTexture
 +{
@@ -7393,10 +7480,10 @@ index 0000000..7b712a8
 +} // namespace TextUtf
 diff --git a/cl_dll/hud/tutor.cpp b/cl_dll/hud/tutor.cpp
 new file mode 100644
-index 0000000..fe8bb6a
+index 0000000..44e52c8
 --- /dev/null
 +++ b/cl_dll/hud/tutor.cpp
-@@ -0,0 +1,396 @@
+@@ -0,0 +1,397 @@
 +//
 +// tutor.cpp
 +//
@@ -7735,6 +7822,7 @@ index 0000000..fe8bb6a
 +	// the engine has freed the picture of the text (its number may belong to another texture now): made again
 +	if( m_iTextTex > 0 && !ClientTexture::Owned( m_iTextTex, m_szTextTexName ))
 +	{
++		ClientTexture::ReportLost( m_szTextTexName );
 +		m_iTextTex = 0;
 +		m_szTextTexName[0] = 0;
 +		m_lines.clear();
