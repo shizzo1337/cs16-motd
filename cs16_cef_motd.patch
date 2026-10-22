@@ -975,10 +975,10 @@ index 0000000..90f7f15
 +#endif
 diff --git a/cl_dll/chrome/chrome_host.cpp b/cl_dll/chrome/chrome_host.cpp
 new file mode 100644
-index 0000000..8a5d4b7
+index 0000000..76f55b9
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_host.cpp
-@@ -0,0 +1,782 @@
+@@ -0,0 +1,785 @@
 +#include "chrome_host.h"
 +#include "chrome_backend.h"
 +#include "chrome_debug.h"
@@ -1258,6 +1258,7 @@ index 0000000..8a5d4b7
 +
 +	slot.tex = tex;
 +	slot.name = name;
++	ClientTexture::Note( "create", tex, name );
 +	slot.w = w;
 +	slot.h = h;
 +	slot.ascent = ascent;
@@ -1703,6 +1704,7 @@ index 0000000..8a5d4b7
 +	const RenderExtents ext = VisibleRenderExtents();
 +	g_motd_input.Open( ext.w, ext.h );
 +
++	ClientTexture::Note( "motd shown", 0, "" );
 +	gEngfuncs.Con_Printf( "[motd] shown: mouse and keyboard work in the window, ENTER / OK button / cl_motd_close close it\n" );
 +	return true;
 +}
@@ -1718,6 +1720,7 @@ index 0000000..8a5d4b7
 +	FreeMotdText( g_motd_title );
 +	FreeMotdText( g_motd_ok );
 +	gEngfuncs.Con_Printf( "[motd] window closed\n" );
++	ClientTexture::Note( "motd closed", 0, "" );
 +}
 +
 +bool IsMotdShown()
@@ -3261,10 +3264,10 @@ index 0000000..7cd7e01
 +#endif
 diff --git a/cl_dll/chrome/chrome_texture_bridge.cpp b/cl_dll/chrome/chrome_texture_bridge.cpp
 new file mode 100644
-index 0000000..d7b309b
+index 0000000..89226bb
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_texture_bridge.cpp
-@@ -0,0 +1,140 @@
+@@ -0,0 +1,147 @@
 +#include "chrome_texture_bridge.h"
 +
 +#include "wrect.h"
@@ -3331,6 +3334,11 @@ index 0000000..d7b309b
 +		if( texture_id_ == 0 )
 +			return;
 +
++		// the engine binds the texture to the texture unit that is active now (GL_KEEP_UNIT): the unit 0 is
++		// chosen first, so the page never lands on the unit of the lightmaps or the detail textures
++		if( gRenderAPI.GL_SelectTexture )
++			gRenderAPI.GL_SelectTexture( 0 );
++
 +		gRenderAPI.AVI_UploadRawFrame( texture_id_, frame.width, frame.height, frame.width, frame.height, frame.rgba.data() );
 +		return;
 +	}
@@ -3366,6 +3374,7 @@ index 0000000..d7b309b
 +		texture_id_ = 0;
 +		name_[0] = 0;
 +	}
++	ClientTexture::Note( "create", (int)texture_id_, name_ );
 +	width_ = frame.width;
 +	height_ = frame.height;
 +}
@@ -3390,6 +3399,7 @@ index 0000000..d7b309b
 +		texture_id_ = 0;
 +		name_[0] = 0;
 +	}
++	ClientTexture::Note( "create", (int)texture_id_, name_ );
 +	width_ = width;
 +	height_ = height;
 +}
@@ -4521,10 +4531,10 @@ index 0000000..026a43d
 +#endif
 diff --git a/cl_dll/hud/client_texture.h b/cl_dll/hud/client_texture.h
 new file mode 100644
-index 0000000..69729e4
+index 0000000..c24bcd8
 --- /dev/null
 +++ b/cl_dll/hud/client_texture.h
-@@ -0,0 +1,59 @@
+@@ -0,0 +1,82 @@
 +//
 +// client_texture.h
 +//
@@ -4543,6 +4553,18 @@ index 0000000..69729e4
 +#include "cl_dll.h"
 +
 +namespace ClientTexture {
++
++// a journal of the last operations of the client with its textures (texture_watch.cpp): when a texture of a font
++// of the engine disappears, the journal is printed, so it is seen whether the client had that number
++void Note( const char *op, int tex, const char *name );
++void PrintJournal( int count );
++
++// checks every frame that the textures of the fonts of the engine are still there (texture_watch.cpp)
++void WatchFonts( void );
++
++// the texture of the console font the client draws the chat and the kill feed with is gone (they would be black
++// boxes): the client draws them with the font of the HUD instead (draw_util.h)
++bool EngineFontBroken( void );
 +
 +// is the texture "tex" still the one we made with the name "name"
 +inline bool Owned( int tex, const char *name )
@@ -4572,13 +4594,24 @@ index 0000000..69729e4
 +		++reported;
 +		gEngfuncs.Con_Printf( "[client textures] the engine has freed \"%s\", the client makes it again\n", name );
 +	}
++	Note( "lost", 0, name );
 +}
 +
 +// frees the texture only if it is still ours; the number is forgotten anyway
 +inline void Free( int &tex, const char *name )
 +{
-+	if( Owned( tex, name ) && gRenderAPI.GL_FreeTexture )
-+		gRenderAPI.GL_FreeTexture( (unsigned int)tex );
++	if( tex > 0 )
++	{
++		if( Owned( tex, name ) && gRenderAPI.GL_FreeTexture )
++		{
++			Note( "free", tex, name );
++			gRenderAPI.GL_FreeTexture( (unsigned int)tex );
++		}
++		else
++		{
++			Note( "forget (not ours)", tex, name );
++		}
++	}
 +
 +	tex = 0;
 +}
@@ -7174,10 +7207,10 @@ index 0000000..4034911
 +						  int maxWidth, std::vector<unsigned char> &alpha, int &width, int &height );
 diff --git a/cl_dll/hud/text_texture.cpp b/cl_dll/hud/text_texture.cpp
 new file mode 100644
-index 0000000..7319b82
+index 0000000..b107080
 --- /dev/null
 +++ b/cl_dll/hud/text_texture.cpp
-@@ -0,0 +1,156 @@
+@@ -0,0 +1,158 @@
 +//
 +// text_texture.cpp
 +//
@@ -7261,6 +7294,7 @@ index 0000000..7319b82
 +	}
 +
 +	m_name = name;
++	ClientTexture::Note( "create", m_iTex, name );
 +	m_iWidth = w;
 +	m_iHeight = h;
 +	return true;
@@ -7307,6 +7341,7 @@ index 0000000..7319b82
 +
 +	gEngfuncs.Con_Printf( "all textures: %d; made by the client: texts %d, MOTD texts %d, tutor %d, browser %d\n",
 +		total, text, motd, tutor, chrome );
++	ClientTexture::PrintJournal( 64 );
 +	gEngfuncs.Con_Printf( "con_fontsize %s, con_charset %s, cl_charset %s, hud_textmode %s\n",
 +		gEngfuncs.pfnGetCvarString( "con_fontsize" ), gEngfuncs.pfnGetCvarString( "con_charset" ),
 +		gEngfuncs.pfnGetCvarString( "cl_charset" ), gEngfuncs.pfnGetCvarString( "hud_textmode" ));
@@ -7478,12 +7513,200 @@ index 0000000..7b712a8
 +}
 +
 +} // namespace TextUtf
+diff --git a/cl_dll/hud/texture_watch.cpp b/cl_dll/hud/texture_watch.cpp
+new file mode 100644
+index 0000000..9783d90
+--- /dev/null
++++ b/cl_dll/hud/texture_watch.cpp
+@@ -0,0 +1,182 @@
++//
++// texture_watch.cpp
++//
++// Looks for the cause of the black boxes instead of the texts of the chat and the kill feed: they appear when the
++// texture of a font of the engine is freed while the font still uses its number (then a texture of the map gets
++// that number). Every frame the textures of the fonts are found by their names; when one of them is gone, the
++// console gets a line about it and the journal of the last operations of the client with its own textures.
++// Run the game with -log to keep it all in engine.log.
++//
++
++#include <stdio.h>
++#include <string.h>
++
++#include "hud.h"
++#include "cl_util.h"
++#include "client_texture.h"
++
++namespace ClientTexture {
++
++namespace {
++
++struct JournalEntry
++{
++	float time;
++	char op[24];
++	int tex;
++	char name[48];
++};
++
++const int JOURNAL_SIZE = 64;
++JournalEntry g_journal[JOURNAL_SIZE];
++int g_journalCount = 0; // all entries ever written
++
++float Now( void )
++{
++	return gEngfuncs.GetClientTime ? gEngfuncs.GetClientTime() : 0.0f;
++}
++
++struct WatchedFont
++{
++	char name[64];
++	int tex;
++	int conFont;   // the number of the console font (con_fontsize), -1 for the others
++	bool broken;   // its texture is gone while the font still uses its number
++};
++
++const int MAX_WATCHED = 12;
++WatchedFont g_watched[MAX_WATCHED];
++int g_watchedCount = 0;
++char g_watchedCharset[32] = "\x01"; // the names depend on con_charset
++bool g_fontBroken = false;
++
++void BuildWatchList( const char *charset )
++{
++	g_watchedCount = 0;
++	auto add = [charset]( const char *fmt, int i )
++	{
++		if( g_watchedCount >= MAX_WATCHED )
++			return;
++		WatchedFont &w = g_watched[g_watchedCount++];
++		snprintf( w.name, sizeof( w.name ), fmt, i, charset );
++		w.tex = 0;
++		w.conFont = i;
++		w.broken = false;
++	};
++
++	for( int i = 0; i < 3; ++i )
++		add( "font%d_%s.fnt", i );
++	for( int i = 0; i < 3; ++i )
++		add( "fonts/font%d", i );
++
++	const char *others[3] = { "creditsfont_%s.fnt", "gfx/creditsfont.fnt", "gfx/conchars" };
++	for( const char *fmt : others )
++	{
++		if( g_watchedCount >= MAX_WATCHED )
++			break;
++		WatchedFont &w = g_watched[g_watchedCount++];
++		snprintf( w.name, sizeof( w.name ), fmt, charset );
++		w.tex = 0;
++		w.conFont = -1;
++		w.broken = false;
++	}
++}
++
++} // namespace
++
++void Note( const char *op, int tex, const char *name )
++{
++	JournalEntry &e = g_journal[g_journalCount % JOURNAL_SIZE];
++	e.time = Now();
++	snprintf( e.op, sizeof( e.op ), "%s", op ? op : "" );
++	e.tex = tex;
++	snprintf( e.name, sizeof( e.name ), "%s", name ? name : "" );
++	++g_journalCount;
++}
++
++void PrintJournal( int count )
++{
++	if( count > JOURNAL_SIZE )
++		count = JOURNAL_SIZE;
++	if( count > g_journalCount )
++		count = g_journalCount;
++
++	gEngfuncs.Con_Printf( "[font watch] the last %d operations of the client with its textures (of %d):\n", count, g_journalCount );
++	for( int i = g_journalCount - count; i < g_journalCount; ++i )
++	{
++		const JournalEntry &e = g_journal[i % JOURNAL_SIZE];
++		gEngfuncs.Con_Printf( "  %9.2f  %-18s %5d  %s\n", e.time, e.op, e.tex, e.name );
++	}
++}
++
++void WatchFonts( void )
++{
++	if( !gRenderAPI.GL_FindTexture )
++		return;
++
++	const char *charset = gEngfuncs.pfnGetCvarString( "con_charset" );
++	if( !charset )
++		charset = "";
++
++	if( strcmp( charset, g_watchedCharset ))
++	{
++		snprintf( g_watchedCharset, sizeof( g_watchedCharset ), "%s", charset );
++		BuildWatchList( charset );
++	}
++
++	for( int i = 0; i < g_watchedCount; ++i )
++	{
++		WatchedFont &w = g_watched[i];
++		const int tex = gRenderAPI.GL_FindTexture( w.name );
++		if( tex == w.tex )
++			continue;
++
++		if( w.tex > 0 )
++		{
++			const char *now = gRenderAPI.GL_TextureName ? gRenderAPI.GL_TextureName( (unsigned int)w.tex ) : "";
++			char again[64] = "";
++			if( tex > 0 )
++				snprintf( again, sizeof( again ), " (its file is loaded again as number %d)", tex );
++			gEngfuncs.Con_Printf( "[font watch] the texture of the font \"%s\" (number %d) is gone at %.2f%s; "
++				"the number %d is now \"%s\"\n", w.name, w.tex, Now(), again, w.tex, now ? now : "" );
++			PrintJournal( 24 );
++
++			if( w.conFont >= 0 && tex <= 0 )
++			{
++				w.broken = true;
++				gEngfuncs.Con_Printf( "[font watch] the chat and the kill feed are drawn with the font of the HUD now "
++					"(as with hud_textmode 1)\n" );
++			}
++		}
++		else
++		{
++			gEngfuncs.Con_Printf( "[font watch] the font \"%s\" is texture number %d\n", w.name, tex );
++		}
++
++		if( tex > 0 )
++			w.broken = false; // the engine has loaded the font again
++
++		w.tex = tex;
++	}
++
++	// the console font the client uses (con_fontsize) is broken: found once a frame, used by every text
++	int size = (int)gEngfuncs.pfnGetCvarFloat( "con_fontsize" );
++	if( size < 0 )
++		size = 0;
++	if( size > 2 )
++		size = 2;
++
++	g_fontBroken = false;
++	for( int i = 0; i < g_watchedCount; ++i )
++	{
++		if( g_watched[i].broken && g_watched[i].conFont == size )
++			g_fontBroken = true;
++	}
++}
++
++bool EngineFontBroken( void )
++{
++	return g_fontBroken;
++}
++
++} // namespace ClientTexture
 diff --git a/cl_dll/hud/tutor.cpp b/cl_dll/hud/tutor.cpp
 new file mode 100644
-index 0000000..44e52c8
+index 0000000..f37647a
 --- /dev/null
 +++ b/cl_dll/hud/tutor.cpp
-@@ -0,0 +1,397 @@
+@@ -0,0 +1,398 @@
 +//
 +// tutor.cpp
 +//
@@ -7737,6 +7960,7 @@ index 0000000..44e52c8
 +		if( m_iTextTex > 0 )
 +		{
 +			snprintf( m_szTextTexName, sizeof( m_szTextTexName ), "%s", name );
++			ClientTexture::Note( "create", m_iTextTex, name );
 +			m_iTextW = w;
 +			m_iTextH = h;
 +			return;
@@ -8340,10 +8564,17 @@ index 0000000..0299152
 +
 +} // namespace Tutor
 diff --git a/cl_dll/hud_redraw.cpp b/cl_dll/hud_redraw.cpp
-index 1f2ad59..0caaf9c 100644
+index 1f2ad59..8e640cf 100644
 --- a/cl_dll/hud_redraw.cpp
 +++ b/cl_dll/hud_redraw.cpp
-@@ -23,6 +23,7 @@
+@@ -17,12 +17,14 @@
+ //
+ #include <math.h>
+ #include "hud.h"
++#include "hud/client_texture.h"
+ #include "cl_util.h"
+ #include "triangleapi.h"
+ 
  #include <string.h>
  
  #include "draw_util.h"
@@ -8351,7 +8582,17 @@ index 1f2ad59..0caaf9c 100644
  
  #define MAX_LOGO_FRAMES 56
  
-@@ -153,6 +154,12 @@ int CHud :: Redraw( float flTime, int intermission )
+@@ -92,6 +94,9 @@ int CHud :: Redraw( float flTime, int intermission )
+ 	if ( m_flTimeDelta < 0 )
+ 		m_flTimeDelta = 0;
+ 
++	// the textures of the fonts of the engine are still there (see hud/texture_watch.cpp)
++	ClientTexture::WatchFonts();
++
+ 	if (m_flShotTime && m_flShotTime < flTime)
+ 	{
+ 		gEngfuncs.pfnClientCmd("snapshot\n");
+@@ -153,6 +158,12 @@ int CHud :: Redraw( float flTime, int intermission )
  
  	g_accept_utf8 = !stricmp( cl_charset->string, "utf-8" );
  
@@ -8419,10 +8660,73 @@ index e98c4ef..ce2e896 100644
  	void SetSpectatorStartPosition();
  	CHudMsgFunc(Spectator);
 diff --git a/cl_dll/include/draw_util.h b/cl_dll/include/draw_util.h
-index 1fa2af1..2ec9115 100644
+index 1fa2af1..401adf2 100644
 --- a/cl_dll/include/draw_util.h
 +++ b/cl_dll/include/draw_util.h
-@@ -184,6 +184,15 @@ public:
+@@ -44,6 +44,8 @@ extern cvar_t *cl_charset;
+ int Con_UtfProcessChar( int in );
+ int Con_UtfProcessCharForce( int in );
+ 
++namespace ClientTexture { bool EngineFontBroken( void ); } // hud/texture_watch.cpp
++
+ class DrawUtils
+ {
+ public:
+@@ -93,9 +95,16 @@ public:
+ 		return 3;
+ 	}
+ 
++	// the texts that the engine draws with its console font are drawn with the font of the HUD if hud_textmode is
++	// set, or if the texture of the console font is broken (see hud/texture_watch.cpp)
++	static inline bool UseHudFont( void )
++	{
++		return gHUD.hud_textmode->value || ClientTexture::EngineFontBroken();
++	}
++
+ 	static inline int DrawConsoleString(int x, int y, const char *string)
+ 	{
+-		if ( gHUD.hud_textmode->value )
++		if ( UseHudFont() )
+ 		{
+ 			int ret  = DrawHudString( x, y, 9999, (char *)string, color[0] * 255, color[1] * 255, color[2] * 255 );
+ 			color[0] = color[1] = color[2] = 1.0f;
+@@ -107,7 +116,7 @@ public:
+ 
+ 	static inline void SetConsoleTextColor( float r, float g, float b )
+ 	{
+-		if ( gHUD.hud_textmode->value )
++		if ( UseHudFont() )
+ 			color[0] = r, color[1] = g, color[2] = b;
+ 		else
+ 			gEngfuncs.pfnDrawSetTextColor( r, g, b );
+@@ -115,7 +124,7 @@ public:
+ 
+ 	static inline void SetConsoleTextColor( unsigned char r, unsigned char g, unsigned char b )
+ 	{
+-		if ( gHUD.hud_textmode->value )
++		if ( UseHudFont() )
+ 			color[0] = r / 255.0f, color[1] = g / 255.0f, color[2] = b / 255.0f;
+ 		else
+ 			gEngfuncs.pfnDrawSetTextColor( r / 255.0f, g / 255.0f, b / 255.0f );
+@@ -123,7 +132,7 @@ public:
+ 
+ 	static inline int ConsoleStringLen(  const char *szIt )
+ 	{
+-		if ( gHUD.hud_textmode->value )
++		if ( UseHudFont() )
+ 		{
+ 			return HudStringLen( (char *)szIt );
+ 		}
+@@ -139,7 +148,7 @@ public:
+ 
+ 	static inline void ConsoleStringSize( const char *szIt, int *width, int *height )
+ 	{
+-		if ( gHUD.hud_textmode->value )
++		if ( UseHudFont() )
+ 			*height = 13, *width = HudStringLen( (char *)szIt );
+ 		else
+ 			gEngfuncs.pfnDrawConsoleStringLen( szIt, width, height );
+@@ -184,6 +193,15 @@ public:
  		}
  	}
  
