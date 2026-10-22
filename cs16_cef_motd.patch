@@ -10100,10 +10100,10 @@ index 35f984c..3fea3af 100644
  	AddWeapon( BuyMenuWeaponInfo{ "Kevlar", "kevlar", "vest", "Kevlar" });
  	AddWeapon( BuyMenuWeaponInfo{ "Kevlar_Helmet", "kevlar_helmet", "vesthelm", "KevlarHelmet" });
 diff --git a/3rdparty/mainui_cpp/menus/client/ClientWindow.cpp b/3rdparty/mainui_cpp/menus/client/ClientWindow.cpp
-index 7d67022..b99c96e 100644
+index 7d67022..1c93f95 100644
 --- a/3rdparty/mainui_cpp/menus/client/ClientWindow.cpp
 +++ b/3rdparty/mainui_cpp/menus/client/ClientWindow.cpp
-@@ -16,47 +16,373 @@ GNU General Public License for more details.
+@@ -16,47 +16,383 @@ GNU General Public License for more details.
  
  #include "BaseMenu.h"
  #include "ClientWindow.h"
@@ -10159,6 +10159,7 @@ index 7d67022..b99c96e 100644
 +	char name[32] = "";
 +
 +	const auto started = std::chrono::steady_clock::now();
++	double gdiMs = 0.0;
 +
 +	if( SteamText_RenderGDI( text, "Verdana", em, 600, antialias, maxWidth, alpha, w, h ))
 +	{
@@ -10179,6 +10180,8 @@ index 7d67022..b99c96e 100644
 +			p[3] = alpha[i];
 +		}
 +
++		gdiMs = std::chrono::duration<double, std::milli>( std::chrono::steady_clock::now() - started ).count();
++
 +		snprintf( name, sizeof( name ), "#steamtext%d.tga", ++g_textCounter );
 +		image = EngFuncs::PIC_Load( name, tga.data(), (int)tga.size(), PIC_NEAREST );
 +	}
@@ -10186,7 +10189,14 @@ index 7d67022..b99c96e 100644
 +	// a slow text is reported: it helps to find what makes the menus stop
 +	const double ms = std::chrono::duration<double, std::milli>( std::chrono::steady_clock::now() - started ).count();
 +	if( ms > 15.0 )
-+		Con_Printf( "[menu text] %.0f ms for \"%s\"\n", ms, text );
++	{
++		char codes[200] = "";
++		int n = 0;
++		for( const unsigned char *c = (const unsigned char *)text; *c && n < (int)sizeof( codes ) - 4; ++c )
++			n += snprintf( codes + n, sizeof( codes ) - n, "%02x", *c );
++		Con_Printf( "[menu text] %.0f ms (Windows %.0f ms, texture %.0f ms), %dx%d, \"%s\" = %s\n",
++			ms, gdiMs, ms - gdiMs, w, h, text, codes );
++	}
 +
 +	// the slot: a free one or the one used least recently
 +	int slot = g_textCacheCount;
@@ -10495,7 +10505,7 @@ index 7d67022..b99c96e 100644
  	if ( key == K_ENTER || key == K_KP_ENTER )
  	{
  		CMenuBaseItem *item = ItemAtCursor();
-@@ -90,9 +416,24 @@ bool CClientWindow::KeyDown( int key )
+@@ -90,9 +426,24 @@ bool CClientWindow::KeyDown( int key )
  
  bool CClientWindow::KeyUp( int key )
  {
