@@ -186,8 +186,26 @@ jobs:
           test -f cstrike/cef/resources.pak || { echo "ERROR: resources.pak is missing"; exit 1; }
           echo "Result looks complete"
 
-      - name: Upload result
+      # Two archives: the small one has only what changes with the patch (the client, the menu and the helper of
+      # the browser, ~3 MB); the full one also has the files of CEF (~165 MB) and is needed only the first time or
+      # when the version of CEF (CEF_VERSION above) changes.
+      - name: Collect the small archive (without the files of CEF)
+        run: |
+          SMALL="$GITHUB_WORKSPACE/result-small"
+          mkdir -p "$SMALL/cstrike/cl_dlls" "$SMALL/cstrike/cef"
+          cp -v result/cstrike/cl_dlls/* "$SMALL/cstrike/cl_dlls/"
+          cp -v result/cstrike/cef/cs16_cef_helper.exe "$SMALL/cstrike/cef/"
+          cp -v result/CEF_VERSION.txt "$SMALL/"
+          du -sh "$SMALL"
+
+      - name: Upload the small archive (client, menu, helper)
         uses: actions/upload-artifact@v6
         with:
-          name: cs16-client-cef-motd-x64
+          name: cs16-client-cef-motd-x64-dlls-only
+          path: result-small/*
+
+      - name: Upload the full archive (with CEF)
+        uses: actions/upload-artifact@v6
+        with:
+          name: cs16-client-cef-motd-x64-full
           path: result/*
