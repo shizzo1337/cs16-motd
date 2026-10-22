@@ -9147,7 +9147,7 @@ index 0000000..9f67fd6
 +if __name__ == "__main__":
 +	sys.exit(main())
 diff --git a/3rdparty/mainui_cpp/menus/client/BuyMenu.cpp b/3rdparty/mainui_cpp/menus/client/BuyMenu.cpp
-index 35f984c..c3902c3 100644
+index 35f984c..3fea3af 100644
 --- a/3rdparty/mainui_cpp/menus/client/BuyMenu.cpp
 +++ b/3rdparty/mainui_cpp/menus/client/BuyMenu.cpp
 @@ -16,16 +16,55 @@ GNU General Public License for more details.
@@ -9737,8 +9737,12 @@ index 35f984c..c3902c3 100644
  			key.Format( "CStrike_%sMuzzleEnergy", weapon->name2 );
 -			muzzleenLabel_.SetText( L( key.String() ) );
 +			addRow( L( "CStrike_MuzzleEnergyLabel" ), L( key.String() ));
-+		}
-+
+ 		}
+ 
+-		CUtlString imagePath;
+-		imagePath.Format( "gfx/vgui/%s.tga", weapon->image );
+-		bitmap.SetPicture( imagePath.String() );
+-		bitmap.colorBase = uiColorWhite;
 +		m_image.Format( "gfx/vgui/%s.tga", weapon->image );
 +	}
 +
@@ -9810,13 +9814,9 @@ index 35f984c..c3902c3 100644
 +				lineCap += lineH;
 +				p = end ? end + 1 : nullptr;
 +			}
- 		}
++		}
 +	}
- 
--		CUtlString imagePath;
--		imagePath.Format( "gfx/vgui/%s.tga", weapon->image );
--		bitmap.SetPicture( imagePath.String() );
--		bitmap.colorBase = uiColorWhite;
++
 +	void cancelPressedCb( void *pExtra )
 +	{
 +		UI_CloseClientMenu();
@@ -9845,7 +9845,7 @@ index 35f984c..c3902c3 100644
  		confirmCb( (void*)weapon->command );
  	}
  
-@@ -456,17 +415,28 @@ public:
+@@ -456,18 +415,30 @@ public:
  		UI_CloseClientMenu();
  	}
  };
@@ -9875,9 +9875,11 @@ index 35f984c..c3902c3 100644
 +	}
 +
  	int m_iTeam = TEAM_TERRORIST;
++	CSteamCheckBox m_autoFill; // "Auto buy ammo" (not in the Steam version): at the bottom of the menu
  };
  class CClientPistolsTMenu         : public CClientBaseBuyMenu { virtual void _Init() override; };
-@@ -526,68 +496,54 @@ void UI_BuyMenu_Rifle_Show( int param1, int param2 ) { Menu_Show_Team<CClientRif
+ class CClientPistolsCTMenu        : public CClientBaseBuyMenu { virtual void _Init() override; };
+@@ -526,68 +497,67 @@ void UI_BuyMenu_Rifle_Show( int param1, int param2 ) { Menu_Show_Team<CClientRif
  void UI_BuyMenu_Machinegun_Show( int param1, int param2 ) { Menu_Show_Team<CClientMachineGunsMenu, CClientMachineGunsMenu>( param2 ); }
  void UI_BuyMenu_Item_Show( int param1, int param2 ) { Menu_Show_Team<CClientItemTMenu, CClientItemCTMenu>( param2 ); }
  
@@ -9959,14 +9961,26 @@ index 35f984c..c3902c3 100644
 +	keyButtons['A'] = autobuy;
 +	keys['R'] = rebuy->onPressed;
 +	keyButtons['R'] = rebuy;
- }
++
++	// the ammunition is bought with the weapon (ui_cs_autofill); this is not in the Steam version, so the check box
++	// is at the bottom, under "0 CANCEL"
++	Q_strncpy( m_autoFill.label, L( "Auto buy ammo" ), sizeof( m_autoFill.label ));
++	m_autoFill.cvarName = "ui_cs_autofill";
++	m_autoFill.frame = &m_frame;
++	m_autoFill.resX = 76.0f;
++	m_autoFill.resY = 414.0f;
++	AddItem( m_autoFill );
++}
 +
 +void CClientMainBuyMenu::Draw()
 +{
 +	if( m_bShowScores )
 +		return; // the table of the players is shown instead of the menu
 +
-+	BaseClass::Draw(); // the frame and the buttons
++	m_autoFill.textFont = m_hTextFont;
++	m_autoFill.capHeight = m_iCapHeight;
++
++	BaseClass::Draw(); // the frame, the buttons and the check box
 +
 +	const SteamFrame::Layout &l = m_frame;
 +
@@ -9974,9 +9988,10 @@ index 35f984c..c3902c3 100644
 +	DrawSteamText( m_hTextFont, SteamFrame::Res::X( l, 84.0f ), SteamFrame::Res::Y( l, 87.0f ) + l.U( 8.6f ), m_iCapHeight,
 +	               l.U( 160.0f ), L( "Cstrike_Select_Category" ), COLOR_BRIGHT );
 +
-+	// the divider between the columns
-+	UI_FillRect( SteamFrame::Res::X( l, 236.0f ), SteamFrame::Res::Y( l, 116.0f ), l.U( 2.0f ), l.U( 284.0f ), COLOR_BORDER );
-+}
++	// the divider between the columns: 2 pixels at 1080 (771..772), dimmer than the frames of the buttons
++	const int dividerW = (int)l.u > 0 ? (int)l.u : 1;
++	UI_FillRect( SteamFrame::Res::X( l, 236.0f ), SteamFrame::Res::Y( l, 116.0f ), dividerW, l.U( 284.0f ), PackRGBA( 155, 121, 58, 128 ));
+ }
 +
  void CClientPistolsTMenu::_Init()
  {
@@ -9986,7 +10001,7 @@ index 35f984c..c3902c3 100644
  
  	AddWeapon( BuyMenuWeaponInfo{ "Glock18", "glock18", "glock", "Glock" });
  	AddWeapon( BuyMenuWeaponInfo{ "USP45", "usp45", "usp", "USP45" });
-@@ -600,6 +556,7 @@ void CClientPistolsCTMenu::_Init()
+@@ -600,6 +570,7 @@ void CClientPistolsCTMenu::_Init()
  {
  	szName = L( "Cstrike_PistolsLabel" );
  	eAmmoClass = BUY_SECAMMO;
@@ -9994,7 +10009,7 @@ index 35f984c..c3902c3 100644
  
  	AddWeapon( BuyMenuWeaponInfo{ "Glock18", "glock18", "glock", "Glock" });
  	AddWeapon( BuyMenuWeaponInfo{ "USP45", "usp45", "usp", "USP45" });
-@@ -611,6 +568,7 @@ void CClientShotgunsMenu::_Init()
+@@ -611,6 +582,7 @@ void CClientShotgunsMenu::_Init()
  {
  	szName = L( "Cstrike_ShotgunsLabel" );
  	eAmmoClass = BUY_PRIMAMMO;
@@ -10002,7 +10017,7 @@ index 35f984c..c3902c3 100644
  
  	AddWeapon( BuyMenuWeaponInfo{ "m3", "m3", "m3", "M3" });
  	AddWeapon( BuyMenuWeaponInfo{ "xm1014", "xm1014", "xm1014",	"XM1014" });
-@@ -620,6 +578,7 @@ void CClientSubMachineGunsTMenu::_Init()
+@@ -620,6 +592,7 @@ void CClientSubMachineGunsTMenu::_Init()
  {
  	szName = L( "Cstrike_SubmachinegunsLabel" );
  	eAmmoClass = BUY_PRIMAMMO;
@@ -10010,7 +10025,7 @@ index 35f984c..c3902c3 100644
  
  	AddWeapon( BuyMenuWeaponInfo{ "MAC10", "mac10", "mac10", "Mac10" });
  	AddWeapon( BuyMenuWeaponInfo{ "MP5", "mp5", "mp5", "MP5" });
-@@ -630,6 +589,7 @@ void CClientSubMachineGunsCTMenu::_Init()
+@@ -630,6 +603,7 @@ void CClientSubMachineGunsCTMenu::_Init()
  {
  	szName = L( "Cstrike_SubmachinegunsLabel" );
  	eAmmoClass = BUY_PRIMAMMO;
@@ -10018,7 +10033,7 @@ index 35f984c..c3902c3 100644
  
  	AddWeapon( BuyMenuWeaponInfo{ "Tmp", "tmp", "tmp", "TMP" });
  	AddWeapon( BuyMenuWeaponInfo{ "MP5", "mp5", "mp5", "MP5" });
-@@ -640,6 +600,7 @@ void CClientRiflesTMenu::_Init()
+@@ -640,6 +614,7 @@ void CClientRiflesTMenu::_Init()
  {
  	szName = L( "Cstrike_RiflesLabel" );
  	eAmmoClass = BUY_PRIMAMMO;
@@ -10026,7 +10041,7 @@ index 35f984c..c3902c3 100644
  
  	AddWeapon( BuyMenuWeaponInfo{ "Galil", "galil", "galil", "Galil" });
  	AddWeapon( BuyMenuWeaponInfo{ "AK47", "ak47", "ak47", "AK47" });
-@@ -653,6 +614,7 @@ void CClientRiflesCTMenu::_Init()
+@@ -653,6 +628,7 @@ void CClientRiflesCTMenu::_Init()
  {
  	szName = L( "Cstrike_RiflesLabel" );
  	eAmmoClass = BUY_PRIMAMMO;
@@ -10034,7 +10049,7 @@ index 35f984c..c3902c3 100644
  
  	AddWeapon( BuyMenuWeaponInfo{ "Famas", "famas", "famas", "Famas" });
  	AddWeapon( BuyMenuWeaponInfo{ "Scout_CT", "scout", "scout", "Scout" });
-@@ -666,6 +628,7 @@ void CClientMachineGunsMenu::_Init()
+@@ -666,6 +642,7 @@ void CClientMachineGunsMenu::_Init()
  {
  	szName = L( "Cstrike_MachinegunsLabel" );
  	eAmmoClass = BUY_PRIMAMMO;
@@ -10042,7 +10057,7 @@ index 35f984c..c3902c3 100644
  
  	AddWeapon( BuyMenuWeaponInfo{ "M249", "m249", "m249", "M249" });
  }
-@@ -673,6 +636,7 @@ void CClientItemTMenu::_Init()
+@@ -673,6 +650,7 @@ void CClientItemTMenu::_Init()
  {
  	szName = L( "Cstrike_EquipmentLabel" );
  	eAmmoClass = BUY_EQUIPMENT;
@@ -10050,7 +10065,7 @@ index 35f984c..c3902c3 100644
  
  	AddWeapon( BuyMenuWeaponInfo{ "Kevlar", "kevlar", "vest", "Kevlar" });
  	AddWeapon( BuyMenuWeaponInfo{ "Kevlar_Helmet", "kevlar_helmet", "vesthelm", "KevlarHelmet" });
-@@ -685,6 +649,7 @@ void CClientItemCTMenu::_Init()
+@@ -685,6 +663,7 @@ void CClientItemCTMenu::_Init()
  {
  	szName = L( "Cstrike_EquipmentLabel" );
  	eAmmoClass = BUY_EQUIPMENT;
@@ -10059,15 +10074,112 @@ index 35f984c..c3902c3 100644
  	AddWeapon( BuyMenuWeaponInfo{ "Kevlar", "kevlar", "vest", "Kevlar" });
  	AddWeapon( BuyMenuWeaponInfo{ "Kevlar_Helmet", "kevlar_helmet", "vesthelm", "KevlarHelmet" });
 diff --git a/3rdparty/mainui_cpp/menus/client/ClientWindow.cpp b/3rdparty/mainui_cpp/menus/client/ClientWindow.cpp
-index 7d67022..89b28e1 100644
+index 7d67022..046da5d 100644
 --- a/3rdparty/mainui_cpp/menus/client/ClientWindow.cpp
 +++ b/3rdparty/mainui_cpp/menus/client/ClientWindow.cpp
-@@ -16,47 +16,227 @@ GNU General Public License for more details.
+@@ -16,47 +16,351 @@ GNU General Public License for more details.
  
  #include "BaseMenu.h"
  #include "ClientWindow.h"
 +#include "SteamButton.h"
++#include "SteamTextGDI.h"
  
++#include <stdio.h>
++#include <vector>
++
++// The texts of the client menus are drawn by Windows (GDI) as whole lines, like the Steam version does, and kept
++// as textures: drawing them letter by letter from a font atlas spaces the letters unevenly ("PRE VI OUS").
++// Without the fonts of Windows the font of the menu is used.
++namespace {
++
++int g_textEm = 15;           // "Default": the height of its letters in pixels (see SteamFrame::DefaultFont)
++bool g_textAntialias = true;
++
++struct TextPicture
++{
++	char key[320];
++	char name[32];
++	HIMAGE image;
++	int w, h;
++	unsigned int lastUse;
++};
++
++const int TEXT_CACHE_SIZE = 384;
++TextPicture g_textCache[TEXT_CACHE_SIZE];
++int g_textCacheCount = 0;
++unsigned int g_textUse = 0;
++int g_textCounter = 0;
++
++// a picture of the text (white, the glyphs in its alpha), made once
++const TextPicture *TextPictureFor( const char *text, int em, bool antialias, int maxWidth )
++{
++	char key[320];
++	snprintf( key, sizeof( key ), "%d|%d|%d|%s", em, antialias ? 1 : 0, maxWidth, text );
++
++	++g_textUse;
++	for( int i = 0; i < g_textCacheCount; ++i )
++	{
++		if( !strcmp( g_textCache[i].key, key ))
++		{
++			g_textCache[i].lastUse = g_textUse;
++			return g_textCache[i].image ? &g_textCache[i] : nullptr;
++		}
++	}
++
++	std::vector<unsigned char> alpha;
++	int w = 0, h = 0;
++	HIMAGE image = 0;
++	char name[32] = "";
++
++	if( SteamText_RenderGDI( text, "Verdana", em, 600, antialias, maxWidth, alpha, w, h ))
++	{
++		// an uncompressed 32-bit TGA, from the top to the bottom
++		std::vector<unsigned char> tga( 18 + (size_t)w * h * 4, 0 );
++		tga[2] = 2;
++		tga[12] = (unsigned char)( w & 0xFF );
++		tga[13] = (unsigned char)( w >> 8 );
++		tga[14] = (unsigned char)( h & 0xFF );
++		tga[15] = (unsigned char)( h >> 8 );
++		tga[16] = 32;
++		tga[17] = 0x28;
++
++		unsigned char *p = &tga[18];
++		for( size_t i = 0, n = (size_t)w * h; i < n; ++i, p += 4 )
++		{
++			p[0] = p[1] = p[2] = 255;
++			p[3] = alpha[i];
++		}
++
++		snprintf( name, sizeof( name ), "#steamtext%d.tga", ++g_textCounter );
++		image = EngFuncs::PIC_Load( name, tga.data(), (int)tga.size(), PIC_NEAREST );
++	}
++
++	// the slot: a free one or the one used least recently
++	int slot = g_textCacheCount;
++	if( g_textCacheCount < TEXT_CACHE_SIZE )
++		g_textCacheCount++;
++	else
++	{
++		slot = 0;
++		for( int i = 1; i < TEXT_CACHE_SIZE; ++i )
++			if( g_textCache[i].lastUse < g_textCache[slot].lastUse )
++				slot = i;
++		if( g_textCache[slot].image && g_textCache[slot].name[0] )
++			EngFuncs::PIC_Free( g_textCache[slot].name );
++	}
++
++	TextPicture &t = g_textCache[slot];
++	snprintf( t.key, sizeof( t.key ), "%s", key );
++	snprintf( t.name, sizeof( t.name ), "%s", name );
++	t.image = image;
++	t.w = w;
++	t.h = h;
++	t.lastUse = g_textUse;
++	return image ? &t : nullptr;
++}
++
++} // namespace
++
 +// The frame of the Steam version: the same as the MOTD window of the client (see SteamFrame.h)
  void CClientWindow::VidInit()
  {
@@ -10100,6 +10212,16 @@ index 7d67022..89b28e1 100644
 +	if( m_hTextFont <= 0 )
 +		m_hTextFont = uiStatic.hSmallerFont;
 +	m_iCapHeight = (int)( m_frame.textEm * 0.727f + 0.5f );
++	// another size of the screen: the pictures of the old size are not needed any more
++	if( g_textEm != m_frame.textEm || g_textAntialias != m_frame.textAntialias )
++	{
++		for( int i = 0; i < g_textCacheCount; ++i )
++			if( g_textCache[i].image && g_textCache[i].name[0] )
++				EngFuncs::PIC_Free( g_textCache[i].name );
++		g_textCacheCount = 0;
++	}
++	g_textEm = m_frame.textEm;
++	g_textAntialias = m_frame.textAntialias;
 +
 +	for( int i = 0; i < m_iNumSteamButtons; ++i )
 +	{
@@ -10185,7 +10307,24 @@ index 7d67022..89b28e1 100644
 +
 +void CClientWindow::DrawSteamText( HFont font, int x, int capTop, int capHeight, int maxWidth, const char *text, unsigned int color )
 +{
-+	if( !text || !text[0] || font <= 0 )
++	if( !text || !text[0] )
++		return;
++
++	// the whole line drawn by Windows; its cell starts 0.278 em above the capitals (as the texts of the client)
++	if( maxWidth >= 8 )
++	{
++		const TextPicture *t = TextPictureFor( text, g_textEm, g_textAntialias, maxWidth );
++		if( t )
++		{
++			int r, g, b, a;
++			UnpackRGBA( r, g, b, a, color );
++			EngFuncs::PIC_Set( t->image, r, g, b, a );
++			EngFuncs::PIC_DrawTrans( x, capTop - (int)( 0.278f * g_textEm + 0.5f ), t->w, t->h );
++			return;
++		}
++	}
++
++	if( font <= 0 )
 +		return;
 +
 +	const int tall = g_FontMgr->GetFontTall( font );
@@ -10308,7 +10447,7 @@ index 7d67022..89b28e1 100644
  	if ( key == K_ENTER || key == K_KP_ENTER )
  	{
  		CMenuBaseItem *item = ItemAtCursor();
-@@ -90,9 +270,24 @@ bool CClientWindow::KeyDown( int key )
+@@ -90,9 +394,24 @@ bool CClientWindow::KeyDown( int key )
  
  bool CClientWindow::KeyUp( int key )
  {
@@ -11095,10 +11234,10 @@ index c413e90..8d72a3f 100644
  	uiJoinGame.hasSpectator = param1 & 1;
 diff --git a/3rdparty/mainui_cpp/menus/client/SteamButton.h b/3rdparty/mainui_cpp/menus/client/SteamButton.h
 new file mode 100644
-index 0000000..8929e3c
+index 0000000..033a5ed
 --- /dev/null
 +++ b/3rdparty/mainui_cpp/menus/client/SteamButton.h
-@@ -0,0 +1,73 @@
+@@ -0,0 +1,160 @@
 +/*
 +SteamButton.h - a button of the client menus as in the Steam version of CS 1.6
 +
@@ -11155,6 +11294,21 @@ index 0000000..8929e3c
 +		m_scSize = Size( w, h );
 +	}
 +
++	// a disabled button doesn't work and makes no sound when it is clicked (as in the Steam version)
++	bool KeyDown( int key ) override
++	{
++		if( disabled && ( UI::Key::IsEnter( key ) || UI::Key::IsLeftMouse( key )))
++			return true;
++		return BaseClass::KeyDown( key );
++	}
++
++	bool KeyUp( int key ) override
++	{
++		if( disabled && ( UI::Key::IsEnter( key ) || UI::Key::IsLeftMouse( key )))
++			return true;
++		return BaseClass::KeyUp( key );
++	}
++
 +	void Draw( void ) override
 +	{
 +		const bool hover = this == m_pParent->ItemAtCursor() && ( iFlags & ( QMF_HASMOUSEFOCUS | QMF_HASKEYBOARDFOCUS ));
@@ -11169,6 +11323,78 @@ index 0000000..8929e3c
 +			const int x = m_scPos.x + SteamFrame::TeamMenu::ButtonTextInset( *frame );
 +			CClientWindow::DrawSteamText( textFont, x, capTop, capHeight, m_scPos.x + m_scSize.w - x - 1, label,
 +			                              disabled ? PackRGBA( 80, 48, 0, 255 ) : PackRGBA( 255, 176, 0, 255 ));
++		}
++	}
++};
++
++// A check box of the Steam version (VGUI2 CheckButton): a box with a frame of 1 pixel ("BorderBright"), a check
++// mark in "BrightControlText" and the text in "Default" on its right. It switches a cvar.
++class CSteamCheckBox : public CMenuAction
++{
++public:
++	typedef CMenuAction BaseClass;
++
++	char label[128] = "";
++	const char *cvarName = nullptr;
++	HFont textFont = 0;
++	int capHeight = 0;
++	const SteamFrame::Layout *frame = nullptr;
++	float resX = 0.0f, resY = 0.0f; // the place of the box in the units of a .res file
++
++	CSteamCheckBox()
++	{
++		onPressed = CEventCallback( []( CMenuBaseItem *self, void * )
++		{
++			CSteamCheckBox *box = static_cast<CSteamCheckBox *>( self );
++			if( box->cvarName )
++				EngFuncs::CvarSetValue( box->cvarName, EngFuncs::GetCvarFloat( box->cvarName ) ? 0.0f : 1.0f );
++		} );
++		SetText( "" );
++		bDrawStroke = false;
++	}
++
++	int BoxSize( void ) const { return frame ? frame->U( 9.0f ) : 20; } // 20 pixels at 1080
++
++	void VidInit( void ) override
++	{
++		BaseClass::VidInit();
++		if( !frame )
++			return;
++
++		// the box and the text: the whole line can be clicked
++		const int box = BoxSize();
++		m_scPos = Point( SteamFrame::Res::X( *frame, resX ), SteamFrame::Res::Y( *frame, resY ));
++		m_scSize = Size( box + frame->U( 120.0f ), box );
++	}
++
++	void Draw( void ) override
++	{
++		const int box = BoxSize();
++		const bool hover = this == m_pParent->ItemAtCursor() && ( iFlags & QMF_HASMOUSEFOCUS );
++		const bool checked = cvarName && EngFuncs::GetCvarFloat( cvarName ) != 0.0f;
++
++		UI_FillRect( m_scPos.x, m_scPos.y, box, box, PackRGBA( 0, 0, 0, 200 ));
++		CClientWindow::DrawFrame( m_scPos.x, m_scPos.y, box, box, PackRGBA( 188, 112, 0, hover ? 255 : 128 ));
++
++		if( checked )
++		{
++			// a check mark of two strokes
++			const unsigned int c = PackRGBA( 255, 176, 0, 255 );
++			const int t = box / 7 > 1 ? box / 7 : 1;
++			const int x0 = m_scPos.x + box / 5, y0 = m_scPos.y + box / 2;
++			const int knee = box / 4;
++			for( int i = 0; i <= knee; ++i )
++				UI_FillRect( x0 + i, y0 + i - t / 2, t, t, c );
++			const int len = box - box / 5 * 2 - knee;
++			for( int i = 0; i <= len; ++i )
++				UI_FillRect( x0 + knee + i, y0 + knee - i * ( knee + box / 4 ) / ( len > 0 ? len : 1 ) - t / 2, t, t, c );
++		}
++
++		if( frame )
++		{
++			const int capTop = m_scPos.y + ( box - capHeight + 1 ) / 2;
++			CClientWindow::DrawSteamText( textFont, m_scPos.x + box + frame->U( 4.0f ), capTop, capHeight,
++			                              frame->U( 200.0f ), label, PackRGBA( 255, 176, 0, 255 ));
 +		}
 +	}
 +};
@@ -11347,3 +11573,199 @@ index 0000000..1c01895
 +}
 +
 +} // namespace SteamFrame
+diff --git a/3rdparty/mainui_cpp/menus/client/SteamTextGDI.cpp b/3rdparty/mainui_cpp/menus/client/SteamTextGDI.cpp
+new file mode 100644
+index 0000000..aa2b38b
+--- /dev/null
++++ b/3rdparty/mainui_cpp/menus/client/SteamTextGDI.cpp
+@@ -0,0 +1,173 @@
++//
++// SteamTextGDI.cpp
++//
++// A block of text drawn by the fonts of Windows (GDI), in lines that are not wrapped:
++// the picture is the coverage of the glyphs that the client shows as a texture, one pixel on one pixel.
++// A copy of cl_dll/hud/text_gdi.cpp of the client for the client menus. Kept in a separate file because <windows.h> conflicts with engine headers.
++//
++
++#include <string.h>
++#include <string>
++#include <vector>
++
++#include "SteamTextGDI.h"
++
++#if defined( _WIN32 )
++
++#define WIN32_LEAN_AND_MEAN
++#ifndef NOMINMAX
++#define NOMINMAX
++#endif
++#include <windows.h>
++#include <wchar.h>
++
++static std::wstring Utf8ToWide( const char *utf8 )
++{
++	const int n = MultiByteToWideChar( CP_UTF8, 0, utf8, -1, nullptr, 0 );
++
++	if( n <= 1 )
++		return std::wstring();
++
++	std::wstring w( (size_t)n, L'\0' );
++	MultiByteToWideChar( CP_UTF8, 0, utf8, -1, &w[0], n );
++	w.resize( (size_t)n - 1 );
++	return w;
++}
++
++// The font asked for, if the system has it; otherwise the next one of the list that it has
++static HFONT CreateFontFromList( HDC dc, const char *wanted, int emHeight, int weight, bool antialias )
++{
++	const std::wstring first = Utf8ToWide( wanted ? wanted : "" );
++	const wchar_t *fallbacks[] = { L"Tahoma", L"Verdana", L"Segoe UI", L"Arial" };
++	const DWORD quality = antialias ? ANTIALIASED_QUALITY : NONANTIALIASED_QUALITY;
++
++	for( int i = -1; i < (int)( sizeof( fallbacks ) / sizeof( fallbacks[0] )); ++i )
++	{
++		const wchar_t *face = i < 0 ? first.c_str() : fallbacks[i];
++
++		if( !face[0] || wcslen( face ) >= LF_FACESIZE )
++			continue;
++
++		// a negative height is the height of the letters (em)
++		HFONT font = CreateFontW( -emHeight, 0, 0, 0, weight, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
++			OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, quality, DEFAULT_PITCH | FF_SWISS, face );
++
++		if( !font )
++			continue;
++
++		HGDIOBJ old = SelectObject( dc, font );
++		wchar_t actual[LF_FACESIZE] = {};
++		GetTextFaceW( dc, LF_FACESIZE, actual );
++		SelectObject( dc, old );
++
++		if( _wcsicmp( actual, face ) == 0 )
++			return font;
++
++		DeleteObject( font ); // the system gave another font instead
++	}
++
++	return CreateFontW( -emHeight, 0, 0, 0, weight, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
++		OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, quality, DEFAULT_PITCH | FF_SWISS, L"Arial" );
++}
++
++bool SteamText_RenderGDI( const char *utf8, const char *fontName, int emHeight, int weight, bool antialias,
++						  int maxWidth, std::vector<unsigned char> &alpha, int &width, int &height )
++{
++	if( !utf8 || !utf8[0] || emHeight < 4 || maxWidth < 8 )
++		return false;
++
++	const std::wstring text = Utf8ToWide( utf8 );
++
++	if( text.empty() )
++		return false;
++
++	HDC screen = GetDC( nullptr );
++	HDC dc = CreateCompatibleDC( screen );
++	ReleaseDC( nullptr, screen );
++
++	if( !dc )
++		return false;
++
++	bool ok = false;
++	HFONT font = CreateFontFromList( dc, fontName, emHeight, weight, antialias );
++	HGDIOBJ oldFont = font ? SelectObject( dc, font ) : nullptr;
++	// no wrapping (as the Steam version): every line of the text is one line on the screen
++	const UINT format = DT_LEFT | DT_TOP | DT_NOPREFIX | DT_EXPANDTABS | DT_NOCLIP;
++
++	// the size of the block
++	RECT rc = { 0, 0, 0, 0 };
++
++	if( font && DrawTextW( dc, text.c_str(), (int)text.size(), &rc, format | DT_CALCRECT ) > 0 )
++	{
++		int w = rc.right - rc.left;
++		int h = rc.bottom - rc.top;
++
++		// a line wider than the screen is cut at the limit
++		if( w > maxWidth )
++			w = maxWidth;
++		if( h > 2048 )
++			h = 2048;
++
++		BITMAPINFO bi = {};
++		bi.bmiHeader.biSize = sizeof( BITMAPINFOHEADER );
++		bi.bmiHeader.biWidth = w;
++		bi.bmiHeader.biHeight = -h; // from the top to the bottom
++		bi.bmiHeader.biPlanes = 1;
++		bi.bmiHeader.biBitCount = 32;
++		bi.bmiHeader.biCompression = BI_RGB;
++
++		void *bits = nullptr;
++		HBITMAP bitmap = ( w > 0 && h > 0 ) ? CreateDIBSection( dc, &bi, DIB_RGB_COLORS, &bits, nullptr, 0 ) : nullptr;
++
++		if( bitmap && bits )
++		{
++			HGDIOBJ oldBitmap = SelectObject( dc, bitmap );
++
++			memset( bits, 0, (size_t)w * h * 4 );
++			SetBkColor( dc, RGB( 0, 0, 0 ));
++			SetTextColor( dc, RGB( 255, 255, 255 ));
++			SetBkMode( dc, OPAQUE );
++
++			RECT draw = { 0, 0, w, h };
++			DrawTextW( dc, text.c_str(), (int)text.size(), &draw, format );
++			GdiFlush();
++
++			// white text on black: the brightness of a pixel is how much of it the glyph covers
++			alpha.resize( (size_t)w * h );
++
++			const unsigned char *p = static_cast<const unsigned char *>( bits );
++
++			for( size_t i = 0, n = (size_t)w * h; i < n; ++i, p += 4 )
++			{
++				unsigned char m = p[0] > p[1] ? p[0] : p[1];
++				alpha[i] = m > p[2] ? m : p[2];
++			}
++
++			width = w;
++			height = h;
++			ok = true;
++
++			SelectObject( dc, oldBitmap );
++		}
++
++		if( bitmap )
++			DeleteObject( bitmap );
++	}
++
++	if( oldFont )
++		SelectObject( dc, oldFont );
++	if( font )
++		DeleteObject( font );
++
++	DeleteDC( dc );
++	return ok;
++}
++
++#else // not implemented on other platforms: the font of the HUD is used there
++
++bool SteamText_RenderGDI( const char *, const char *, int, int, bool, int, std::vector<unsigned char> &, int &, int & )
++{
++	return false;
++}
++
++#endif
+diff --git a/3rdparty/mainui_cpp/menus/client/SteamTextGDI.h b/3rdparty/mainui_cpp/menus/client/SteamTextGDI.h
+new file mode 100644
+index 0000000..0a8a921
+--- /dev/null
++++ b/3rdparty/mainui_cpp/menus/client/SteamTextGDI.h
+@@ -0,0 +1,11 @@
++#pragma once
++
++#include <vector>
++
++// A block of UTF-8 text drawn by a font of Windows, without wrapping (line ends in the text start new lines);
++// lines wider than maxWidth are cut. The result is width * height bytes of the coverage of the glyphs.
++// fontName - the font that is wanted (Tahoma, Verdana, Segoe UI, Arial are tried if the system has no such font),
++// emHeight - the height of the letters (em) in pixels.
++// Returns false where the fonts of Windows are not available (the caller uses the font of the HUD).
++bool SteamText_RenderGDI( const char *utf8, const char *fontName, int emHeight, int weight, bool antialias,
++						  int maxWidth, std::vector<unsigned char> &alpha, int &width, int &height );
