@@ -9173,7 +9173,7 @@ index 0000000..9f67fd6
 +if __name__ == "__main__":
 +	sys.exit(main())
 diff --git a/3rdparty/mainui_cpp/menus/client/BuyMenu.cpp b/3rdparty/mainui_cpp/menus/client/BuyMenu.cpp
-index 35f984c..3fea3af 100644
+index 35f984c..67e80b4 100644
 --- a/3rdparty/mainui_cpp/menus/client/BuyMenu.cpp
 +++ b/3rdparty/mainui_cpp/menus/client/BuyMenu.cpp
 @@ -16,16 +16,55 @@ GNU General Public License for more details.
@@ -9213,8 +9213,7 @@ index 35f984c..3fea3af 100644
 +		return -1;
 +	return atoi( value );
 +}
- 
--static void NormalizeTranslationString( const char *source, CUtlString &result )
++
 +// the price from its text (": $1000"), -1 if there is none
 +int ParsePrice( const char *text )
 +{
@@ -9230,7 +9229,8 @@ index 35f984c..3fea3af 100644
 +
 +	if( !*p )
 +		return -1;
-+
+ 
+-static void NormalizeTranslationString( const char *source, CUtlString &result )
 +	return atoi( p );
 +}
 +
@@ -9238,7 +9238,7 @@ index 35f984c..3fea3af 100644
  {
  	result.SetValue( "" );
  	for ( const char *t = source; *t; ++t )
-@@ -42,398 +81,318 @@ static void NormalizeTranslationString( const char *source, CUtlString &result )
+@@ -42,398 +81,341 @@ static void NormalizeTranslationString( const char *source, CUtlString &result )
  	}
  }
  
@@ -9503,6 +9503,7 @@ index 35f984c..3fea3af 100644
 -		UI_CloseClientMenu();
 +		m_pShown = numWeapons > 0 ? &weapons[0] : nullptr;
 +		UpdateInfo();
++		m_bTextsAsked = false;
  	}
  
 -	void cancelFocusCb( void *pExtra )
@@ -9535,8 +9536,26 @@ index 35f984c..3fea3af 100644
 +		UpdateAffordable();
 +		BaseClass::Draw(); // the frame and the buttons
 +
++		// the first frame: the texts of all the items are asked for, so they are made together (one texture)
++		// and showing another item later doesn't stop the game
++		if( !m_bTextsAsked )
++		{
++			m_bTextsAsked = true;
++			BuyMenuWeaponInfo *shown = m_pShown;
++			CollectSteamTexts( true );
++			for( int i = 0; i < numWeapons; ++i )
++			{
++				m_pShown = &weapons[i];
++				UpdateInfo();
++				DrawInfo( true );
++			}
++			CollectSteamTexts( false );
++			m_pShown = shown;
++			UpdateInfo();
++		}
++
 +		if( m_pShown )
-+			DrawInfo();
++			DrawInfo( false );
  	}
  
  	void AddWeapon( BuyMenuWeaponInfo info )
@@ -9595,6 +9614,7 @@ index 35f984c..3fea3af 100644
 -	enum ammoClass_e
 +private:
 +	BuyMenuWeaponInfo *m_pShown = nullptr; // the item whose info is shown
++	bool m_bTextsAsked = false;
 +
 +	// the texts of the info, made when the shown item changes
 +	struct InfoRow
@@ -9730,50 +9750,37 @@ index 35f984c..3fea3af 100644
  			key.Format( "CStrike_%sWeightEmpty", weapon->name2 );
 -			const char *tr = TranslateStringIfFound( key.String() );
 -			if( tr )
--			{
--				weightLabel.SetText( L( "CStrike_WeightEmptyLabel" ) );
--			}
--			else
 +			const char *weight = TranslateStringIfFound( key.String() );
 +			if( !weight )
  			{
+-				weightLabel.SetText( L( "CStrike_WeightEmptyLabel" ) );
+-			}
+-			else
+-			{
 -				weightLabel.SetText( L( "CStrike_WeightLoadedLabel" ) );
 +				weightLabel = L( "CStrike_WeightLoadedLabel" );
  				key.Format( "CStrike_%sWeightLoaded", weapon->name2 );
 -				tr = TranslateStringIfFound( key.String() );
 +				weight = TranslateStringIfFound( key.String() );
  			}
--
--			if( !tr )
--			{
--				tr = key.String();
--			}
--
--			weightLabel_.SetText( L( tr ) );
 +			addRow( weightLabel, weight ? weight : L( key.String() ));
- 
- 			key.Format( "CStrike_%sProjectileWeight", weapon->name2 );
--			projectLabel_.SetText( L( key.String() ) );
++
++			key.Format( "CStrike_%sProjectileWeight", weapon->name2 );
 +			addRow( L( "CStrike_ProjectileWeightLabel" ), L( key.String() ));
  
- 			key.Format( "CStrike_%sMuzzleVelocity", weapon->name2 );
--			muzzlevelLabel_.SetText( L( key.String() ) );
+-			if( !tr )
++			key.Format( "CStrike_%sMuzzleVelocity", weapon->name2 );
 +			addRow( L( "CStrike_MuzzleVelocityLabel" ), L( key.String() ));
- 
- 			key.Format( "CStrike_%sMuzzleEnergy", weapon->name2 );
--			muzzleenLabel_.SetText( L( key.String() ) );
++
++			key.Format( "CStrike_%sMuzzleEnergy", weapon->name2 );
 +			addRow( L( "CStrike_MuzzleEnergyLabel" ), L( key.String() ));
- 		}
- 
--		CUtlString imagePath;
--		imagePath.Format( "gfx/vgui/%s.tga", weapon->image );
--		bitmap.SetPicture( imagePath.String() );
--		bitmap.colorBase = uiColorWhite;
++		}
++
 +		m_image.Format( "gfx/vgui/%s.tga", weapon->image );
 +	}
 +
 +	// the info of the item: ItemInfo of Buy*.res at (244, 116), its contents from classes/<item>.res
-+	void DrawInfo( void )
++	void DrawInfo( bool textsOnly )
 +	{
 +		const SteamFrame::Layout &l = m_frame;
 +		const float infoX = 244.0f, infoY = 116.0f;
@@ -9798,16 +9805,23 @@ index 35f984c..3fea3af 100644
 +		const int by = SteamFrame::Res::Y( l, infoY );
 +		const int bw = l.U( 300.0f );
 +		const int bh = l.U( boxH );
-+		UI_FillRect( bx, by, bw, bh, COLOR_BOXBG );
-+
-+		if( m_image.Length() )
++		if( !textsOnly )
 +		{
-+			UI_DrawPic( bx, SteamFrame::Res::Y( l, infoY + imageY ), l.U( 256.0f ), l.U( imageH ),
-+			            uiColorWhite, m_image.String(), QM_DRAWTRANS );
++			UI_FillRect( bx, by, bw, bh, COLOR_BOXBG );
++
++			if( m_image.Length() )
+ 			{
+-				tr = key.String();
++				UI_DrawPic( bx, SteamFrame::Res::Y( l, infoY + imageY ), l.U( 256.0f ), l.U( imageH ),
++				            uiColorWhite, m_image.String(), QM_DRAWTRANS );
+ 			}
+ 
+-			weightLabel_.SetText( L( tr ) );
++			DrawFrame( bx, by, bw, bh, COLOR_BORDER );
 +		}
-+
-+		DrawFrame( bx, by, bw, bh, COLOR_BORDER );
-+
+ 
+-			key.Format( "CStrike_%sProjectileWeight", weapon->name2 );
+-			projectLabel_.SetText( L( key.String() ) );
 +		// the rows: the labels at 0 and the values (": $400") at 140 units; the labels are 24 units high with the
 +		// text in their middle (equipment: at their top, "north-west")
 +		const int labelX = bx;
@@ -9815,12 +9829,16 @@ index 35f984c..3fea3af 100644
 +		const int labelW = valueX - labelX;
 +		const int valueW = l.U( 300.0f ) - ( valueX - labelX );
 +		const int lineH = l.U( 8.45f ); // the lines of a description: 19 pixels at 1080
-+
+ 
+-			key.Format( "CStrike_%sMuzzleVelocity", weapon->name2 );
+-			muzzlevelLabel_.SetText( L( key.String() ) );
 +		for( int i = 0; i < m_iNumRows; ++i )
 +		{
 +			const int top = SteamFrame::Res::Y( l, infoY + rowY + rowStep * i );
 +			const int capTop = eInfoStyle == INFO_EQUIPMENT ? top + l.U( 1.6f ) : top + ( l.U( 24.0f ) - m_iCapHeight + 1 ) / 2;
-+
+ 
+-			key.Format( "CStrike_%sMuzzleEnergy", weapon->name2 );
+-			muzzleenLabel_.SetText( L( key.String() ) );
 +			DrawSteamText( m_hTextFont, labelX, capTop, m_iCapHeight, labelW, m_rows[i].label.String(), COLOR_LABEL );
 +
 +			// the value may have several lines (the descriptions of the equipment)
@@ -9840,9 +9858,13 @@ index 35f984c..3fea3af 100644
 +				lineCap += lineH;
 +				p = end ? end + 1 : nullptr;
 +			}
-+		}
+ 		}
 +	}
-+
+ 
+-		CUtlString imagePath;
+-		imagePath.Format( "gfx/vgui/%s.tga", weapon->image );
+-		bitmap.SetPicture( imagePath.String() );
+-		bitmap.colorBase = uiColorWhite;
 +	void cancelPressedCb( void *pExtra )
 +	{
 +		UI_CloseClientMenu();
@@ -9871,7 +9893,7 @@ index 35f984c..3fea3af 100644
  		confirmCb( (void*)weapon->command );
  	}
  
-@@ -456,18 +415,30 @@ public:
+@@ -456,18 +438,30 @@ public:
  		UI_CloseClientMenu();
  	}
  };
@@ -9905,7 +9927,7 @@ index 35f984c..3fea3af 100644
  };
  class CClientPistolsTMenu         : public CClientBaseBuyMenu { virtual void _Init() override; };
  class CClientPistolsCTMenu        : public CClientBaseBuyMenu { virtual void _Init() override; };
-@@ -526,68 +497,67 @@ void UI_BuyMenu_Rifle_Show( int param1, int param2 ) { Menu_Show_Team<CClientRif
+@@ -526,68 +520,67 @@ void UI_BuyMenu_Rifle_Show( int param1, int param2 ) { Menu_Show_Team<CClientRif
  void UI_BuyMenu_Machinegun_Show( int param1, int param2 ) { Menu_Show_Team<CClientMachineGunsMenu, CClientMachineGunsMenu>( param2 ); }
  void UI_BuyMenu_Item_Show( int param1, int param2 ) { Menu_Show_Team<CClientItemTMenu, CClientItemCTMenu>( param2 ); }
  
@@ -9996,7 +10018,7 @@ index 35f984c..3fea3af 100644
 +	m_autoFill.resX = 76.0f;
 +	m_autoFill.resY = 414.0f;
 +	AddItem( m_autoFill );
-+}
+ }
 +
 +void CClientMainBuyMenu::Draw()
 +{
@@ -10017,7 +10039,7 @@ index 35f984c..3fea3af 100644
 +	// the divider between the columns: 2 pixels at 1080 (771..772), dimmer than the frames of the buttons
 +	const int dividerW = (int)l.u > 0 ? (int)l.u : 1;
 +	UI_FillRect( SteamFrame::Res::X( l, 236.0f ), SteamFrame::Res::Y( l, 116.0f ), dividerW, l.U( 284.0f ), PackRGBA( 155, 121, 58, 128 ));
- }
++}
 +
  void CClientPistolsTMenu::_Init()
  {
@@ -10027,7 +10049,7 @@ index 35f984c..3fea3af 100644
  
  	AddWeapon( BuyMenuWeaponInfo{ "Glock18", "glock18", "glock", "Glock" });
  	AddWeapon( BuyMenuWeaponInfo{ "USP45", "usp45", "usp", "USP45" });
-@@ -600,6 +570,7 @@ void CClientPistolsCTMenu::_Init()
+@@ -600,6 +593,7 @@ void CClientPistolsCTMenu::_Init()
  {
  	szName = L( "Cstrike_PistolsLabel" );
  	eAmmoClass = BUY_SECAMMO;
@@ -10035,7 +10057,7 @@ index 35f984c..3fea3af 100644
  
  	AddWeapon( BuyMenuWeaponInfo{ "Glock18", "glock18", "glock", "Glock" });
  	AddWeapon( BuyMenuWeaponInfo{ "USP45", "usp45", "usp", "USP45" });
-@@ -611,6 +582,7 @@ void CClientShotgunsMenu::_Init()
+@@ -611,6 +605,7 @@ void CClientShotgunsMenu::_Init()
  {
  	szName = L( "Cstrike_ShotgunsLabel" );
  	eAmmoClass = BUY_PRIMAMMO;
@@ -10043,7 +10065,7 @@ index 35f984c..3fea3af 100644
  
  	AddWeapon( BuyMenuWeaponInfo{ "m3", "m3", "m3", "M3" });
  	AddWeapon( BuyMenuWeaponInfo{ "xm1014", "xm1014", "xm1014",	"XM1014" });
-@@ -620,6 +592,7 @@ void CClientSubMachineGunsTMenu::_Init()
+@@ -620,6 +615,7 @@ void CClientSubMachineGunsTMenu::_Init()
  {
  	szName = L( "Cstrike_SubmachinegunsLabel" );
  	eAmmoClass = BUY_PRIMAMMO;
@@ -10051,7 +10073,7 @@ index 35f984c..3fea3af 100644
  
  	AddWeapon( BuyMenuWeaponInfo{ "MAC10", "mac10", "mac10", "Mac10" });
  	AddWeapon( BuyMenuWeaponInfo{ "MP5", "mp5", "mp5", "MP5" });
-@@ -630,6 +603,7 @@ void CClientSubMachineGunsCTMenu::_Init()
+@@ -630,6 +626,7 @@ void CClientSubMachineGunsCTMenu::_Init()
  {
  	szName = L( "Cstrike_SubmachinegunsLabel" );
  	eAmmoClass = BUY_PRIMAMMO;
@@ -10059,7 +10081,7 @@ index 35f984c..3fea3af 100644
  
  	AddWeapon( BuyMenuWeaponInfo{ "Tmp", "tmp", "tmp", "TMP" });
  	AddWeapon( BuyMenuWeaponInfo{ "MP5", "mp5", "mp5", "MP5" });
-@@ -640,6 +614,7 @@ void CClientRiflesTMenu::_Init()
+@@ -640,6 +637,7 @@ void CClientRiflesTMenu::_Init()
  {
  	szName = L( "Cstrike_RiflesLabel" );
  	eAmmoClass = BUY_PRIMAMMO;
@@ -10067,7 +10089,7 @@ index 35f984c..3fea3af 100644
  
  	AddWeapon( BuyMenuWeaponInfo{ "Galil", "galil", "galil", "Galil" });
  	AddWeapon( BuyMenuWeaponInfo{ "AK47", "ak47", "ak47", "AK47" });
-@@ -653,6 +628,7 @@ void CClientRiflesCTMenu::_Init()
+@@ -653,6 +651,7 @@ void CClientRiflesCTMenu::_Init()
  {
  	szName = L( "Cstrike_RiflesLabel" );
  	eAmmoClass = BUY_PRIMAMMO;
@@ -10075,7 +10097,7 @@ index 35f984c..3fea3af 100644
  
  	AddWeapon( BuyMenuWeaponInfo{ "Famas", "famas", "famas", "Famas" });
  	AddWeapon( BuyMenuWeaponInfo{ "Scout_CT", "scout", "scout", "Scout" });
-@@ -666,6 +642,7 @@ void CClientMachineGunsMenu::_Init()
+@@ -666,6 +665,7 @@ void CClientMachineGunsMenu::_Init()
  {
  	szName = L( "Cstrike_MachinegunsLabel" );
  	eAmmoClass = BUY_PRIMAMMO;
@@ -10083,7 +10105,7 @@ index 35f984c..3fea3af 100644
  
  	AddWeapon( BuyMenuWeaponInfo{ "M249", "m249", "m249", "M249" });
  }
-@@ -673,6 +650,7 @@ void CClientItemTMenu::_Init()
+@@ -673,6 +673,7 @@ void CClientItemTMenu::_Init()
  {
  	szName = L( "Cstrike_EquipmentLabel" );
  	eAmmoClass = BUY_EQUIPMENT;
@@ -10091,7 +10113,7 @@ index 35f984c..3fea3af 100644
  
  	AddWeapon( BuyMenuWeaponInfo{ "Kevlar", "kevlar", "vest", "Kevlar" });
  	AddWeapon( BuyMenuWeaponInfo{ "Kevlar_Helmet", "kevlar_helmet", "vesthelm", "KevlarHelmet" });
-@@ -685,6 +663,7 @@ void CClientItemCTMenu::_Init()
+@@ -685,6 +686,7 @@ void CClientItemCTMenu::_Init()
  {
  	szName = L( "Cstrike_EquipmentLabel" );
  	eAmmoClass = BUY_EQUIPMENT;
@@ -10100,10 +10122,10 @@ index 35f984c..3fea3af 100644
  	AddWeapon( BuyMenuWeaponInfo{ "Kevlar", "kevlar", "vest", "Kevlar" });
  	AddWeapon( BuyMenuWeaponInfo{ "Kevlar_Helmet", "kevlar_helmet", "vesthelm", "KevlarHelmet" });
 diff --git a/3rdparty/mainui_cpp/menus/client/ClientWindow.cpp b/3rdparty/mainui_cpp/menus/client/ClientWindow.cpp
-index 7d67022..1c93f95 100644
+index 7d67022..3a7f9c6 100644
 --- a/3rdparty/mainui_cpp/menus/client/ClientWindow.cpp
 +++ b/3rdparty/mainui_cpp/menus/client/ClientWindow.cpp
-@@ -16,47 +16,383 @@ GNU General Public License for more details.
+@@ -16,47 +16,472 @@ GNU General Public License for more details.
  
  #include "BaseMenu.h"
  #include "ClientWindow.h"
@@ -10122,104 +10144,181 @@ index 7d67022..1c93f95 100644
 +int g_textEm = 15;           // "Default": the height of its letters in pixels (see SteamFrame::DefaultFont)
 +bool g_textAntialias = true;
 +
-+struct TextPicture
++// The pictures of the texts are packed into pages: a new texture costs much on some drivers (up to 150 ms on
++// Intel Arc), so all the texts that a window needs are made together, one texture for them. A text asked for the
++// first time is drawn with the font of the menu in that frame and from its page from the next frame on.
++struct TextEntry
 +{
++	unsigned int hash;
 +	char key[320];
-+	char name[32];
-+	HIMAGE image;
-+	int w, h;
-+	unsigned int lastUse;
++	char text[256];
++	int maxWidth;
++	int page;        // -1: waits for its page
++	int x, y, w, h;  // its place on the page
++	bool ok;         // false: Windows could not draw it (the font of the menu is used)
 +};
 +
-+const int TEXT_CACHE_SIZE = 384;
-+TextPicture g_textCache[TEXT_CACHE_SIZE];
-+int g_textCacheCount = 0;
-+unsigned int g_textUse = 0;
-+int g_textCounter = 0;
++struct TextPage
++{
++	char name[32];
++	HIMAGE image;
++};
 +
-+// a picture of the text (white, the glyphs in its alpha), made once
-+const TextPicture *TextPictureFor( const char *text, int em, bool antialias, int maxWidth )
++const int MAX_TEXT_ENTRIES = 2048;
++const int MAX_TEXT_PAGES = 24;
++const int TEXT_PAGE_WIDTH = 1024;
++
++TextEntry g_textEntries[MAX_TEXT_ENTRIES];
++int g_textEntryCount = 0;
++TextPage g_textPages[MAX_TEXT_PAGES];
++int g_textPageCount = 0;
++int g_textPending = 0;
++int g_textCounter = 0;
++bool g_textCollectOnly = false; // the texts are only asked for (made on the next page), not drawn
++
++unsigned int HashKey( const char *s )
++{
++	unsigned int h = 2166136261u;
++	for( ; *s; ++s )
++		h = ( h ^ (unsigned char)*s ) * 16777619u;
++	return h;
++}
++
++void ClearTextPages( void )
++{
++	for( int i = 0; i < g_textPageCount; ++i )
++		if( g_textPages[i].image && g_textPages[i].name[0] )
++			EngFuncs::PIC_Free( g_textPages[i].name );
++	g_textPageCount = 0;
++	g_textEntryCount = 0;
++	g_textPending = 0;
++}
++
++// the text drawn from its page, or nullptr if it isn't there yet (or can't be)
++const TextEntry *TextFor( const char *text, int maxWidth )
 +{
 +	char key[320];
-+	snprintf( key, sizeof( key ), "%d|%d|%d|%s", em, antialias ? 1 : 0, maxWidth, text );
++	snprintf( key, sizeof( key ), "%d|%d|%d|%s", g_textEm, g_textAntialias ? 1 : 0, maxWidth, text );
++	const unsigned int hash = HashKey( key );
 +
-+	++g_textUse;
-+	for( int i = 0; i < g_textCacheCount; ++i )
++	for( int i = 0; i < g_textEntryCount; ++i )
 +	{
-+		if( !strcmp( g_textCache[i].key, key ))
-+		{
-+			g_textCache[i].lastUse = g_textUse;
-+			return g_textCache[i].image ? &g_textCache[i] : nullptr;
-+		}
++		const TextEntry &e = g_textEntries[i];
++		if( e.hash == hash && !strcmp( e.key, key ))
++			return ( e.ok && e.page >= 0 ) ? &e : nullptr;
 +	}
 +
-+	std::vector<unsigned char> alpha;
-+	int w = 0, h = 0;
-+	HIMAGE image = 0;
-+	char name[32] = "";
++	// too many texts or pages: everything is made again
++	if( g_textEntryCount >= MAX_TEXT_ENTRIES || g_textPageCount >= MAX_TEXT_PAGES )
++		ClearTextPages();
++
++	TextEntry &e = g_textEntries[g_textEntryCount++];
++	e.hash = hash;
++	snprintf( e.key, sizeof( e.key ), "%s", key );
++	snprintf( e.text, sizeof( e.text ), "%s", text );
++	e.maxWidth = maxWidth;
++	e.page = -1;
++	e.ok = true;
++	e.x = e.y = e.w = e.h = 0;
++	g_textPending++;
++	return nullptr;
++}
++
++// all the texts that wait are drawn by Windows and put on one new page (one texture)
++void FlushPendingTexts( void )
++{
++	if( !g_textPending )
++		return;
 +
 +	const auto started = std::chrono::steady_clock::now();
-+	double gdiMs = 0.0;
 +
-+	if( SteamText_RenderGDI( text, "Verdana", em, 600, antialias, maxWidth, alpha, w, h ))
++	struct Piece { int entry; std::vector<unsigned char> alpha; int w, h; };
++	std::vector<Piece> pieces;
++	pieces.reserve( g_textPending );
++
++	for( int i = 0; i < g_textEntryCount; ++i )
 +	{
-+		// an uncompressed 32-bit TGA, from the top to the bottom
-+		std::vector<unsigned char> tga( 18 + (size_t)w * h * 4, 0 );
-+		tga[2] = 2;
-+		tga[12] = (unsigned char)( w & 0xFF );
-+		tga[13] = (unsigned char)( w >> 8 );
-+		tga[14] = (unsigned char)( h & 0xFF );
-+		tga[15] = (unsigned char)( h >> 8 );
-+		tga[16] = 32;
-+		tga[17] = 0x28;
++		TextEntry &e = g_textEntries[i];
++		if( e.page != -1 || !e.ok )
++			continue;
 +
-+		unsigned char *p = &tga[18];
-+		for( size_t i = 0, n = (size_t)w * h; i < n; ++i, p += 4 )
++		Piece p;
++		p.entry = i;
++		p.w = p.h = 0;
++		int maxW = e.maxWidth < TEXT_PAGE_WIDTH ? e.maxWidth : TEXT_PAGE_WIDTH;
++		if( SteamText_RenderGDI( e.text, "Verdana", g_textEm, 600, g_textAntialias, maxW, p.alpha, p.w, p.h ) && p.w > 0 && p.h > 0 )
++			pieces.push_back( std::move( p ));
++		else
++			e.ok = false;
++	}
++	g_textPending = 0;
++
++	if( pieces.empty() )
++		return;
++
++	// rows from the left to the right, 1 pixel between the texts
++	int x = 0, y = 0, rowH = 0;
++	for( Piece &p : pieces )
++	{
++		if( x > 0 && x + p.w > TEXT_PAGE_WIDTH )
 +		{
-+			p[0] = p[1] = p[2] = 255;
-+			p[3] = alpha[i];
++			x = 0;
++			y += rowH + 1;
++			rowH = 0;
 +		}
++		TextEntry &e = g_textEntries[p.entry];
++		e.x = x;
++		e.y = y;
++		e.w = p.w;
++		e.h = p.h;
++		x += p.w + 1;
++		if( p.h > rowH )
++			rowH = p.h;
++	}
++	const int pageW = TEXT_PAGE_WIDTH;
++	const int pageH = y + rowH;
 +
-+		gdiMs = std::chrono::duration<double, std::milli>( std::chrono::steady_clock::now() - started ).count();
++	// an uncompressed 32-bit TGA, from the top to the bottom; white, the glyphs in its alpha
++	std::vector<unsigned char> tga( 18 + (size_t)pageW * pageH * 4, 0 );
++	tga[2] = 2;
++	tga[12] = (unsigned char)( pageW & 0xFF );
++	tga[13] = (unsigned char)( pageW >> 8 );
++	tga[14] = (unsigned char)( pageH & 0xFF );
++	tga[15] = (unsigned char)( pageH >> 8 );
++	tga[16] = 32;
++	tga[17] = 0x28;
 +
-+		snprintf( name, sizeof( name ), "#steamtext%d.tga", ++g_textCounter );
-+		image = EngFuncs::PIC_Load( name, tga.data(), (int)tga.size(), PIC_NEAREST );
++	unsigned char *pixels = &tga[18];
++	for( size_t i = 0, n = (size_t)pageW * pageH; i < n; ++i )
++		pixels[i * 4 + 0] = pixels[i * 4 + 1] = pixels[i * 4 + 2] = 255;
++
++	for( const Piece &p : pieces )
++	{
++		const TextEntry &e = g_textEntries[p.entry];
++		for( int row = 0; row < p.h; ++row )
++		{
++			unsigned char *dst = pixels + ( (size_t)( e.y + row ) * pageW + e.x ) * 4 + 3;
++			const unsigned char *src = &p.alpha[(size_t)row * p.w];
++			for( int col = 0; col < p.w; ++col, dst += 4 )
++				*dst = src[col];
++		}
 +	}
 +
-+	// a slow text is reported: it helps to find what makes the menus stop
++	TextPage &page = g_textPages[g_textPageCount];
++	snprintf( page.name, sizeof( page.name ), "#steamtextpage%d.tga", ++g_textCounter );
++	page.image = EngFuncs::PIC_Load( page.name, tga.data(), (int)tga.size(), PIC_NEAREST );
++
++	const int pageIndex = g_textPageCount++;
++	for( const Piece &p : pieces )
++	{
++		TextEntry &e = g_textEntries[p.entry];
++		e.page = pageIndex;
++		e.ok = page.image != 0;
++	}
++
 +	const double ms = std::chrono::duration<double, std::milli>( std::chrono::steady_clock::now() - started ).count();
-+	if( ms > 15.0 )
-+	{
-+		char codes[200] = "";
-+		int n = 0;
-+		for( const unsigned char *c = (const unsigned char *)text; *c && n < (int)sizeof( codes ) - 4; ++c )
-+			n += snprintf( codes + n, sizeof( codes ) - n, "%02x", *c );
-+		Con_Printf( "[menu text] %.0f ms (Windows %.0f ms, texture %.0f ms), %dx%d, \"%s\" = %s\n",
-+			ms, gdiMs, ms - gdiMs, w, h, text, codes );
-+	}
-+
-+	// the slot: a free one or the one used least recently
-+	int slot = g_textCacheCount;
-+	if( g_textCacheCount < TEXT_CACHE_SIZE )
-+		g_textCacheCount++;
-+	else
-+	{
-+		slot = 0;
-+		for( int i = 1; i < TEXT_CACHE_SIZE; ++i )
-+			if( g_textCache[i].lastUse < g_textCache[slot].lastUse )
-+				slot = i;
-+		if( g_textCache[slot].image && g_textCache[slot].name[0] )
-+			EngFuncs::PIC_Free( g_textCache[slot].name );
-+	}
-+
-+	TextPicture &t = g_textCache[slot];
-+	snprintf( t.key, sizeof( t.key ), "%s", key );
-+	snprintf( t.name, sizeof( t.name ), "%s", name );
-+	t.image = image;
-+	t.w = w;
-+	t.h = h;
-+	t.lastUse = g_textUse;
-+	return image ? &t : nullptr;
++	if( ms > 30.0 )
++		Con_Printf( "[menu text] %.0f ms for a page of %d texts (%dx%d)\n", ms, (int)pieces.size(), pageW, pageH );
 +}
 +
 +} // namespace
@@ -10261,10 +10360,7 @@ index 7d67022..1c93f95 100644
 +	// another size of the screen: the pictures of the old size are not needed any more
 +	if( g_textEm != m_frame.textEm || g_textAntialias != m_frame.textAntialias )
 +	{
-+		for( int i = 0; i < g_textCacheCount; ++i )
-+			if( g_textCache[i].image && g_textCache[i].name[0] )
-+				EngFuncs::PIC_Free( g_textCache[i].name );
-+		g_textCacheCount = 0;
++		ClearTextPages();
 +	}
 +	g_textEm = m_frame.textEm;
 +	g_textAntialias = m_frame.textAntialias;
@@ -10355,6 +10451,11 @@ index 7d67022..1c93f95 100644
 +	return font;
 +}
 +
++void CClientWindow::CollectSteamTexts( bool collect )
++{
++	g_textCollectOnly = collect;
++}
++
 +void CClientWindow::DrawSteamText( HFont font, int x, int capTop, int capHeight, int maxWidth, const char *text, unsigned int color )
 +{
 +	if( !text || !text[0] )
@@ -10371,13 +10472,20 @@ index 7d67022..1c93f95 100644
 +
 +	if( maxWidth >= 8 && EngFuncs::GetCvarFloat( "ui_steamtext" ) != 0.0f )
 +	{
-+		const TextPicture *t = TextPictureFor( text, g_textEm, g_textAntialias, maxWidth );
++		const TextEntry *t = TextFor( text, maxWidth );
++		if( g_textCollectOnly )
++			return;
 +		if( t )
 +		{
 +			int r, g, b, a;
 +			UnpackRGBA( r, g, b, a, color );
-+			EngFuncs::PIC_Set( t->image, r, g, b, a );
-+			EngFuncs::PIC_DrawTrans( x, capTop - (int)( 0.278f * g_textEm + 0.5f ), t->w, t->h );
++			wrect_t rc;
++			rc.left = t->x;
++			rc.top = t->y;
++			rc.right = t->x + t->w;
++			rc.bottom = t->y + t->h;
++			EngFuncs::PIC_Set( g_textPages[t->page].image, r, g, b, a );
++			EngFuncs::PIC_DrawTrans( x, capTop - (int)( 0.278f * g_textEm + 0.5f ), t->w, t->h, &rc );
 +			return;
 +		}
 +	}
@@ -10441,27 +10549,30 @@ index 7d67022..1c93f95 100644
 -	UI_DrawPic( m_scPos + Size( m_scSize.w - roundCornerSize.w, 0 ), roundCornerSize, uiColorBlack, "gfx/vgui/round_corner_ne.tga", QM_DRAWTRANS );
 -	UI_DrawPic( m_scPos + Size( 0, m_scSize.h - roundCornerSize.h ), roundCornerSize, uiColorBlack, "gfx/vgui/round_corner_sw.tga", QM_DRAWTRANS );
 -	UI_DrawPic( m_scPos + ( m_scSize - roundCornerSize ), roundCornerSize, uiColorBlack, "gfx/vgui/round_corner_se.tga", QM_DRAWTRANS );
-+	if( m_bShowScores )
-+		return; // the table of the players is shown instead
++	// the texts asked for in the last frame get their page now (one texture for all of them)
++	FlushPendingTexts();
  
 -	UI_FillRect( m_scPos + Size( roundCornerSize.w, 0 ), Size( m_scSize.w - roundCornerSize.w * 2, roundCornerSize.h ), uiColorBlack );
 -	UI_FillRect( m_scPos + Size( 0, roundCornerSize.h ), Size( m_scSize.w, iTitleHeight - roundCornerSize.h ), uiColorBlack );
-+	const SteamFrame::Layout &l = m_frame;
++	if( m_bShowScores )
++		return; // the table of the players is shown instead
  
 -	UI_FillRect( m_scPos + Size( 0, iTitleHeight + iGap ), Size( m_scSize.w, m_scSize.h - roundCornerSize.h - iTitleHeight - iGap ), uiColorBlack );
 -	UI_FillRect( m_scPos + Size( roundCornerSize.w, m_scSize.h - roundCornerSize.h ), Size( m_scSize.w - roundCornerSize.w * 2, roundCornerSize.h ), uiColorBlack );
++	const SteamFrame::Layout &l = m_frame;
+ 
+-	UI_DrawPic( m_scPos + roundCornerSize, roundCornerSize * 4, PackAlpha( uiPromptTextColor, 255 ), "gfx/vgui/CS_logo.tga", QM_DRAWTRANS );
 +	// the panel ("ViewportBG": black, 200) in two parts with a cut between them
 +	const unsigned int bg = PackRGBA( 0, 0, 0, 200 );
 +	const int lowerY = l.cutY + l.cutH;
 +	FillRoundedRect( l.panelX, l.panelY, l.panelW, l.cutY - l.panelY, l.radius, true, false, bg );
 +	FillRoundedRect( l.panelX, lowerY, l.panelW, l.panelY + l.panelH - lowerY, l.radius, false, true, bg );
  
--	UI_DrawPic( m_scPos + roundCornerSize, roundCornerSize * 4, PackAlpha( uiPromptTextColor, 255 ), "gfx/vgui/CS_logo.tga", QM_DRAWTRANS );
-+	// the icon ("TitleIcon": 255 174 0)
-+	UI_DrawPic( l.iconX, l.iconY, l.iconSize, l.iconSize, PackRGBA( 255, 174, 0, 255 ), "gfx/vgui/CS_logo.tga", QM_DRAWTRANS );
- 
 -	UI_DrawString( font, m_scPos + Size( roundCornerSize.w * 6, roundCornerSize.h ), Size( m_scSize.w - roundCornerSize.w * 6, roundCornerSize.h * 4 ),
 -	               szName, PackAlpha( uiPromptTextColor, 255 ), m_scChSize, QM_LEFT, ETF_NOSIZELIMIT );
++	// the icon ("TitleIcon": 255 174 0)
++	UI_DrawPic( l.iconX, l.iconY, l.iconSize, l.iconSize, PackRGBA( 255, 174, 0, 255 ), "gfx/vgui/CS_logo.tga", QM_DRAWTRANS );
++
 +	// the title ("BaseText": 255 176 0)
 +	if( m_hTitleFont > 0 )
 +	{
@@ -10505,7 +10616,7 @@ index 7d67022..1c93f95 100644
  	if ( key == K_ENTER || key == K_KP_ENTER )
  	{
  		CMenuBaseItem *item = ItemAtCursor();
-@@ -90,9 +426,24 @@ bool CClientWindow::KeyDown( int key )
+@@ -90,9 +515,24 @@ bool CClientWindow::KeyDown( int key )
  
  bool CClientWindow::KeyUp( int key )
  {
@@ -10531,7 +10642,7 @@ index 7d67022..1c93f95 100644
  {
  	CMenuAction *act = new CMenuAction();
 diff --git a/3rdparty/mainui_cpp/menus/client/ClientWindow.h b/3rdparty/mainui_cpp/menus/client/ClientWindow.h
-index 1683dca..ef26824 100644
+index 1683dca..57be216 100644
 --- a/3rdparty/mainui_cpp/menus/client/ClientWindow.h
 +++ b/3rdparty/mainui_cpp/menus/client/ClientWindow.h
 @@ -18,6 +18,9 @@ GNU General Public License for more details.
@@ -10560,7 +10671,7 @@ index 1683dca..ef26824 100644
  	bool KeyDown( int key ) override;
  	void VidInit() override;
  	void Draw() override;
-@@ -79,8 +84,24 @@ protected:
+@@ -79,8 +84,27 @@ protected:
  	CMenuBaseItem *keyButtons[256];
  	int m_iNumBtns;
  
@@ -10585,6 +10696,9 @@ index 1683dca..ef26824 100644
 +	// drawing in pixels of the screen like the Steam version
 +	// a text: x is its left edge, capTop the top of its capital letters
 +	static void DrawSteamText( HFont font, int x, int capTop, int capHeight, int maxWidth, const char *text, unsigned int color );
++	// while it is on, DrawSteamText only asks for the pictures of the texts: they are made together, on one
++	// texture (a window asks for all the texts it may show when it is opened)
++	static void CollectSteamTexts( bool collect );
 +	static void FillRoundedRect( int x, int y, int w, int h, int radius, bool roundTop, bool roundBottom, unsigned int color );
 +	static void DrawFrame( int x, int y, int w, int h, unsigned int color ); // 1 pixel inside the rectangle
 +	static HFont CreateSteamFont( const char *name, int em, float cellPerEm, int weight );
