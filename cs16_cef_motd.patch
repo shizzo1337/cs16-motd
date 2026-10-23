@@ -3743,7 +3743,7 @@ index dcd392f..6057c89 100644
  {
  	// REMOVE WHEN NANOGL BUG WILL BE FIXED
 diff --git a/cl_dll/hud.cpp b/cl_dll/hud.cpp
-index 9ae956c..2a97375 100644
+index 9ae956c..35b700d 100644
 --- a/cl_dll/hud.cpp
 +++ b/cl_dll/hud.cpp
 @@ -285,6 +285,7 @@ void CHud :: Init( void )
@@ -3765,7 +3765,7 @@ index 9ae956c..2a97375 100644
 +	// the client sources this patch was made for and it does not depend on the day of compilation.
 +	// When the patch is moved to another client version change it here and in CLIENT_BUILD of the
 +	// workflow (the workflow checks that both are the same).
-+	static char cscl_ver[] = "4006-CEF";
++	static char cscl_ver[] = "4011-CEF";
 +	CVAR_CREATE( "cscl_ver", cscl_ver, 1<<14 | FCVAR_USERINFO ); // init and userinfo
  
  	m_iLogo = 0;
@@ -9172,6 +9172,45 @@ index 0000000..9f67fd6
 +
 +if __name__ == "__main__":
 +	sys.exit(main())
+diff --git a/3rdparty/mainui_cpp/BaseMenu.cpp b/3rdparty/mainui_cpp/BaseMenu.cpp
+index 41dd3e3..acf8c32 100755
+--- a/3rdparty/mainui_cpp/BaseMenu.cpp
++++ b/3rdparty/mainui_cpp/BaseMenu.cpp
+@@ -641,11 +641,23 @@ static bool UI_UpdateWindowInsets( void )
+ UI_UpdateMenu
+ =================
+ */
++// The console was closed (or the main menu hidden) while a client window (buy menu, team menu...) is open:
++// the engine gives the keys to the game then, and the window stayed on the screen without the mouse and the
++// keys. The keys are given back to it in the next frame (after the engine has set its key destination).
++static bool s_bClientKeysLost = false;
++
+ void UI_UpdateMenu( float flTime )
+ {
+ 	if( !uiStatic.initialized )
+ 		return;
+ 
++	if( s_bClientKeysLost )
++	{
++		s_bClientKeysLost = false;
++		if( uiStatic.client.IsActive() && !uiStatic.menu.IsActive() && CL_IsActive() )
++			EngFuncs::KEY_SetDest( KEY_MENU );
++	}
++
+ 	if( UI_UpdateWindowInsets() )
+ 		UI_VidInit();
+ 
+@@ -856,6 +868,10 @@ void UI_SetActiveMenu( int fActive )
+ 	{
+ 		UI_CloseMenu();
+ 		uiStatic.nextFrameActive = false; // don't call main menu next frame
++
++		// a client window is still open: it gets the keys back in the next frame (see UI_UpdateMenu)
++		if( uiStatic.client.IsActive() )
++			s_bClientKeysLost = true;
+ 	}
+ }
+ 
 diff --git a/3rdparty/mainui_cpp/font/BaseFontBackend.cpp b/3rdparty/mainui_cpp/font/BaseFontBackend.cpp
 index abf987c..78e5491 100644
 --- a/3rdparty/mainui_cpp/font/BaseFontBackend.cpp
