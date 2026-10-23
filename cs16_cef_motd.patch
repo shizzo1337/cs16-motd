@@ -9172,8 +9172,183 @@ index 0000000..9f67fd6
 +
 +if __name__ == "__main__":
 +	sys.exit(main())
+diff --git a/3rdparty/mainui_cpp/font/BaseFontBackend.cpp b/3rdparty/mainui_cpp/font/BaseFontBackend.cpp
+index abf987c..78e5491 100644
+--- a/3rdparty/mainui_cpp/font/BaseFontBackend.cpp
++++ b/3rdparty/mainui_cpp/font/BaseFontBackend.cpp
+@@ -18,6 +18,13 @@ GNU General Public License for more details.
+ #include "Utils.h"
+ #include "miniutl/utlbuffer.h"
+ 
++// the letters are drawn by Windows one at a time as in a whole string (ExtTextOut, grayscale antialiasing) and
++// placed by their ABC widths, as the VGUI2 fonts of the Steam version: even spaces between the letters
++// (a flag of CFontBuilder::SetFlags, after FONT_STRIKEOUT; only the fonts of Windows know it)
++#ifndef FONT_GDI_TEXT
++#define FONT_GDI_TEXT ( 1 << 3 )
++#endif
++
+ CBaseFont::CBaseFont()
+ 	: m_iTall(), m_iWeight(), m_iFlags(),
+ 	m_iHeight(), m_iMaxCharWidth(), m_iAscent(),
+@@ -44,6 +51,7 @@ void CBaseFont::GetTextureName( char *dst, size_t len ) const
+ 	int i = 0;
+ 	if( GetFlags() & FONT_ITALIC ) attribs[i++] = 'i'; // 1 parameter
+ 	if( GetFlags() & FONT_UNDERLINE ) attribs[i++] = 'u'; // 1 parameter
++	if( GetFlags() & FONT_GDI_TEXT ) attribs[i++] = 'd'; // 1 parameter
+ 	if( m_iBlur )
+ 	{
+ 		int chars = snprintf( attribs + i, sizeof( attribs ) - 1 - i, "g%i%.2f", m_iBlur, m_fBrighten );
+diff --git a/3rdparty/mainui_cpp/font/WinAPIFont.cpp b/3rdparty/mainui_cpp/font/WinAPIFont.cpp
+index 7073e5c..0eda774 100644
+--- a/3rdparty/mainui_cpp/font/WinAPIFont.cpp
++++ b/3rdparty/mainui_cpp/font/WinAPIFont.cpp
+@@ -76,7 +76,8 @@ bool CWinAPIFont::Create( const char *name, int tall, int weight, int blur, floa
+ 		m_iFlags & FONT_UNDERLINE,
+ 		m_iFlags & FONT_STRIKEOUT,
+ 		charset, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+-		PROOF_QUALITY, DEFAULT_PITCH | FF_DONTCARE, font.lfFaceName );
++		( m_iFlags & FONT_GDI_TEXT ) ? ANTIALIASED_QUALITY : PROOF_QUALITY,
++		DEFAULT_PITCH | FF_DONTCARE, font.lfFaceName );
+ 
+ 	if( !m_hFont )
+ 	{
+@@ -98,9 +99,11 @@ bool CWinAPIFont::Create( const char *name, int tall, int weight, int blur, floa
+ 
+ 	m_iHeight = tm.tmHeight + 2 * m_iOutlineSize;
+ 	m_iMaxCharWidth = tm.tmMaxCharWidth;
++	if( m_iFlags & FONT_GDI_TEXT )
++		m_iMaxCharWidth += GDI_TEXT_PAD * 2; // the pictures of the letters are wider (see GetCharGDI)
+ 	m_iAscent = tm.tmAscent;
+ 
+-	m_rgiBitmapSize[0] = tm.tmMaxCharWidth + m_iOutlineSize * 2;
++	m_rgiBitmapSize[0] = tm.tmMaxCharWidth + m_iOutlineSize * 2 + GDI_TEXT_PAD * 2;
+ 	m_rgiBitmapSize[1] = tm.tmHeight + m_iOutlineSize * 2;
+ 
+ 	::BITMAPINFOHEADER header = { 0 };
+@@ -136,6 +139,16 @@ void CWinAPIFont::GetCharRGBA( int ch, Point pt, Size sz, unsigned char *rgba, S
+ 	MAT2 mat2 = { { 0, 1 }, { 0, 0 }, { 0, 0 }, { 0, 1 } };
+ 	int bytesNeeded = 0;
+ 	
++	if( m_iFlags & FONT_GDI_TEXT )
++	{
++		GetCharGDI( ch, sz, rgba, drawSize );
++		ApplyBlur( sz, rgba );
++		ApplyOutline( Point( 0, 0 ), sz, rgba );
++		ApplyScanline( sz, rgba );
++		ApplyStrikeout( sz, rgba );
++		return;
++	}
++
+ 	// try and get the glyph directly
+ 
+ 	::SelectObject( m_hDC, m_hFont );
+@@ -275,6 +288,60 @@ void CWinAPIFont::GetCharRGBA( int ch, Point pt, Size sz, unsigned char *rgba, S
+ 	ApplyStrikeout( sz, rgba );
+ }
+ 
++// FONT_GDI_TEXT: the letter is drawn by ExtTextOut as Windows draws it in a string; the pen is GDI_TEXT_PAD pixels
++// before its "a", so the light pixels of the antialiasing outside its ABC box are kept (its picture starts at a - pad)
++void CWinAPIFont::GetCharGDI( int ch, Size sz, unsigned char *rgba, Size &drawSize )
++{
++	int a, b, c;
++	GetCharABCWidths( ch, a, b, c ); // already widened by the pad on both sides
++
++	int wide = b;
++	if( wide > m_rgiBitmapSize[0] )
++		wide = m_rgiBitmapSize[0];
++	if( wide < 0 )
++		wide = 0;
++	int tall = m_iHeight;
++	if( tall > m_rgiBitmapSize[1] )
++		tall = m_rgiBitmapSize[1];
++
++	memset( m_pBuf, 0, (size_t)m_rgiBitmapSize[0] * m_rgiBitmapSize[1] * 4 );
++	::SelectObject( m_hDC, m_hFont );
++	::SetTextAlign( m_hDC, TA_LEFT | TA_TOP | TA_NOUPDATECP );
++	::SetBkColor( m_hDC, RGB( 0, 0, 0 ) );
++	::SetTextColor( m_hDC, RGB( 255, 255, 255 ) );
++	::SetBkMode( m_hDC, TRANSPARENT );
++
++	wchar_t wch = ( wchar_t )ch;
++	if( ch != '\t' )
++		::ExtTextOutW( m_hDC, -a + m_iOutlineSize, m_iOutlineSize, 0, NULL, &wch, 1, NULL );
++	::GdiFlush();
++	::SetTextAlign( m_hDC, TA_LEFT | TA_TOP | TA_UPDATECP );
++
++	for( int j = 0; j < tall && j < sz.h; j++ )
++	{
++		for( int i = 0; i < wide; i++ )
++		{
++			const int x = i + m_iBlur;
++			if( x >= sz.w )
++				break;
++
++			const unsigned char *src = &m_pBuf[( i + j * m_rgiBitmapSize[0] ) * 4];
++			unsigned char m = src[0] > src[1] ? src[0] : src[1];
++			if( src[2] > m )
++				m = src[2];
++
++			unsigned char *dst = &rgba[( x + j * sz.w ) * 4];
++			dst[0] = dst[1] = dst[2] = m ? 255 : 0;
++			dst[3] = m; // white on black: the brightness is how much of the pixel the letter covers
++		}
++	}
++
++	drawSize.w = wide + m_iBlur * 2;
++	if( drawSize.w > sz.w )
++		drawSize.w = sz.w;
++	drawSize.h = tall;
++}
++
+ void CWinAPIFont::GetCharABCWidthsNoCache( int ch, int &a, int &b, int &c )
+ {
+ 	// not in the cache, get from windows (this call is a little slow)
+@@ -285,6 +352,14 @@ void CWinAPIFont::GetCharABCWidthsNoCache( int ch, int &a, int &b, int &c )
+ 		a = abc.abcA;
+ 		b = abc.abcB;
+ 		c = abc.abcC;
++
++		// the pen moves by a + b + c as in a string; the picture is a little wider than b (antialiasing)
++		if( m_iFlags & FONT_GDI_TEXT )
++		{
++			a -= GDI_TEXT_PAD;
++			b += GDI_TEXT_PAD * 2;
++			c -= GDI_TEXT_PAD;
++		}
+ 	}
+ 	else
+ 	{
+diff --git a/3rdparty/mainui_cpp/font/WinAPIFont.h b/3rdparty/mainui_cpp/font/WinAPIFont.h
+index 908f2ea..982fc97 100644
+--- a/3rdparty/mainui_cpp/font/WinAPIFont.h
++++ b/3rdparty/mainui_cpp/font/WinAPIFont.h
+@@ -27,6 +27,13 @@ GNU General Public License for more details.
+ #include "utlmemory.h"
+ #include "utlrbtree.h"
+ 
++// the letters are drawn by Windows one at a time as in a whole string (ExtTextOut, grayscale antialiasing) and
++// placed by their ABC widths, as the VGUI2 fonts of the Steam version: even spaces between the letters
++// (a flag of CFontBuilder::SetFlags, after FONT_STRIKEOUT; only the fonts of Windows know it)
++#ifndef FONT_GDI_TEXT
++#define FONT_GDI_TEXT ( 1 << 3 )
++#endif
++
+ class CWinAPIFont : public CBaseFont
+ {
+ public:
+@@ -47,6 +54,10 @@ public:
+ 	bool m_bFound;
+ 
+ private:
++	// FONT_GDI_TEXT: the pixels kept on each side of the ABC box of a letter
++	enum { GDI_TEXT_PAD = 2 };
++	void GetCharGDI( int ch, Size sz, unsigned char *rgba, Size &drawSize );
++
+ 	HFONT m_hFont;
+ 	HDC m_hDC;
+ 	HBITMAP m_hDIB;
 diff --git a/3rdparty/mainui_cpp/menus/client/BuyMenu.cpp b/3rdparty/mainui_cpp/menus/client/BuyMenu.cpp
-index 35f984c..67e80b4 100644
+index 35f984c..f582eb0 100644
 --- a/3rdparty/mainui_cpp/menus/client/BuyMenu.cpp
 +++ b/3rdparty/mainui_cpp/menus/client/BuyMenu.cpp
 @@ -16,16 +16,55 @@ GNU General Public License for more details.
@@ -9213,7 +9388,8 @@ index 35f984c..67e80b4 100644
 +		return -1;
 +	return atoi( value );
 +}
-+
+ 
+-static void NormalizeTranslationString( const char *source, CUtlString &result )
 +// the price from its text (": $1000"), -1 if there is none
 +int ParsePrice( const char *text )
 +{
@@ -9229,8 +9405,7 @@ index 35f984c..67e80b4 100644
 +
 +	if( !*p )
 +		return -1;
- 
--static void NormalizeTranslationString( const char *source, CUtlString &result )
++
 +	return atoi( p );
 +}
 +
@@ -9238,7 +9413,7 @@ index 35f984c..67e80b4 100644
  {
  	result.SetValue( "" );
  	for ( const char *t = source; *t; ++t )
-@@ -42,398 +81,341 @@ static void NormalizeTranslationString( const char *source, CUtlString &result )
+@@ -42,398 +81,320 @@ static void NormalizeTranslationString( const char *source, CUtlString &result )
  	}
  }
  
@@ -9503,7 +9678,6 @@ index 35f984c..67e80b4 100644
 -		UI_CloseClientMenu();
 +		m_pShown = numWeapons > 0 ? &weapons[0] : nullptr;
 +		UpdateInfo();
-+		m_bTextsAsked = false;
  	}
  
 -	void cancelFocusCb( void *pExtra )
@@ -9536,26 +9710,8 @@ index 35f984c..67e80b4 100644
 +		UpdateAffordable();
 +		BaseClass::Draw(); // the frame and the buttons
 +
-+		// the first frame: the texts of all the items are asked for, so they are made together (one texture)
-+		// and showing another item later doesn't stop the game
-+		if( !m_bTextsAsked )
-+		{
-+			m_bTextsAsked = true;
-+			BuyMenuWeaponInfo *shown = m_pShown;
-+			CollectSteamTexts( true );
-+			for( int i = 0; i < numWeapons; ++i )
-+			{
-+				m_pShown = &weapons[i];
-+				UpdateInfo();
-+				DrawInfo( true );
-+			}
-+			CollectSteamTexts( false );
-+			m_pShown = shown;
-+			UpdateInfo();
-+		}
-+
 +		if( m_pShown )
-+			DrawInfo( false );
++			DrawInfo();
  	}
  
  	void AddWeapon( BuyMenuWeaponInfo info )
@@ -9614,7 +9770,6 @@ index 35f984c..67e80b4 100644
 -	enum ammoClass_e
 +private:
 +	BuyMenuWeaponInfo *m_pShown = nullptr; // the item whose info is shown
-+	bool m_bTextsAsked = false;
 +
 +	// the texts of the info, made when the shown item changes
 +	struct InfoRow
@@ -9750,13 +9905,13 @@ index 35f984c..67e80b4 100644
  			key.Format( "CStrike_%sWeightEmpty", weapon->name2 );
 -			const char *tr = TranslateStringIfFound( key.String() );
 -			if( tr )
-+			const char *weight = TranslateStringIfFound( key.String() );
-+			if( !weight )
- 			{
+-			{
 -				weightLabel.SetText( L( "CStrike_WeightEmptyLabel" ) );
 -			}
 -			else
--			{
++			const char *weight = TranslateStringIfFound( key.String() );
++			if( !weight )
+ 			{
 -				weightLabel.SetText( L( "CStrike_WeightLoadedLabel" ) );
 +				weightLabel = L( "CStrike_WeightLoadedLabel" );
  				key.Format( "CStrike_%sWeightLoaded", weapon->name2 );
@@ -9767,11 +9922,11 @@ index 35f984c..67e80b4 100644
 +
 +			key.Format( "CStrike_%sProjectileWeight", weapon->name2 );
 +			addRow( L( "CStrike_ProjectileWeightLabel" ), L( key.String() ));
- 
--			if( !tr )
++
 +			key.Format( "CStrike_%sMuzzleVelocity", weapon->name2 );
 +			addRow( L( "CStrike_MuzzleVelocityLabel" ), L( key.String() ));
-+
+ 
+-			if( !tr )
 +			key.Format( "CStrike_%sMuzzleEnergy", weapon->name2 );
 +			addRow( L( "CStrike_MuzzleEnergyLabel" ), L( key.String() ));
 +		}
@@ -9780,7 +9935,7 @@ index 35f984c..67e80b4 100644
 +	}
 +
 +	// the info of the item: ItemInfo of Buy*.res at (244, 116), its contents from classes/<item>.res
-+	void DrawInfo( bool textsOnly )
++	void DrawInfo()
 +	{
 +		const SteamFrame::Layout &l = m_frame;
 +		const float infoX = 244.0f, infoY = 116.0f;
@@ -9805,7 +9960,6 @@ index 35f984c..67e80b4 100644
 +		const int by = SteamFrame::Res::Y( l, infoY );
 +		const int bw = l.U( 300.0f );
 +		const int bh = l.U( boxH );
-+		if( !textsOnly )
 +		{
 +			UI_FillRect( bx, by, bw, bh, COLOR_BOXBG );
 +
@@ -9893,7 +10047,7 @@ index 35f984c..67e80b4 100644
  		confirmCb( (void*)weapon->command );
  	}
  
-@@ -456,18 +438,30 @@ public:
+@@ -456,18 +417,30 @@ public:
  		UI_CloseClientMenu();
  	}
  };
@@ -9927,7 +10081,7 @@ index 35f984c..67e80b4 100644
  };
  class CClientPistolsTMenu         : public CClientBaseBuyMenu { virtual void _Init() override; };
  class CClientPistolsCTMenu        : public CClientBaseBuyMenu { virtual void _Init() override; };
-@@ -526,68 +520,67 @@ void UI_BuyMenu_Rifle_Show( int param1, int param2 ) { Menu_Show_Team<CClientRif
+@@ -526,68 +499,67 @@ void UI_BuyMenu_Rifle_Show( int param1, int param2 ) { Menu_Show_Team<CClientRif
  void UI_BuyMenu_Machinegun_Show( int param1, int param2 ) { Menu_Show_Team<CClientMachineGunsMenu, CClientMachineGunsMenu>( param2 ); }
  void UI_BuyMenu_Item_Show( int param1, int param2 ) { Menu_Show_Team<CClientItemTMenu, CClientItemCTMenu>( param2 ); }
  
@@ -10018,7 +10172,7 @@ index 35f984c..67e80b4 100644
 +	m_autoFill.resX = 76.0f;
 +	m_autoFill.resY = 414.0f;
 +	AddItem( m_autoFill );
- }
++}
 +
 +void CClientMainBuyMenu::Draw()
 +{
@@ -10039,7 +10193,7 @@ index 35f984c..67e80b4 100644
 +	// the divider between the columns: 2 pixels at 1080 (771..772), dimmer than the frames of the buttons
 +	const int dividerW = (int)l.u > 0 ? (int)l.u : 1;
 +	UI_FillRect( SteamFrame::Res::X( l, 236.0f ), SteamFrame::Res::Y( l, 116.0f ), dividerW, l.U( 284.0f ), PackRGBA( 155, 121, 58, 128 ));
-+}
+ }
 +
  void CClientPistolsTMenu::_Init()
  {
@@ -10049,7 +10203,7 @@ index 35f984c..67e80b4 100644
  
  	AddWeapon( BuyMenuWeaponInfo{ "Glock18", "glock18", "glock", "Glock" });
  	AddWeapon( BuyMenuWeaponInfo{ "USP45", "usp45", "usp", "USP45" });
-@@ -600,6 +593,7 @@ void CClientPistolsCTMenu::_Init()
+@@ -600,6 +572,7 @@ void CClientPistolsCTMenu::_Init()
  {
  	szName = L( "Cstrike_PistolsLabel" );
  	eAmmoClass = BUY_SECAMMO;
@@ -10057,7 +10211,7 @@ index 35f984c..67e80b4 100644
  
  	AddWeapon( BuyMenuWeaponInfo{ "Glock18", "glock18", "glock", "Glock" });
  	AddWeapon( BuyMenuWeaponInfo{ "USP45", "usp45", "usp", "USP45" });
-@@ -611,6 +605,7 @@ void CClientShotgunsMenu::_Init()
+@@ -611,6 +584,7 @@ void CClientShotgunsMenu::_Init()
  {
  	szName = L( "Cstrike_ShotgunsLabel" );
  	eAmmoClass = BUY_PRIMAMMO;
@@ -10065,7 +10219,7 @@ index 35f984c..67e80b4 100644
  
  	AddWeapon( BuyMenuWeaponInfo{ "m3", "m3", "m3", "M3" });
  	AddWeapon( BuyMenuWeaponInfo{ "xm1014", "xm1014", "xm1014",	"XM1014" });
-@@ -620,6 +615,7 @@ void CClientSubMachineGunsTMenu::_Init()
+@@ -620,6 +594,7 @@ void CClientSubMachineGunsTMenu::_Init()
  {
  	szName = L( "Cstrike_SubmachinegunsLabel" );
  	eAmmoClass = BUY_PRIMAMMO;
@@ -10073,7 +10227,7 @@ index 35f984c..67e80b4 100644
  
  	AddWeapon( BuyMenuWeaponInfo{ "MAC10", "mac10", "mac10", "Mac10" });
  	AddWeapon( BuyMenuWeaponInfo{ "MP5", "mp5", "mp5", "MP5" });
-@@ -630,6 +626,7 @@ void CClientSubMachineGunsCTMenu::_Init()
+@@ -630,6 +605,7 @@ void CClientSubMachineGunsCTMenu::_Init()
  {
  	szName = L( "Cstrike_SubmachinegunsLabel" );
  	eAmmoClass = BUY_PRIMAMMO;
@@ -10081,7 +10235,7 @@ index 35f984c..67e80b4 100644
  
  	AddWeapon( BuyMenuWeaponInfo{ "Tmp", "tmp", "tmp", "TMP" });
  	AddWeapon( BuyMenuWeaponInfo{ "MP5", "mp5", "mp5", "MP5" });
-@@ -640,6 +637,7 @@ void CClientRiflesTMenu::_Init()
+@@ -640,6 +616,7 @@ void CClientRiflesTMenu::_Init()
  {
  	szName = L( "Cstrike_RiflesLabel" );
  	eAmmoClass = BUY_PRIMAMMO;
@@ -10089,7 +10243,7 @@ index 35f984c..67e80b4 100644
  
  	AddWeapon( BuyMenuWeaponInfo{ "Galil", "galil", "galil", "Galil" });
  	AddWeapon( BuyMenuWeaponInfo{ "AK47", "ak47", "ak47", "AK47" });
-@@ -653,6 +651,7 @@ void CClientRiflesCTMenu::_Init()
+@@ -653,6 +630,7 @@ void CClientRiflesCTMenu::_Init()
  {
  	szName = L( "Cstrike_RiflesLabel" );
  	eAmmoClass = BUY_PRIMAMMO;
@@ -10097,7 +10251,7 @@ index 35f984c..67e80b4 100644
  
  	AddWeapon( BuyMenuWeaponInfo{ "Famas", "famas", "famas", "Famas" });
  	AddWeapon( BuyMenuWeaponInfo{ "Scout_CT", "scout", "scout", "Scout" });
-@@ -666,6 +665,7 @@ void CClientMachineGunsMenu::_Init()
+@@ -666,6 +644,7 @@ void CClientMachineGunsMenu::_Init()
  {
  	szName = L( "Cstrike_MachinegunsLabel" );
  	eAmmoClass = BUY_PRIMAMMO;
@@ -10105,7 +10259,7 @@ index 35f984c..67e80b4 100644
  
  	AddWeapon( BuyMenuWeaponInfo{ "M249", "m249", "m249", "M249" });
  }
-@@ -673,6 +673,7 @@ void CClientItemTMenu::_Init()
+@@ -673,6 +652,7 @@ void CClientItemTMenu::_Init()
  {
  	szName = L( "Cstrike_EquipmentLabel" );
  	eAmmoClass = BUY_EQUIPMENT;
@@ -10113,7 +10267,7 @@ index 35f984c..67e80b4 100644
  
  	AddWeapon( BuyMenuWeaponInfo{ "Kevlar", "kevlar", "vest", "Kevlar" });
  	AddWeapon( BuyMenuWeaponInfo{ "Kevlar_Helmet", "kevlar_helmet", "vesthelm", "KevlarHelmet" });
-@@ -685,6 +686,7 @@ void CClientItemCTMenu::_Init()
+@@ -685,6 +665,7 @@ void CClientItemCTMenu::_Init()
  {
  	szName = L( "Cstrike_EquipmentLabel" );
  	eAmmoClass = BUY_EQUIPMENT;
@@ -10122,206 +10276,16 @@ index 35f984c..67e80b4 100644
  	AddWeapon( BuyMenuWeaponInfo{ "Kevlar", "kevlar", "vest", "Kevlar" });
  	AddWeapon( BuyMenuWeaponInfo{ "Kevlar_Helmet", "kevlar_helmet", "vesthelm", "KevlarHelmet" });
 diff --git a/3rdparty/mainui_cpp/menus/client/ClientWindow.cpp b/3rdparty/mainui_cpp/menus/client/ClientWindow.cpp
-index 7d67022..3a7f9c6 100644
+index 7d67022..a636abc 100644
 --- a/3rdparty/mainui_cpp/menus/client/ClientWindow.cpp
 +++ b/3rdparty/mainui_cpp/menus/client/ClientWindow.cpp
-@@ -16,47 +16,472 @@ GNU General Public License for more details.
+@@ -16,47 +16,234 @@ GNU General Public License for more details.
  
  #include "BaseMenu.h"
  #include "ClientWindow.h"
 +#include "SteamButton.h"
-+#include "SteamTextGDI.h"
  
 +#include <stdio.h>
-+#include <chrono>
-+#include <vector>
-+
-+// The texts of the client menus are drawn by Windows (GDI) as whole lines, like the Steam version does, and kept
-+// as textures: drawing them letter by letter from a font atlas spaces the letters unevenly ("PRE VI OUS").
-+// Without the fonts of Windows the font of the menu is used.
-+namespace {
-+
-+int g_textEm = 15;           // "Default": the height of its letters in pixels (see SteamFrame::DefaultFont)
-+bool g_textAntialias = true;
-+
-+// The pictures of the texts are packed into pages: a new texture costs much on some drivers (up to 150 ms on
-+// Intel Arc), so all the texts that a window needs are made together, one texture for them. A text asked for the
-+// first time is drawn with the font of the menu in that frame and from its page from the next frame on.
-+struct TextEntry
-+{
-+	unsigned int hash;
-+	char key[320];
-+	char text[256];
-+	int maxWidth;
-+	int page;        // -1: waits for its page
-+	int x, y, w, h;  // its place on the page
-+	bool ok;         // false: Windows could not draw it (the font of the menu is used)
-+};
-+
-+struct TextPage
-+{
-+	char name[32];
-+	HIMAGE image;
-+};
-+
-+const int MAX_TEXT_ENTRIES = 2048;
-+const int MAX_TEXT_PAGES = 24;
-+const int TEXT_PAGE_WIDTH = 1024;
-+
-+TextEntry g_textEntries[MAX_TEXT_ENTRIES];
-+int g_textEntryCount = 0;
-+TextPage g_textPages[MAX_TEXT_PAGES];
-+int g_textPageCount = 0;
-+int g_textPending = 0;
-+int g_textCounter = 0;
-+bool g_textCollectOnly = false; // the texts are only asked for (made on the next page), not drawn
-+
-+unsigned int HashKey( const char *s )
-+{
-+	unsigned int h = 2166136261u;
-+	for( ; *s; ++s )
-+		h = ( h ^ (unsigned char)*s ) * 16777619u;
-+	return h;
-+}
-+
-+void ClearTextPages( void )
-+{
-+	for( int i = 0; i < g_textPageCount; ++i )
-+		if( g_textPages[i].image && g_textPages[i].name[0] )
-+			EngFuncs::PIC_Free( g_textPages[i].name );
-+	g_textPageCount = 0;
-+	g_textEntryCount = 0;
-+	g_textPending = 0;
-+}
-+
-+// the text drawn from its page, or nullptr if it isn't there yet (or can't be)
-+const TextEntry *TextFor( const char *text, int maxWidth )
-+{
-+	char key[320];
-+	snprintf( key, sizeof( key ), "%d|%d|%d|%s", g_textEm, g_textAntialias ? 1 : 0, maxWidth, text );
-+	const unsigned int hash = HashKey( key );
-+
-+	for( int i = 0; i < g_textEntryCount; ++i )
-+	{
-+		const TextEntry &e = g_textEntries[i];
-+		if( e.hash == hash && !strcmp( e.key, key ))
-+			return ( e.ok && e.page >= 0 ) ? &e : nullptr;
-+	}
-+
-+	// too many texts or pages: everything is made again
-+	if( g_textEntryCount >= MAX_TEXT_ENTRIES || g_textPageCount >= MAX_TEXT_PAGES )
-+		ClearTextPages();
-+
-+	TextEntry &e = g_textEntries[g_textEntryCount++];
-+	e.hash = hash;
-+	snprintf( e.key, sizeof( e.key ), "%s", key );
-+	snprintf( e.text, sizeof( e.text ), "%s", text );
-+	e.maxWidth = maxWidth;
-+	e.page = -1;
-+	e.ok = true;
-+	e.x = e.y = e.w = e.h = 0;
-+	g_textPending++;
-+	return nullptr;
-+}
-+
-+// all the texts that wait are drawn by Windows and put on one new page (one texture)
-+void FlushPendingTexts( void )
-+{
-+	if( !g_textPending )
-+		return;
-+
-+	const auto started = std::chrono::steady_clock::now();
-+
-+	struct Piece { int entry; std::vector<unsigned char> alpha; int w, h; };
-+	std::vector<Piece> pieces;
-+	pieces.reserve( g_textPending );
-+
-+	for( int i = 0; i < g_textEntryCount; ++i )
-+	{
-+		TextEntry &e = g_textEntries[i];
-+		if( e.page != -1 || !e.ok )
-+			continue;
-+
-+		Piece p;
-+		p.entry = i;
-+		p.w = p.h = 0;
-+		int maxW = e.maxWidth < TEXT_PAGE_WIDTH ? e.maxWidth : TEXT_PAGE_WIDTH;
-+		if( SteamText_RenderGDI( e.text, "Verdana", g_textEm, 600, g_textAntialias, maxW, p.alpha, p.w, p.h ) && p.w > 0 && p.h > 0 )
-+			pieces.push_back( std::move( p ));
-+		else
-+			e.ok = false;
-+	}
-+	g_textPending = 0;
-+
-+	if( pieces.empty() )
-+		return;
-+
-+	// rows from the left to the right, 1 pixel between the texts
-+	int x = 0, y = 0, rowH = 0;
-+	for( Piece &p : pieces )
-+	{
-+		if( x > 0 && x + p.w > TEXT_PAGE_WIDTH )
-+		{
-+			x = 0;
-+			y += rowH + 1;
-+			rowH = 0;
-+		}
-+		TextEntry &e = g_textEntries[p.entry];
-+		e.x = x;
-+		e.y = y;
-+		e.w = p.w;
-+		e.h = p.h;
-+		x += p.w + 1;
-+		if( p.h > rowH )
-+			rowH = p.h;
-+	}
-+	const int pageW = TEXT_PAGE_WIDTH;
-+	const int pageH = y + rowH;
-+
-+	// an uncompressed 32-bit TGA, from the top to the bottom; white, the glyphs in its alpha
-+	std::vector<unsigned char> tga( 18 + (size_t)pageW * pageH * 4, 0 );
-+	tga[2] = 2;
-+	tga[12] = (unsigned char)( pageW & 0xFF );
-+	tga[13] = (unsigned char)( pageW >> 8 );
-+	tga[14] = (unsigned char)( pageH & 0xFF );
-+	tga[15] = (unsigned char)( pageH >> 8 );
-+	tga[16] = 32;
-+	tga[17] = 0x28;
-+
-+	unsigned char *pixels = &tga[18];
-+	for( size_t i = 0, n = (size_t)pageW * pageH; i < n; ++i )
-+		pixels[i * 4 + 0] = pixels[i * 4 + 1] = pixels[i * 4 + 2] = 255;
-+
-+	for( const Piece &p : pieces )
-+	{
-+		const TextEntry &e = g_textEntries[p.entry];
-+		for( int row = 0; row < p.h; ++row )
-+		{
-+			unsigned char *dst = pixels + ( (size_t)( e.y + row ) * pageW + e.x ) * 4 + 3;
-+			const unsigned char *src = &p.alpha[(size_t)row * p.w];
-+			for( int col = 0; col < p.w; ++col, dst += 4 )
-+				*dst = src[col];
-+		}
-+	}
-+
-+	TextPage &page = g_textPages[g_textPageCount];
-+	snprintf( page.name, sizeof( page.name ), "#steamtextpage%d.tga", ++g_textCounter );
-+	page.image = EngFuncs::PIC_Load( page.name, tga.data(), (int)tga.size(), PIC_NEAREST );
-+
-+	const int pageIndex = g_textPageCount++;
-+	for( const Piece &p : pieces )
-+	{
-+		TextEntry &e = g_textEntries[p.entry];
-+		e.page = pageIndex;
-+		e.ok = page.image != 0;
-+	}
-+
-+	const double ms = std::chrono::duration<double, std::milli>( std::chrono::steady_clock::now() - started ).count();
-+	if( ms > 30.0 )
-+		Con_Printf( "[menu text] %.0f ms for a page of %d texts (%dx%d)\n", ms, (int)pieces.size(), pageW, pageH );
-+}
-+
-+} // namespace
 +
 +// The frame of the Steam version: the same as the MOTD window of the client (see SteamFrame.h)
  void CClientWindow::VidInit()
@@ -10330,8 +10294,6 @@ index 7d67022..3a7f9c6 100644
 -	size.h = 768 - 100;
 -	pos.x = ( ( ScreenWidth - uiStatic.scaleX * 1024 ) / 2 ) / uiStatic.scaleX + 50;
 -	pos.y = 50;
-+	const auto started = std::chrono::steady_clock::now();
-+
 +	m_frame = SteamFrame::Compute( ScreenWidth, ScreenHeight );
 +
 +	// the items of the menus are placed in the units of the menu, the frame itself in pixels
@@ -10357,23 +10319,12 @@ index 7d67022..3a7f9c6 100644
 +	if( m_hTextFont <= 0 )
 +		m_hTextFont = uiStatic.hSmallerFont;
 +	m_iCapHeight = (int)( m_frame.textEm * 0.727f + 0.5f );
-+	// another size of the screen: the pictures of the old size are not needed any more
-+	if( g_textEm != m_frame.textEm || g_textAntialias != m_frame.textAntialias )
-+	{
-+		ClearTextPages();
-+	}
-+	g_textEm = m_frame.textEm;
-+	g_textAntialias = m_frame.textAntialias;
 +
 +	for( int i = 0; i < m_iNumSteamButtons; ++i )
 +	{
 +		m_steamButtons[i]->textFont = m_hTextFont;
 +		m_steamButtons[i]->capHeight = m_iCapHeight;
 +	}
-+
-+	const double ms = std::chrono::duration<double, std::milli>( std::chrono::steady_clock::now() - started ).count();
-+	if( ms > 30.0 )
-+		Con_Printf( "[menu] %.0f ms to prepare \"%s\"\n", ms, szName ? szName : "" );
 +}
 +
 +void CClientWindow::SetButtonShown( CMenuAction *button, int key, bool shown )
@@ -10445,50 +10396,18 @@ index 7d67022..3a7f9c6 100644
 +	if( cell < 8 )
 +		cell = 8;
 +
-+	HFont font = CFontBuilder( name, cell - 6, weight ).Create();
++	// FONT_GDI_TEXT: the letters are drawn by Windows as in a whole string and placed by their ABC widths, as the
++	// VGUI2 fonts of the Steam version (even spaces between the letters, "1 PISTOLS", "PREVIOUS")
++	HFont font = CFontBuilder( name, cell - 6, weight ).SetFlags( FONT_GDI_TEXT ).Create();
 +	if( font <= 0 || g_FontMgr->GetFontTall( font ) <= 0 )
 +		return 0;
 +	return font;
-+}
-+
-+void CClientWindow::CollectSteamTexts( bool collect )
-+{
-+	g_textCollectOnly = collect;
 +}
 +
 +void CClientWindow::DrawSteamText( HFont font, int x, int capTop, int capHeight, int maxWidth, const char *text, unsigned int color )
 +{
 +	if( !text || !text[0] )
 +		return;
-+
-+	// the whole line drawn by Windows; its cell starts 0.278 em above the capitals (as the texts of the client).
-+	// ui_steamtext 0 draws the texts with the font of the menu, letter by letter, as before
-+	static bool registered = false;
-+	if( !registered )
-+	{
-+		EngFuncs::CvarRegister( "ui_steamtext", "1", FCVAR_ARCHIVE );
-+		registered = true;
-+	}
-+
-+	if( maxWidth >= 8 && EngFuncs::GetCvarFloat( "ui_steamtext" ) != 0.0f )
-+	{
-+		const TextEntry *t = TextFor( text, maxWidth );
-+		if( g_textCollectOnly )
-+			return;
-+		if( t )
-+		{
-+			int r, g, b, a;
-+			UnpackRGBA( r, g, b, a, color );
-+			wrect_t rc;
-+			rc.left = t->x;
-+			rc.top = t->y;
-+			rc.right = t->x + t->w;
-+			rc.bottom = t->y + t->h;
-+			EngFuncs::PIC_Set( g_textPages[t->page].image, r, g, b, a );
-+			EngFuncs::PIC_DrawTrans( x, capTop - (int)( 0.278f * g_textEm + 0.5f ), t->w, t->h, &rc );
-+			return;
-+		}
-+	}
 +
 +	if( font <= 0 )
 +		return;
@@ -10549,30 +10468,27 @@ index 7d67022..3a7f9c6 100644
 -	UI_DrawPic( m_scPos + Size( m_scSize.w - roundCornerSize.w, 0 ), roundCornerSize, uiColorBlack, "gfx/vgui/round_corner_ne.tga", QM_DRAWTRANS );
 -	UI_DrawPic( m_scPos + Size( 0, m_scSize.h - roundCornerSize.h ), roundCornerSize, uiColorBlack, "gfx/vgui/round_corner_sw.tga", QM_DRAWTRANS );
 -	UI_DrawPic( m_scPos + ( m_scSize - roundCornerSize ), roundCornerSize, uiColorBlack, "gfx/vgui/round_corner_se.tga", QM_DRAWTRANS );
-+	// the texts asked for in the last frame get their page now (one texture for all of them)
-+	FlushPendingTexts();
- 
--	UI_FillRect( m_scPos + Size( roundCornerSize.w, 0 ), Size( m_scSize.w - roundCornerSize.w * 2, roundCornerSize.h ), uiColorBlack );
--	UI_FillRect( m_scPos + Size( 0, roundCornerSize.h ), Size( m_scSize.w, iTitleHeight - roundCornerSize.h ), uiColorBlack );
 +	if( m_bShowScores )
 +		return; // the table of the players is shown instead
  
--	UI_FillRect( m_scPos + Size( 0, iTitleHeight + iGap ), Size( m_scSize.w, m_scSize.h - roundCornerSize.h - iTitleHeight - iGap ), uiColorBlack );
--	UI_FillRect( m_scPos + Size( roundCornerSize.w, m_scSize.h - roundCornerSize.h ), Size( m_scSize.w - roundCornerSize.w * 2, roundCornerSize.h ), uiColorBlack );
+-	UI_FillRect( m_scPos + Size( roundCornerSize.w, 0 ), Size( m_scSize.w - roundCornerSize.w * 2, roundCornerSize.h ), uiColorBlack );
+-	UI_FillRect( m_scPos + Size( 0, roundCornerSize.h ), Size( m_scSize.w, iTitleHeight - roundCornerSize.h ), uiColorBlack );
 +	const SteamFrame::Layout &l = m_frame;
  
--	UI_DrawPic( m_scPos + roundCornerSize, roundCornerSize * 4, PackAlpha( uiPromptTextColor, 255 ), "gfx/vgui/CS_logo.tga", QM_DRAWTRANS );
+-	UI_FillRect( m_scPos + Size( 0, iTitleHeight + iGap ), Size( m_scSize.w, m_scSize.h - roundCornerSize.h - iTitleHeight - iGap ), uiColorBlack );
+-	UI_FillRect( m_scPos + Size( roundCornerSize.w, m_scSize.h - roundCornerSize.h ), Size( m_scSize.w - roundCornerSize.w * 2, roundCornerSize.h ), uiColorBlack );
 +	// the panel ("ViewportBG": black, 200) in two parts with a cut between them
 +	const unsigned int bg = PackRGBA( 0, 0, 0, 200 );
 +	const int lowerY = l.cutY + l.cutH;
 +	FillRoundedRect( l.panelX, l.panelY, l.panelW, l.cutY - l.panelY, l.radius, true, false, bg );
 +	FillRoundedRect( l.panelX, lowerY, l.panelW, l.panelY + l.panelH - lowerY, l.radius, false, true, bg );
  
--	UI_DrawString( font, m_scPos + Size( roundCornerSize.w * 6, roundCornerSize.h ), Size( m_scSize.w - roundCornerSize.w * 6, roundCornerSize.h * 4 ),
--	               szName, PackAlpha( uiPromptTextColor, 255 ), m_scChSize, QM_LEFT, ETF_NOSIZELIMIT );
+-	UI_DrawPic( m_scPos + roundCornerSize, roundCornerSize * 4, PackAlpha( uiPromptTextColor, 255 ), "gfx/vgui/CS_logo.tga", QM_DRAWTRANS );
 +	// the icon ("TitleIcon": 255 174 0)
 +	UI_DrawPic( l.iconX, l.iconY, l.iconSize, l.iconSize, PackRGBA( 255, 174, 0, 255 ), "gfx/vgui/CS_logo.tga", QM_DRAWTRANS );
-+
+ 
+-	UI_DrawString( font, m_scPos + Size( roundCornerSize.w * 6, roundCornerSize.h ), Size( m_scSize.w - roundCornerSize.w * 6, roundCornerSize.h * 4 ),
+-	               szName, PackAlpha( uiPromptTextColor, 255 ), m_scChSize, QM_LEFT, ETF_NOSIZELIMIT );
 +	// the title ("BaseText": 255 176 0)
 +	if( m_hTitleFont > 0 )
 +	{
@@ -10616,7 +10532,7 @@ index 7d67022..3a7f9c6 100644
  	if ( key == K_ENTER || key == K_KP_ENTER )
  	{
  		CMenuBaseItem *item = ItemAtCursor();
-@@ -90,9 +515,24 @@ bool CClientWindow::KeyDown( int key )
+@@ -90,9 +277,24 @@ bool CClientWindow::KeyDown( int key )
  
  bool CClientWindow::KeyUp( int key )
  {
@@ -10642,20 +10558,27 @@ index 7d67022..3a7f9c6 100644
  {
  	CMenuAction *act = new CMenuAction();
 diff --git a/3rdparty/mainui_cpp/menus/client/ClientWindow.h b/3rdparty/mainui_cpp/menus/client/ClientWindow.h
-index 1683dca..57be216 100644
+index 1683dca..3966338 100644
 --- a/3rdparty/mainui_cpp/menus/client/ClientWindow.h
 +++ b/3rdparty/mainui_cpp/menus/client/ClientWindow.h
-@@ -18,6 +18,9 @@ GNU General Public License for more details.
+@@ -18,6 +18,16 @@ GNU General Public License for more details.
  
  #include "BaseClientWindow.h"
  #include "Action.h"
 +#include "SteamFrame.h"
 +
++// the letters are drawn by Windows one at a time as in a whole string (ExtTextOut, grayscale antialiasing) and
++// placed by their ABC widths, as the VGUI2 fonts of the Steam version: even spaces between the letters
++// (a flag of CFontBuilder::SetFlags, after FONT_STRIKEOUT; only the fonts of Windows know it)
++#ifndef FONT_GDI_TEXT
++#define FONT_GDI_TEXT ( 1 << 3 )
++#endif
++
 +class CSteamMenuButton;
  
  class CClientWindow : public CMenuBaseClientWindow
  {
-@@ -49,6 +52,7 @@ public:
+@@ -49,6 +59,7 @@ public:
  	}
  	void Hide() override
  	{
@@ -10663,7 +10586,7 @@ index 1683dca..57be216 100644
  		BaseClass::Hide();
  		if ( m_pStack->Count() <= 1 )
  		{
-@@ -69,6 +73,7 @@ public:
+@@ -69,6 +80,7 @@ public:
  	CMenuAction *AddButton( int key, const char *name, Point pos, CEventCallback callback );
  
  	bool KeyUp( int key ) override;
@@ -10671,7 +10594,7 @@ index 1683dca..57be216 100644
  	bool KeyDown( int key ) override;
  	void VidInit() override;
  	void Draw() override;
-@@ -79,8 +84,27 @@ protected:
+@@ -79,8 +91,24 @@ protected:
  	CMenuBaseItem *keyButtons[256];
  	int m_iNumBtns;
  
@@ -10696,9 +10619,6 @@ index 1683dca..57be216 100644
 +	// drawing in pixels of the screen like the Steam version
 +	// a text: x is its left edge, capTop the top of its capital letters
 +	static void DrawSteamText( HFont font, int x, int capTop, int capHeight, int maxWidth, const char *text, unsigned int color );
-+	// while it is on, DrawSteamText only asks for the pictures of the texts: they are made together, on one
-+	// texture (a window asks for all the texts it may show when it is opened)
-+	static void CollectSteamTexts( bool collect );
 +	static void FillRoundedRect( int x, int y, int w, int h, int radius, bool roundTop, bool roundBottom, unsigned int color );
 +	static void DrawFrame( int x, int y, int w, int h, unsigned int color ); // 1 pixel inside the rectangle
 +	static HFont CreateSteamFont( const char *name, int em, float cellPerEm, int weight );
@@ -11745,225 +11665,3 @@ index 0000000..1c01895
 +}
 +
 +} // namespace SteamFrame
-diff --git a/3rdparty/mainui_cpp/menus/client/SteamTextGDI.cpp b/3rdparty/mainui_cpp/menus/client/SteamTextGDI.cpp
-new file mode 100644
-index 0000000..4413c0f
---- /dev/null
-+++ b/3rdparty/mainui_cpp/menus/client/SteamTextGDI.cpp
-@@ -0,0 +1,199 @@
-+//
-+// SteamTextGDI.cpp
-+//
-+// A block of text drawn by the fonts of Windows (GDI), in lines that are not wrapped:
-+// the picture is the coverage of the glyphs that the client shows as a texture, one pixel on one pixel.
-+// A copy of cl_dll/hud/text_gdi.cpp of the client for the client menus. Kept in a separate file because <windows.h> conflicts with engine headers.
-+//
-+
-+#include <string.h>
-+#include <string>
-+#include <vector>
-+
-+#include "SteamTextGDI.h"
-+
-+#if defined( _WIN32 )
-+
-+#define WIN32_LEAN_AND_MEAN
-+#ifndef NOMINMAX
-+#define NOMINMAX
-+#endif
-+#include <windows.h>
-+#include <wchar.h>
-+
-+static std::wstring Utf8ToWide( const char *utf8 )
-+{
-+	const int n = MultiByteToWideChar( CP_UTF8, 0, utf8, -1, nullptr, 0 );
-+
-+	if( n <= 1 )
-+		return std::wstring();
-+
-+	std::wstring w( (size_t)n, L'\0' );
-+	MultiByteToWideChar( CP_UTF8, 0, utf8, -1, &w[0], n );
-+	w.resize( (size_t)n - 1 );
-+	return w;
-+}
-+
-+// The font asked for, if the system has it; otherwise the next one of the list that it has
-+static HFONT CreateFontFromList( HDC dc, const char *wanted, int emHeight, int weight, bool antialias )
-+{
-+	const std::wstring first = Utf8ToWide( wanted ? wanted : "" );
-+	const wchar_t *fallbacks[] = { L"Tahoma", L"Verdana", L"Segoe UI", L"Arial" };
-+	const DWORD quality = antialias ? ANTIALIASED_QUALITY : NONANTIALIASED_QUALITY;
-+
-+	for( int i = -1; i < (int)( sizeof( fallbacks ) / sizeof( fallbacks[0] )); ++i )
-+	{
-+		const wchar_t *face = i < 0 ? first.c_str() : fallbacks[i];
-+
-+		if( !face[0] || wcslen( face ) >= LF_FACESIZE )
-+			continue;
-+
-+		// a negative height is the height of the letters (em)
-+		HFONT font = CreateFontW( -emHeight, 0, 0, 0, weight, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-+			OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, quality, DEFAULT_PITCH | FF_SWISS, face );
-+
-+		if( !font )
-+			continue;
-+
-+		HGDIOBJ old = SelectObject( dc, font );
-+		wchar_t actual[LF_FACESIZE] = {};
-+		GetTextFaceW( dc, LF_FACESIZE, actual );
-+		SelectObject( dc, old );
-+
-+		if( _wcsicmp( actual, face ) == 0 )
-+			return font;
-+
-+		DeleteObject( font ); // the system gave another font instead
-+	}
-+
-+	return CreateFontW( -emHeight, 0, 0, 0, weight, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-+		OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, quality, DEFAULT_PITCH | FF_SWISS, L"Arial" );
-+}
-+
-+// the fonts already made (a font of Windows is slow to make: it is looked for among the fonts of the system)
-+static HFONT CachedFont( HDC dc, const char *fontName, int emHeight, int weight, bool antialias )
-+{
-+	struct Entry { char name[64]; int em, weight; bool antialias; HFONT font; };
-+	static Entry cache[32];
-+	static int count = 0;
-+
-+	const char *name = fontName ? fontName : "";
-+	for( int i = 0; i < count; ++i )
-+	{
-+		if( cache[i].em == emHeight && cache[i].weight == weight && cache[i].antialias == antialias && !strcmp( cache[i].name, name ))
-+			return cache[i].font;
-+	}
-+
-+	HFONT font = CreateFontFromList( dc, fontName, emHeight, weight, antialias );
-+	if( font && count < (int)( sizeof( cache ) / sizeof( cache[0] )) && strlen( name ) < sizeof( cache[0].name ))
-+	{
-+		Entry &e = cache[count++];
-+		strcpy( e.name, name );
-+		e.em = emHeight;
-+		e.weight = weight;
-+		e.antialias = antialias;
-+		e.font = font;
-+	}
-+	return font;
-+}
-+
-+bool SteamText_RenderGDI( const char *utf8, const char *fontName, int emHeight, int weight, bool antialias,
-+						  int maxWidth, std::vector<unsigned char> &alpha, int &width, int &height )
-+{
-+	if( !utf8 || !utf8[0] || emHeight < 4 || maxWidth < 8 )
-+		return false;
-+
-+	const std::wstring text = Utf8ToWide( utf8 );
-+
-+	if( text.empty() )
-+		return false;
-+
-+	// one memory DC for all the texts (GetDC of the screen is slow while the game is shown: it waits for the
-+	// desktop) and the fonts made once
-+	static HDC dc = nullptr;
-+	if( !dc )
-+		dc = CreateCompatibleDC( nullptr );
-+
-+	if( !dc )
-+		return false;
-+
-+	bool ok = false;
-+	HFONT font = CachedFont( dc, fontName, emHeight, weight, antialias );
-+	HGDIOBJ oldFont = font ? SelectObject( dc, font ) : nullptr;
-+	// no wrapping (as the Steam version): every line of the text is one line on the screen
-+	const UINT format = DT_LEFT | DT_TOP | DT_NOPREFIX | DT_EXPANDTABS | DT_NOCLIP;
-+
-+	// the size of the block
-+	RECT rc = { 0, 0, 0, 0 };
-+
-+	if( font && DrawTextW( dc, text.c_str(), (int)text.size(), &rc, format | DT_CALCRECT ) > 0 )
-+	{
-+		int w = rc.right - rc.left;
-+		int h = rc.bottom - rc.top;
-+
-+		// a line wider than the screen is cut at the limit
-+		if( w > maxWidth )
-+			w = maxWidth;
-+		if( h > 2048 )
-+			h = 2048;
-+
-+		BITMAPINFO bi = {};
-+		bi.bmiHeader.biSize = sizeof( BITMAPINFOHEADER );
-+		bi.bmiHeader.biWidth = w;
-+		bi.bmiHeader.biHeight = -h; // from the top to the bottom
-+		bi.bmiHeader.biPlanes = 1;
-+		bi.bmiHeader.biBitCount = 32;
-+		bi.bmiHeader.biCompression = BI_RGB;
-+
-+		void *bits = nullptr;
-+		HBITMAP bitmap = ( w > 0 && h > 0 ) ? CreateDIBSection( dc, &bi, DIB_RGB_COLORS, &bits, nullptr, 0 ) : nullptr;
-+
-+		if( bitmap && bits )
-+		{
-+			HGDIOBJ oldBitmap = SelectObject( dc, bitmap );
-+
-+			memset( bits, 0, (size_t)w * h * 4 );
-+			SetBkColor( dc, RGB( 0, 0, 0 ));
-+			SetTextColor( dc, RGB( 255, 255, 255 ));
-+			SetBkMode( dc, OPAQUE );
-+
-+			RECT draw = { 0, 0, w, h };
-+			DrawTextW( dc, text.c_str(), (int)text.size(), &draw, format );
-+			GdiFlush();
-+
-+			// white text on black: the brightness of a pixel is how much of it the glyph covers
-+			alpha.resize( (size_t)w * h );
-+
-+			const unsigned char *p = static_cast<const unsigned char *>( bits );
-+
-+			for( size_t i = 0, n = (size_t)w * h; i < n; ++i, p += 4 )
-+			{
-+				unsigned char m = p[0] > p[1] ? p[0] : p[1];
-+				alpha[i] = m > p[2] ? m : p[2];
-+			}
-+
-+			width = w;
-+			height = h;
-+			ok = true;
-+
-+			SelectObject( dc, oldBitmap );
-+		}
-+
-+		if( bitmap )
-+			DeleteObject( bitmap );
-+	}
-+
-+	if( oldFont )
-+		SelectObject( dc, oldFont );
-+
-+	return ok;
-+}
-+
-+#else // not implemented on other platforms: the font of the HUD is used there
-+
-+bool SteamText_RenderGDI( const char *, const char *, int, int, bool, int, std::vector<unsigned char> &, int &, int & )
-+{
-+	return false;
-+}
-+
-+#endif
-diff --git a/3rdparty/mainui_cpp/menus/client/SteamTextGDI.h b/3rdparty/mainui_cpp/menus/client/SteamTextGDI.h
-new file mode 100644
-index 0000000..0a8a921
---- /dev/null
-+++ b/3rdparty/mainui_cpp/menus/client/SteamTextGDI.h
-@@ -0,0 +1,11 @@
-+#pragma once
-+
-+#include <vector>
-+
-+// A block of UTF-8 text drawn by a font of Windows, without wrapping (line ends in the text start new lines);
-+// lines wider than maxWidth are cut. The result is width * height bytes of the coverage of the glyphs.
-+// fontName - the font that is wanted (Tahoma, Verdana, Segoe UI, Arial are tried if the system has no such font),
-+// emHeight - the height of the letters (em) in pixels.
-+// Returns false where the fonts of Windows are not available (the caller uses the font of the HUD).
-+bool SteamText_RenderGDI( const char *utf8, const char *fontName, int emHeight, int weight, bool antialias,
-+						  int maxWidth, std::vector<unsigned char> &alpha, int &width, int &height );
