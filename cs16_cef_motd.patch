@@ -1,5 +1,5 @@
 diff --git a/cl_dll/CMakeLists.txt b/cl_dll/CMakeLists.txt
-index b0af818..fa55d38 100644
+index b0af818..54374d2 100644
 --- a/cl_dll/CMakeLists.txt
 +++ b/cl_dll/CMakeLists.txt
 @@ -10,6 +10,7 @@ file(GLOB CS_WPNSH_SRC "../dlls/wpn_shared/*.cpp")
@@ -88,7 +88,7 @@ index b0af818..fa55d38 100644
  set_target_postfix(${CLIENT_LIB})
  
 +if(WIN32)
-+	# shell32: opening the MOTD in the browser; gdi32 and user32: the texts of the MOTD window and of the tutor messages (Windows fonts)
++	# shell32: opening the MOTD in the browser; gdi32 and user32: the letters of the Windows fonts for the atlases (hud/glyph_gdi.cpp)
 +	target_link_libraries(${CLIENT_LIB} PRIVATE shell32 gdi32 user32)
 +endif()
 +
@@ -975,10 +975,10 @@ index 0000000..90f7f15
 +#endif
 diff --git a/cl_dll/chrome/chrome_host.cpp b/cl_dll/chrome/chrome_host.cpp
 new file mode 100644
-index 0000000..76f55b9
+index 0000000..f7425a2
 --- /dev/null
 +++ b/cl_dll/chrome/chrome_host.cpp
-@@ -0,0 +1,785 @@
+@@ -0,0 +1,735 @@
 +#include "chrome_host.h"
 +#include "chrome_backend.h"
 +#include "chrome_debug.h"
@@ -1007,10 +1007,6 @@ index 0000000..76f55b9
 +#include "render_api.h"
 +#include "triangleapi.h"
 +
-+// MOTD_text_gdi.cpp
-+bool MOTD_RenderTextFont( const char *utf8, const char *face, int pixelHeight, int weight, bool antialias, int maxWidth,
-+						  std::vector<unsigned char> &alpha, int &width, int &height, int &ascent );
-+
 +namespace
 +{
 +using namespace iHTMLChrome::CEF;
@@ -1027,17 +1023,14 @@ index 0000000..76f55b9
 +std::chrono::steady_clock::time_point g_motd_shown_at;
 +MotdInput g_motd_input;
 +
-+// Text of the MOTD window as a texture (drawn by Windows fonts, see MOTD_text_gdi.cpp)
++// Text of the MOTD window in a font of Windows, from the atlas of the font (see hud/glyph_atlas.h)
 +struct MotdTextSlot
 +{
-+	int tex = 0;
-+	int w = 0, h = 0, ascent = 0;
-+	std::string key;  // what the picture was made for
-+	std::string name; // the name of the texture in the engine (see hud/client_texture.h)
++	CTextTexture text;
++	int w = 0, ascent = 0;
 +};
 +
 +MotdTextSlot g_motd_title, g_motd_ok;
-+int g_motd_text_counter = 0;
 +std::unordered_map<int, std::pair<int, int>> g_last_mouse_pos; // for the generic SendMouse* functions
 +
 +float CvarFloat( cvar_t* v, float fb )
@@ -1212,69 +1205,26 @@ index 0000000..76f55b9
 +
 +void FreeMotdText( MotdTextSlot& slot )
 +{
-+	ClientTexture::Free( slot.tex, slot.name.c_str() );
-+	slot = MotdTextSlot();
++	slot.text.Free();
++	slot.w = slot.ascent = 0;
 +}
 +
-+// Makes the picture of a text, or keeps the old one if nothing has changed.
++// Lays the text out, or keeps it if nothing has changed (a line too wide ends with "...").
 +// Returns false if the text cannot be drawn this way (then the font of the HUD is used).
 +bool UpdateMotdText( MotdTextSlot& slot, const std::string& utf8, const char* face, int pixelHeight, int weight, bool antialias, int maxWidth )
 +{
-+	const std::string key = utf8 + "|" + face + "|" + std::to_string( pixelHeight ) + "|" + std::to_string( weight ) + "|"
-+		+ ( antialias ? "a" : "n" ) + "|" + std::to_string( maxWidth );
-+
-+	// the same text: the old picture, unless the engine has freed it (then it is made again)
-+	if( slot.key == key )
-+	{
-+		if( slot.tex <= 0 || ClientTexture::Owned( slot.tex, slot.name.c_str() ))
-+			return slot.tex > 0; // also remembers that it did not work, no retries every frame
-+
-+		ClientTexture::ReportLost( slot.name.c_str() );
-+	}
-+
-+	FreeMotdText( slot );
-+	slot.key = key;
-+
-+	std::vector<unsigned char> alpha;
-+	int w = 0, h = 0, ascent = 0;
-+
-+	if( !gRenderAPI.GL_CreateTexture || !MOTD_RenderTextFont( utf8.c_str(), face, pixelHeight, weight, antialias, maxWidth, alpha, w, h, ascent ))
++	if( !slot.text.Update( utf8, face, pixelHeight, weight, antialias, maxWidth > 0 ? maxWidth : 4096, true ) || !slot.text.Valid() )
 +		return false;
 +
-+	// white pixels, the glyphs are in the alpha channel (the colour is set when the text is drawn)
-+	std::vector<unsigned char> rgba( (size_t)w * h * 4, 255 );
-+
-+	for( size_t i = 0, n = (size_t)w * h; i < n; ++i )
-+		rgba[i * 4 + 3] = alpha[i];
-+
-+	// every picture has its own name: the engine gives back the old texture for a name it already has
-+	char name[40];
-+	snprintf( name, sizeof( name ), "*motd_text_%d", ++g_motd_text_counter );
-+
-+	const int tex = gRenderAPI.GL_CreateTexture( name, w, h, rgba.data(), static_cast<texFlags_t>( TF_NOMIPMAP | TF_CLAMP | TF_HAS_ALPHA ));
-+
-+	if( tex <= 0 )
-+		return false;
-+
-+	slot.tex = tex;
-+	slot.name = name;
-+	ClientTexture::Note( "create", tex, name );
-+	slot.w = w;
-+	slot.h = h;
-+	slot.ascent = ascent;
++	slot.w = slot.text.Width();
++	slot.ascent = slot.text.Ascent();
 +	return true;
 +}
 +
-+// The picture of a text with its baseline at (x, baseline). With scale 1 every texel lands on its own pixel.
++// The text with its baseline at (x, baseline); every texel of the atlas lands on its own pixel
 +void DrawMotdText( const MotdTextSlot& slot, int x, int baseline, int r, int g, int b )
 +{
-+	gRenderAPI.GL_SelectTexture( 0 );
-+	gRenderAPI.GL_Bind( 0, slot.tex );
-+	gEngfuncs.pTriAPI->RenderMode( kRenderTransAlpha );
-+	gEngfuncs.pTriAPI->Color4f( r / 255.0f, g / 255.0f, b / 255.0f, 1.0f );
-+
-+	const int y = baseline - slot.ascent;
-+	DrawUtils::Draw2DQuad( (float)x, (float)y, (float)( x + slot.w ), (float)( y + slot.h ));
++	slot.text.Draw( (float)x, (float)( baseline - slot.ascent ), r, g, b );
 +}
 +
 +// The CS icon of the title: gfx/vgui/CS_logo.tga of the game (a white figure, painted with "TitleIcon"
@@ -3781,7 +3731,7 @@ index 9ae956c..35b700d 100644
  
  	GetClientVoice()->Init( &g_VoiceStatusHelper );
 diff --git a/cl_dll/hud.h b/cl_dll/hud.h
-index bcfdf6e..8b65879 100644
+index bcfdf6e..3a945d1 100644
 --- a/cl_dll/hud.h
 +++ b/cl_dll/hud.h
 @@ -37,6 +37,10 @@
@@ -3841,7 +3791,7 @@ index bcfdf6e..8b65879 100644
  private:
  	int m_iMoneyCount;
  	int m_iDelta;
-@@ -886,6 +906,51 @@ private:
+@@ -886,6 +906,50 @@ private:
  //-----------------------------------------------------
  //
  
@@ -3878,11 +3828,10 @@ index bcfdf6e..8b65879 100644
 +	int m_iIconTex[Tutor::ICON_COUNT];
 +	bool m_bIconTried[Tutor::ICON_COUNT];
 +
-+	int m_iTextTex;          // the text drawn by a Windows font
-+	char m_szTextTexName[48]; // its name in the engine (see hud/client_texture.h)
++	CTextTexture m_text;     // the text in a Windows font (from its atlas)
++	bool m_bTextAtlas;       // m_text is used (else the lines in the font of the HUD)
 +	int m_iTextW, m_iTextH;
 +	bool m_bTextDirty;
-+	int m_iTextureCounter;
 +	std::vector<std::string> m_lines; // the text for the font of the HUD
 +};
 +
@@ -3893,7 +3842,7 @@ index bcfdf6e..8b65879 100644
  class CHudScenario : public CHudBase
  {
  public:
-@@ -910,6 +975,14 @@ private:
+@@ -910,6 +974,14 @@ private:
  class CHudSpectatorGui: public CHudBase
  {
  public:
@@ -3908,7 +3857,7 @@ index bcfdf6e..8b65879 100644
  	int Init();
  	int VidInit();
  	int Draw( float flTime );
-@@ -924,6 +997,11 @@ public:
+@@ -924,6 +996,11 @@ public:
  	CHudUserCmd( ToggleSpectatorMenuOptions );
  	CHudUserCmd( ToggleSpectatorMenuOptionsSettings );
  	CHudUserCmd( ToggleSpectatorMenuSpectateOptions );
@@ -3920,7 +3869,7 @@ index bcfdf6e..8b65879 100644
  
  	void CalcAllNeededData( );
  
-@@ -951,9 +1029,25 @@ private:
+@@ -951,9 +1028,25 @@ private:
  		ROOT_MENU = (1<<0),
  		MENU_OPTIONS = (1<<1),
  		MENU_OPTIONS_SETTINGS = (1<<2),
@@ -3947,7 +3896,7 @@ index bcfdf6e..8b65879 100644
  };
  
  //
-@@ -1090,6 +1184,7 @@ public:
+@@ -1090,6 +1183,7 @@ public:
  	CHudRadar       m_Radar;
  	CHudSpectatorGui m_SpectatorGui;
  	CHudScenario	m_Scenario;
@@ -4333,202 +4282,6 @@ index 0000000..0c32b91
 +}
 +
 +#endif
-diff --git a/cl_dll/hud/MOTD_text_gdi.cpp b/cl_dll/hud/MOTD_text_gdi.cpp
-new file mode 100644
-index 0000000..026a43d
---- /dev/null
-+++ b/cl_dll/hud/MOTD_text_gdi.cpp
-@@ -0,0 +1,190 @@
-+//
-+// MOTD_text_gdi.cpp
-+//
-+// Text of the server MOTD window, drawn with the fonts of Windows (GDI): the same families that
-+// the Steam version uses, any size, any characters. The result is a picture with the coverage of
-+// the glyphs that the client shows as a texture, one pixel on one pixel.
-+// Kept in a separate file because <windows.h> conflicts with engine headers.
-+//
-+
-+#include <string.h>
-+#include <string>
-+#include <vector>
-+
-+// utf8        - the text
-+// pixelHeight - height of the font in pixels
-+// maxWidth    - the text is cut with "..." if it is wider (0 - no limit)
-+// alpha       - width * height bytes: how much of every pixel is covered by the glyphs
-+// ascent      - distance from the top of the picture to the baseline
-+bool MOTD_RenderText( const char *utf8, int pixelHeight, bool bold, int maxWidth,
-+					  std::vector<unsigned char> &alpha, int &width, int &height, int &ascent );
-+
-+// The same with the font given: face (tried first, then the usual list), weight (400 normal, 700 bold) and
-+// antialiasing
-+bool MOTD_RenderTextFont( const char *utf8, const char *face, int pixelHeight, int weight, bool antialias, int maxWidth,
-+						  std::vector<unsigned char> &alpha, int &width, int &height, int &ascent );
-+
-+#if defined( _WIN32 )
-+
-+#define WIN32_LEAN_AND_MEAN
-+#ifndef NOMINMAX
-+#define NOMINMAX
-+#endif
-+#include <windows.h>
-+#include <wchar.h>
-+
-+// a font the system really has is searched in this order (the wanted one first)
-+static HFONT CreateUiFont( HDC dc, int pixelHeight, int weight, bool antialias, const wchar_t *wanted )
-+{
-+	static const wchar_t *defaults[] = { L"Trebuchet MS", L"Tahoma", L"Segoe UI", L"Verdana", L"Arial" };
-+	const wchar_t *faces[6];
-+	int count = 0;
-+
-+	if( wanted && wanted[0] )
-+		faces[count++] = wanted;
-+	for( const wchar_t *f : defaults )
-+		faces[count++] = f;
-+
-+	const DWORD quality = antialias ? ANTIALIASED_QUALITY : NONANTIALIASED_QUALITY;
-+
-+	for( int i = 0; i < count; ++i )
-+	{
-+		const wchar_t *face = faces[i];
-+		HFONT font = CreateFontW( -pixelHeight, 0, 0, 0, weight, FALSE, FALSE, FALSE,
-+			DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, quality, DEFAULT_PITCH | FF_SWISS, face );
-+
-+		if( !font )
-+			continue;
-+
-+		HGDIOBJ old = SelectObject( dc, font );
-+		wchar_t actual[LF_FACESIZE] = {};
-+		GetTextFaceW( dc, LF_FACESIZE, actual );
-+		SelectObject( dc, old );
-+
-+		if( _wcsicmp( actual, face ) == 0 )
-+			return font;
-+
-+		DeleteObject( font ); // the system gave another font instead
-+	}
-+
-+	// none of them: whatever the system has
-+	return CreateFontW( -pixelHeight, 0, 0, 0, weight, FALSE, FALSE, FALSE,
-+		DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, quality, DEFAULT_PITCH | FF_SWISS, L"Arial" );
-+}
-+
-+bool MOTD_RenderText( const char *utf8, int pixelHeight, bool bold, int maxWidth,
-+					  std::vector<unsigned char> &alpha, int &width, int &height, int &ascent )
-+{
-+	return MOTD_RenderTextFont( utf8, nullptr, pixelHeight, bold ? FW_BOLD : FW_NORMAL, true, maxWidth, alpha, width, height, ascent );
-+}
-+
-+bool MOTD_RenderTextFont( const char *utf8, const char *faceUtf8, int pixelHeight, int weight, bool antialias, int maxWidth,
-+						  std::vector<unsigned char> &alpha, int &width, int &height, int &ascent )
-+{
-+	if( !utf8 || !utf8[0] || pixelHeight < 4 )
-+		return false;
-+
-+	const int wlen = MultiByteToWideChar( CP_UTF8, 0, utf8, -1, nullptr, 0 );
-+
-+	if( wlen <= 1 )
-+		return false;
-+
-+	std::wstring text( (size_t)wlen, L'\0' );
-+	MultiByteToWideChar( CP_UTF8, 0, utf8, -1, &text[0], wlen );
-+	text.resize( (size_t)wlen - 1 );
-+
-+	HDC screen = GetDC( nullptr );
-+	HDC dc = CreateCompatibleDC( screen );
-+	ReleaseDC( nullptr, screen );
-+
-+	if( !dc )
-+		return false;
-+
-+	bool ok = false;
-+	wchar_t face[LF_FACESIZE] = {};
-+	if( faceUtf8 && faceUtf8[0] )
-+		MultiByteToWideChar( CP_UTF8, 0, faceUtf8, -1, face, LF_FACESIZE - 1 );
-+
-+	HFONT font = CreateUiFont( dc, pixelHeight, weight, antialias, face );
-+	HGDIOBJ oldFont = font ? SelectObject( dc, font ) : nullptr;
-+
-+	TEXTMETRICW tm = {};
-+	SIZE size = {};
-+
-+	if( font && GetTextMetricsW( dc, &tm ) && GetTextExtentPoint32W( dc, text.c_str(), (int)text.size(), &size ))
-+	{
-+		int w = size.cx + 2; // a little room for glyphs that stick out
-+		const int h = tm.tmHeight;
-+
-+		if( maxWidth > 0 && w > maxWidth )
-+			w = maxWidth;
-+
-+		BITMAPINFO bi = {};
-+		bi.bmiHeader.biSize = sizeof( BITMAPINFOHEADER );
-+		bi.bmiHeader.biWidth = w;
-+		bi.bmiHeader.biHeight = -h; // from the top to the bottom
-+		bi.bmiHeader.biPlanes = 1;
-+		bi.bmiHeader.biBitCount = 32;
-+		bi.bmiHeader.biCompression = BI_RGB;
-+
-+		void *bits = nullptr;
-+		HBITMAP bitmap = ( w > 0 && h > 0 ) ? CreateDIBSection( dc, &bi, DIB_RGB_COLORS, &bits, nullptr, 0 ) : nullptr;
-+
-+		if( bitmap && bits )
-+		{
-+			HGDIOBJ oldBitmap = SelectObject( dc, bitmap );
-+
-+			memset( bits, 0, (size_t)w * h * 4 );
-+			SetBkColor( dc, RGB( 0, 0, 0 ));
-+			SetTextColor( dc, RGB( 255, 255, 255 ));
-+			SetBkMode( dc, OPAQUE );
-+
-+			RECT rc = { 0, 0, w, h };
-+			DrawTextW( dc, text.c_str(), (int)text.size(), &rc, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS );
-+			GdiFlush();
-+
-+			// white text on black: the brightness of a pixel is how much of it the glyph covers
-+			alpha.resize( (size_t)w * h );
-+
-+			const unsigned char *p = static_cast<const unsigned char *>( bits );
-+
-+			for( size_t i = 0, n = (size_t)w * h; i < n; ++i, p += 4 )
-+			{
-+				unsigned char m = p[0] > p[1] ? p[0] : p[1];
-+				alpha[i] = m > p[2] ? m : p[2];
-+			}
-+
-+			width = w;
-+			height = h;
-+			ascent = tm.tmAscent;
-+			ok = true;
-+
-+			SelectObject( dc, oldBitmap );
-+		}
-+
-+		if( bitmap )
-+			DeleteObject( bitmap );
-+	}
-+
-+	if( oldFont )
-+		SelectObject( dc, oldFont );
-+	if( font )
-+		DeleteObject( font );
-+
-+	DeleteDC( dc );
-+	return ok;
-+}
-+
-+#else // not implemented on other platforms: the font of the HUD is used there
-+
-+bool MOTD_RenderText( const char *, int, bool, int, std::vector<unsigned char> &, int &, int &, int & )
-+{
-+	return false;
-+}
-+
-+bool MOTD_RenderTextFont( const char *, const char *, int, int, bool, int, std::vector<unsigned char> &, int &, int &, int & )
-+{
-+	return false;
-+}
-+
-+#endif
 diff --git a/cl_dll/hud/client_texture.h b/cl_dll/hud/client_texture.h
 new file mode 100644
 index 0000000..c24bcd8
@@ -4617,6 +4370,684 @@ index 0000000..c24bcd8
 +}
 +
 +} // namespace ClientTexture
+diff --git a/cl_dll/hud/glyph_atlas.cpp b/cl_dll/hud/glyph_atlas.cpp
+new file mode 100644
+index 0000000..fd998fc
+--- /dev/null
++++ b/cl_dll/hud/glyph_atlas.cpp
+@@ -0,0 +1,306 @@
++//
++// glyph_atlas.cpp
++//
++
++#include "hud.h"
++#include "cl_util.h"
++
++#include <stdio.h>
++#include <string.h>
++#include <memory>
++
++#include "glyph_atlas.h"
++#include "glyph_gdi.h"
++#include "client_texture.h"
++
++namespace {
++
++std::vector<std::unique_ptr<CGlyphFont>> g_fonts;
++int g_pageCounter = 0;
++
++// the letters drawn when a font is made: ASCII, Latin-1, Cyrillic, the usual signs
++void InitialChars( std::vector<char32_t> &out )
++{
++	for( char32_t c = 0x20; c < 0x7F; ++c )
++		out.push_back( c );
++	for( char32_t c = 0xA0; c <= 0xFF; ++c )
++		out.push_back( c );
++	for( char32_t c = 0x400; c <= 0x45F; ++c )
++		out.push_back( c );
++	static const char32_t signs[] = { 0x2013, 0x2014, 0x2018, 0x2019, 0x201C, 0x201D, 0x201E, 0x2022, 0x2026,
++		0x2116, 0x20AC, 0x2122 };
++	for( char32_t c : signs )
++		out.push_back( c );
++}
++
++} // namespace
++
++std::u32string GlyphText_Decode( const std::string &utf8 )
++{
++	std::u32string out;
++	out.reserve( utf8.size() );
++
++	const unsigned char *p = reinterpret_cast<const unsigned char *>( utf8.c_str() );
++
++	while( *p )
++	{
++		char32_t c = *p;
++		int extra = 0;
++
++		if( c >= 0xF0 && c <= 0xF4 ) { c &= 0x07; extra = 3; }
++		else if( c >= 0xE0 ) { c &= 0x0F; extra = 2; }
++		else if( c >= 0xC2 && c < 0xE0 ) { c &= 0x1F; extra = 1; }
++		else if( c >= 0x80 ) { out.push_back( c ); ++p; continue; } // not UTF-8: as a byte of Windows-1252
++
++		int i = 1;
++		for( ; i <= extra; ++i )
++		{
++			if(( p[i] & 0xC0 ) != 0x80 )
++				break;
++			c = ( c << 6 ) | ( p[i] & 0x3F );
++		}
++
++		if( i <= extra )
++		{
++			out.push_back( *p ); // a broken sequence: the first byte alone
++			++p;
++			continue;
++		}
++
++		out.push_back( c );
++		p += extra + 1;
++	}
++
++	return out;
++}
++
++CGlyphFont *CGlyphFont::Get( const char *face, int emHeight, int weight, bool antialias )
++{
++	if( emHeight < 4 )
++		emHeight = 4;
++
++	char key[128];
++	snprintf( key, sizeof( key ), "%s|%d|%d|%d", face ? face : "", emHeight, weight, antialias ? 1 : 0 );
++
++	for( const auto &f : g_fonts )
++	{
++		if( f->m_key == key )
++			return f->m_font ? f.get() : nullptr;
++	}
++
++	std::unique_ptr<CGlyphFont> font( new CGlyphFont );
++	font->m_key = key;
++
++	GlyphFontInfo info;
++	font->m_font = GlyphGDI_CreateFont( face, emHeight, weight, antialias, info );
++
++	if( font->m_font )
++	{
++		font->m_iHeight = info.height;
++		font->m_iAscent = info.ascent;
++		font->m_iAveCharWidth = info.aveCharWidth;
++
++		std::vector<char32_t> chars;
++		InitialChars( chars );
++		font->AddGlyphs( chars );
++	}
++
++	CGlyphFont *result = font->m_font ? font.get() : nullptr;
++	g_fonts.push_back( std::move( font )); // also remembers that it did not work
++	return result;
++}
++
++void CGlyphFont::Prepare( const std::u32string &text )
++{
++	std::vector<char32_t> chars;
++
++	for( char32_t c : text )
++	{
++		if( c == '\n' || c == '\r' || c == '\t' )
++			continue;
++		if( m_glyphs.count( c ) || m_missing.count( c ))
++			continue;
++
++		bool seen = false;
++		for( char32_t d : chars )
++			seen = seen || d == c;
++		if( !seen )
++			chars.push_back( c );
++	}
++
++	if( !chars.empty() )
++		AddGlyphs( chars );
++}
++
++const CGlyphFont::Glyph *CGlyphFont::Find( char32_t ch ) const
++{
++	auto it = m_glyphs.find( ch );
++	return it != m_glyphs.end() ? &it->second : nullptr;
++}
++
++// The letters are drawn and packed into a new page in rows of the height of the font, a pixel apart
++void CGlyphFont::AddGlyphs( const std::vector<char32_t> &chars )
++{
++	if( !m_font || chars.empty() )
++		return;
++
++	struct Item { char32_t ch; GlyphImage img; };
++	std::vector<Item> items;
++	items.reserve( chars.size() );
++
++	for( char32_t c : chars )
++	{
++		Item it;
++		it.ch = c;
++		if( !GlyphGDI_Render( m_font, (unsigned int)c, it.img ))
++		{
++			m_missing[c] = true;
++			continue;
++		}
++		items.push_back( std::move( it ));
++	}
++
++	if( items.empty() )
++		return;
++
++	const int pageW = m_iHeight >= 40 ? 1024 : 512;
++	const int maxPageH = 2048;
++	const int rowH = m_iHeight + 1;
++
++	size_t first = 0;
++
++	while( first < items.size() )
++	{
++		// how many letters fit into one page
++		int x = 0, y = 0;
++		size_t last = first;
++
++		for( ; last < items.size(); ++last )
++		{
++			const GlyphImage &img = items[last].img;
++			int w = img.w > 0 ? img.w : 0;
++			if( w > pageW )
++				w = pageW;
++
++			if( x + w > pageW )
++			{
++				x = 0;
++				y += rowH;
++			}
++			if( y + rowH > maxPageH )
++				break;
++			x += w + 1;
++		}
++
++		if( last == first )
++			break; // a letter higher than a page: not possible with the sizes of the HUD
++
++		int pageH = 16;
++		while( pageH < y + rowH )
++			pageH *= 2;
++
++		Page page;
++		page.w = pageW;
++		page.h = pageH;
++		page.alpha.assign( (size_t)pageW * pageH, 0 );
++
++		const int pageIndex = (int)m_pages.size();
++		x = 0;
++		y = 0;
++
++		for( size_t i = first; i < last; ++i )
++		{
++			const GlyphImage &img = items[i].img;
++			int w = img.w > 0 ? img.w : 0;
++			if( w > pageW )
++				w = pageW;
++
++			if( x + w > pageW )
++			{
++				x = 0;
++				y += rowH;
++			}
++
++			Glyph g;
++			g.left = img.left;
++			g.advance = img.advance;
++
++			bool empty = true;
++			for( unsigned char a : img.alpha )
++				empty = empty && a == 0;
++
++			if( !empty && w > 0 )
++			{
++				g.page = pageIndex;
++				g.x = x;
++				g.y = y;
++				g.w = w;
++				g.h = img.h < m_iHeight ? img.h : m_iHeight;
++
++				for( int row = 0; row < g.h; ++row )
++					memcpy( &page.alpha[(size_t)( y + row ) * pageW + x], &img.alpha[(size_t)row * img.w], (size_t)w );
++
++				x += w + 1;
++			}
++
++			m_glyphs[items[i].ch] = g;
++		}
++
++		m_pages.push_back( std::move( page ));
++		UploadPage( m_pages.back() );
++		first = last;
++	}
++}
++
++bool CGlyphFont::UploadPage( Page &page )
++{
++	if( !gRenderAPI.GL_CreateTexture )
++		return false;
++
++	// white pixels, the letters are in the alpha channel (the colour is set when the text is drawn)
++	std::vector<unsigned char> rgba( (size_t)page.w * page.h * 4, 255 );
++	for( size_t i = 0, n = (size_t)page.w * page.h; i < n; ++i )
++		rgba[i * 4 + 3] = page.alpha[i];
++
++	// every page has its own name: the engine gives back the old texture for a name it already has
++	char name[48];
++	snprintf( name, sizeof( name ), "%s%d", TexturePrefix(), ++g_pageCounter );
++
++	const int tex = gRenderAPI.GL_CreateTexture( name, page.w, page.h, rgba.data(),
++		static_cast<texFlags_t>( TF_NOMIPMAP | TF_CLAMP | TF_HAS_ALPHA | TF_NEAREST ));
++
++	if( tex <= 0 )
++	{
++		page.tex = 0;
++		page.name.clear();
++		return false;
++	}
++
++	page.tex = tex;
++	page.name = name;
++	ClientTexture::Note( "create", tex, name );
++	return true;
++}
++
++int CGlyphFont::PageTexture( int index )
++{
++	if( index < 0 || index >= (int)m_pages.size() )
++		return 0;
++
++	Page &page = m_pages[index];
++
++	if( page.tex > 0 && ClientTexture::Owned( page.tex, page.name.c_str() ))
++		return page.tex;
++
++	// the engine has freed it (or it was never made): made again from the pixels kept
++	if( page.tex > 0 )
++		ClientTexture::ReportLost( page.name.c_str() );
++
++	static float lastTry = -1000.0f;
++	const float now = gEngfuncs.GetClientTime();
++	if( page.tex <= 0 && page.name.empty() && now - lastTry < 1.0f && now >= lastTry )
++		return 0; // it did not work a moment ago: not every frame
++
++	lastTry = now;
++	return UploadPage( page ) ? page.tex : 0;
++}
+diff --git a/cl_dll/hud/glyph_atlas.h b/cl_dll/hud/glyph_atlas.h
+new file mode 100644
+index 0000000..c319e09
+--- /dev/null
++++ b/cl_dll/hud/glyph_atlas.h
+@@ -0,0 +1,72 @@
++//
++// glyph_atlas.h
++//
++// The fonts of Windows as atlases: the letters of a font are drawn once (glyph_gdi.cpp) into one texture and the
++// texts are put together from them, as the VGUI2 fonts of the Steam version do. A new text costs nothing (no new
++// texture), only letters that are not there yet are added (a new page of the atlas, rarely: the Latin, Latin-1
++// and Cyrillic letters and the usual signs are drawn at once).
++//
++// No dependencies on the engine besides the textures (gRenderAPI) and the triangles (pTriAPI) of the drawing.
++//
++
++#pragma once
++
++#include <string>
++#include <vector>
++#include <unordered_map>
++
++class CGlyphFont
++{
++public:
++	struct Glyph
++	{
++		int page = -1;           // -1: an empty letter (a space), nothing to draw
++		int x = 0, y = 0, w = 0, h = 0; // the picture in its page
++		int left = 0;            // where the picture starts from the pen
++		int advance = 0;         // how far the pen moves
++	};
++
++	// the font (made once and kept); nullptr if there are no fonts of Windows (the other systems)
++	static CGlyphFont *Get( const char *face, int emHeight, int weight, bool antialias );
++
++	int Height() const { return m_iHeight; }
++	int Ascent() const { return m_iAscent; }
++	int TabWidth() const { return m_iAveCharWidth * 8 > 0 ? m_iAveCharWidth * 8 : 8; } // as DrawText
++
++	// adds the letters of the text that are not in the atlas yet (one new page for all of them)
++	void Prepare( const std::u32string &text );
++
++	// a letter of the atlas (Prepare has been called for it); nullptr if the font has no such letter
++	const Glyph *Find( char32_t ch ) const;
++
++	// the texture of a page, made again if the engine has freed it; 0 if it cannot be made
++	int PageTexture( int page );
++	int PageWidth( int page ) const { return page >= 0 && page < (int)m_pages.size() ? m_pages[page].w : 1; }
++	int PageHeight( int page ) const { return page >= 0 && page < (int)m_pages.size() ? m_pages[page].h : 1; }
++
++	// the texture names of the atlases start with this (cl_textures_check counts them)
++	static const char *TexturePrefix() { return "*glyphs_"; }
++
++private:
++	struct Page
++	{
++		int w = 0, h = 0;
++		std::vector<unsigned char> alpha; // kept: the texture is made again from it if the engine frees it
++		int tex = 0;
++		std::string name;
++	};
++
++	CGlyphFont() = default;
++	void AddGlyphs( const std::vector<char32_t> &chars );
++	bool UploadPage( Page &page );
++
++	std::string m_key;
++	void *m_font = nullptr; // glyph_gdi.h
++	int m_iHeight = 0, m_iAscent = 0, m_iAveCharWidth = 0;
++	std::unordered_map<char32_t, Glyph> m_glyphs;
++	std::unordered_map<char32_t, bool> m_missing; // the letters the font could not draw
++	std::vector<Page> m_pages;
++};
++
++// UTF-8 to code points (a wrong byte is taken as a Windows-1252 character)
++std::u32string GlyphText_Decode( const std::string &utf8 );
+diff --git a/cl_dll/hud/glyph_gdi.cpp b/cl_dll/hud/glyph_gdi.cpp
+new file mode 100644
+index 0000000..31018eb
+--- /dev/null
++++ b/cl_dll/hud/glyph_gdi.cpp
+@@ -0,0 +1,239 @@
++//
++// glyph_gdi.cpp
++//
++// The letters of a Windows font for the atlas (see glyph_gdi.h)
++//
++
++#include <string.h>
++#include <string>
++#include <vector>
++
++#include "glyph_gdi.h"
++
++#if defined( _WIN32 )
++
++#define WIN32_LEAN_AND_MEAN
++#ifndef NOMINMAX
++#define NOMINMAX
++#endif
++#include <windows.h>
++#include <wchar.h>
++
++namespace {
++
++// the light pixels of the antialiasing outside the ABC box of a letter are kept: its picture is this much wider
++// on both sides
++const int GLYPH_PAD = 2;
++
++struct GdiFont
++{
++	HFONT font = nullptr;
++	int height = 0;
++	int maxWidth = 0;
++};
++
++HDC SharedDC( void )
++{
++	// one memory DC for everything (GetDC of the screen is slow while the game is shown: it waits for the desktop)
++	static HDC dc = nullptr;
++	if( !dc )
++		dc = CreateCompatibleDC( nullptr );
++	return dc;
++}
++
++std::wstring Utf8ToWide( const char *utf8 )
++{
++	const int n = MultiByteToWideChar( CP_UTF8, 0, utf8, -1, nullptr, 0 );
++
++	if( n <= 1 )
++		return std::wstring();
++
++	std::wstring w( (size_t)n, L'\0' );
++	MultiByteToWideChar( CP_UTF8, 0, utf8, -1, &w[0], n );
++	w.resize( (size_t)n - 1 );
++	return w;
++}
++
++// The font asked for, if the system has it; otherwise the next one of the list that it has
++HFONT CreateFontFromList( HDC dc, const char *wanted, int emHeight, int weight, bool antialias )
++{
++	const std::wstring first = Utf8ToWide( wanted ? wanted : "" );
++	const wchar_t *fallbacks[] = { L"Tahoma", L"Verdana", L"Segoe UI", L"Arial" };
++	const DWORD quality = antialias ? ANTIALIASED_QUALITY : NONANTIALIASED_QUALITY;
++
++	for( int i = -1; i < (int)( sizeof( fallbacks ) / sizeof( fallbacks[0] )); ++i )
++	{
++		const wchar_t *face = i < 0 ? first.c_str() : fallbacks[i];
++
++		if( !face[0] || wcslen( face ) >= LF_FACESIZE )
++			continue;
++
++		// a negative height is the height of the letters (em)
++		HFONT font = CreateFontW( -emHeight, 0, 0, 0, weight, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
++			OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, quality, DEFAULT_PITCH | FF_SWISS, face );
++
++		if( !font )
++			continue;
++
++		HGDIOBJ old = SelectObject( dc, font );
++		wchar_t actual[LF_FACESIZE] = {};
++		GetTextFaceW( dc, LF_FACESIZE, actual );
++		SelectObject( dc, old );
++
++		if( _wcsicmp( actual, face ) == 0 )
++			return font;
++
++		DeleteObject( font ); // the system gave another font instead
++	}
++
++	return CreateFontW( -emHeight, 0, 0, 0, weight, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
++		OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, quality, DEFAULT_PITCH | FF_SWISS, L"Arial" );
++}
++
++} // namespace
++
++void *GlyphGDI_CreateFont( const char *face, int emHeight, int weight, bool antialias, GlyphFontInfo &info )
++{
++	HDC dc = SharedDC();
++	if( !dc || emHeight < 4 )
++		return nullptr;
++
++	HFONT font = CreateFontFromList( dc, face, emHeight, weight, antialias );
++	if( !font )
++		return nullptr;
++
++	HGDIOBJ old = SelectObject( dc, font );
++	TEXTMETRICW tm = {};
++	const bool ok = GetTextMetricsW( dc, &tm ) != 0;
++	SelectObject( dc, old );
++
++	if( !ok || tm.tmHeight <= 0 )
++	{
++		DeleteObject( font );
++		return nullptr;
++	}
++
++	GdiFont *f = new GdiFont;
++	f->font = font;
++	f->height = tm.tmHeight;
++	f->maxWidth = tm.tmMaxCharWidth + tm.tmOverhang;
++
++	info.height = tm.tmHeight;
++	info.ascent = tm.tmAscent;
++	info.aveCharWidth = tm.tmAveCharWidth > 0 ? tm.tmAveCharWidth : emHeight / 2;
++	return f;
++}
++
++bool GlyphGDI_Render( void *handle, unsigned int ch, GlyphImage &out )
++{
++	GdiFont *f = static_cast<GdiFont *>( handle );
++	HDC dc = SharedDC();
++
++	if( !f || !dc || ch > 0xFFFF )
++		return false;
++
++	HGDIOBJ oldFont = SelectObject( dc, f->font );
++
++	// the metrics GDI moves the pen by in a string
++	ABC abc = {};
++	if( !GetCharABCWidthsW( dc, ch, ch, &abc ))
++	{
++		INT width = 0;
++		if( !GetCharWidth32W( dc, ch, ch, &width ))
++		{
++			SelectObject( dc, oldFont );
++			return false;
++		}
++		abc.abcA = 0;
++		abc.abcB = (UINT)width;
++		abc.abcC = 0;
++	}
++
++	out.advance = abc.abcA + (int)abc.abcB + abc.abcC;
++	out.left = abc.abcA - GLYPH_PAD;
++	out.w = (int)abc.abcB + GLYPH_PAD * 2;
++	out.h = f->height;
++	out.alpha.assign( (size_t)( out.w > 0 ? out.w : 0 ) * out.h, 0 );
++
++	bool ok = true;
++
++	if( out.w > 0 && out.h > 0 && ch != ' ' && ch != '\t' )
++	{
++		BITMAPINFO bi = {};
++		bi.bmiHeader.biSize = sizeof( BITMAPINFOHEADER );
++		bi.bmiHeader.biWidth = out.w;
++		bi.bmiHeader.biHeight = -out.h; // from the top to the bottom
++		bi.bmiHeader.biPlanes = 1;
++		bi.bmiHeader.biBitCount = 32;
++		bi.bmiHeader.biCompression = BI_RGB;
++
++		void *bits = nullptr;
++		HBITMAP bitmap = CreateDIBSection( dc, &bi, DIB_RGB_COLORS, &bits, nullptr, 0 );
++
++		if( bitmap && bits )
++		{
++			HGDIOBJ oldBitmap = SelectObject( dc, bitmap );
++
++			memset( bits, 0, (size_t)out.w * out.h * 4 );
++			SetTextAlign( dc, TA_LEFT | TA_TOP | TA_NOUPDATECP );
++			SetBkColor( dc, RGB( 0, 0, 0 ));
++			SetTextColor( dc, RGB( 255, 255, 255 ));
++			SetBkMode( dc, TRANSPARENT );
++
++			// the pen GLYPH_PAD pixels before "A": the letter lands where it would be in a string
++			const wchar_t wch = (wchar_t)ch;
++			ExtTextOutW( dc, GLYPH_PAD - abc.abcA, 0, 0, nullptr, &wch, 1, nullptr );
++			GdiFlush();
++
++			// white text on black: the brightness of a pixel is how much of it the letter covers
++			const unsigned char *p = static_cast<const unsigned char *>( bits );
++
++			for( size_t i = 0, n = (size_t)out.w * out.h; i < n; ++i, p += 4 )
++			{
++				unsigned char m = p[0] > p[1] ? p[0] : p[1];
++				out.alpha[i] = m > p[2] ? m : p[2];
++			}
++
++			SelectObject( dc, oldBitmap );
++		}
++		else
++		{
++			ok = false;
++		}
++
++		if( bitmap )
++			DeleteObject( bitmap );
++	}
++
++	SelectObject( dc, oldFont );
++	return ok;
++}
++
++void GlyphGDI_FreeFont( void *handle )
++{
++	GdiFont *f = static_cast<GdiFont *>( handle );
++	if( !f )
++		return;
++
++	if( f->font )
++		DeleteObject( f->font );
++	delete f;
++}
++
++#else // no fonts of Windows on the other systems: the font of the HUD is used there
++
++void *GlyphGDI_CreateFont( const char *, int, int, bool, GlyphFontInfo & )
++{
++	return nullptr;
++}
++
++bool GlyphGDI_Render( void *, unsigned int, GlyphImage & )
++{
++	return false;
++}
++
++void GlyphGDI_FreeFont( void * )
++{
++}
++
++#endif
+diff --git a/cl_dll/hud/glyph_gdi.h b/cl_dll/hud/glyph_gdi.h
+new file mode 100644
+index 0000000..5cad6f0
+--- /dev/null
++++ b/cl_dll/hud/glyph_gdi.h
+@@ -0,0 +1,37 @@
++//
++// glyph_gdi.h
++//
++// The letters of a Windows font, one at a time (glyph_gdi.cpp), for the atlas of glyph_atlas.h. Every letter is
++// drawn by ExtTextOut as Windows draws it in a string (the same antialiasing) and comes with the metrics GDI moves
++// the pen by (ABC widths), so a text put together from the atlas looks like the same text drawn by DrawText.
++// Kept apart because <windows.h> conflicts with the headers of the engine. No fonts of Windows on the other
++// systems: GlyphGDI_CreateFont returns nullptr there and the client uses the font of the HUD.
++//
++
++#pragma once
++
++#include <vector>
++
++struct GlyphFontInfo
++{
++	int height = 0;       // the height of a line (the cell of the font: ascent + descent)
++	int ascent = 0;       // from the top of the cell to the baseline
++	int aveCharWidth = 0; // for the tab stops (every 8 average characters, as DrawText)
++};
++
++struct GlyphImage
++{
++	int left = 0;    // where the picture starts from the pen (may be negative)
++	int advance = 0; // how far the pen moves
++	int w = 0, h = 0;
++	std::vector<unsigned char> alpha; // w * h: how much of every pixel the letter covers
++};
++
++// a font of Windows: the one asked for if the system has it, else Tahoma, Verdana, Segoe UI, Arial;
++// emHeight - the height of the letters (em) in pixels; nullptr if there are no fonts of Windows
++void *GlyphGDI_CreateFont( const char *face, int emHeight, int weight, bool antialias, GlyphFontInfo &info );
++
++// one letter (a UTF-16 code unit: the letters beyond U+FFFF are not drawn)
++bool GlyphGDI_Render( void *font, unsigned int ch, GlyphImage &out );
++
++void GlyphGDI_FreeFont( void *font );
 diff --git a/cl_dll/hud/motd_util.h b/cl_dll/hud/motd_util.h
 new file mode 100644
 index 0000000..53fcfae
@@ -7009,234 +7440,12 @@ index 0000000..708aa26
 +}
 +
 +} // namespace SpecMenu
-diff --git a/cl_dll/hud/text_gdi.cpp b/cl_dll/hud/text_gdi.cpp
-new file mode 100644
-index 0000000..4966191
---- /dev/null
-+++ b/cl_dll/hud/text_gdi.cpp
-@@ -0,0 +1,199 @@
-+//
-+// text_gdi.cpp
-+//
-+// A block of text drawn by the fonts of Windows (GDI), in lines that are not wrapped:
-+// the picture is the coverage of the glyphs that the client shows as a texture, one pixel on one pixel.
-+// Used by the tutor messages. Kept in a separate file because <windows.h> conflicts with engine headers.
-+//
-+
-+#include <string.h>
-+#include <string>
-+#include <vector>
-+
-+#include "text_gdi.h"
-+
-+#if defined( _WIN32 )
-+
-+#define WIN32_LEAN_AND_MEAN
-+#ifndef NOMINMAX
-+#define NOMINMAX
-+#endif
-+#include <windows.h>
-+#include <wchar.h>
-+
-+static std::wstring Utf8ToWide( const char *utf8 )
-+{
-+	const int n = MultiByteToWideChar( CP_UTF8, 0, utf8, -1, nullptr, 0 );
-+
-+	if( n <= 1 )
-+		return std::wstring();
-+
-+	std::wstring w( (size_t)n, L'\0' );
-+	MultiByteToWideChar( CP_UTF8, 0, utf8, -1, &w[0], n );
-+	w.resize( (size_t)n - 1 );
-+	return w;
-+}
-+
-+// The font asked for, if the system has it; otherwise the next one of the list that it has
-+static HFONT CreateFontFromList( HDC dc, const char *wanted, int emHeight, int weight, bool antialias )
-+{
-+	const std::wstring first = Utf8ToWide( wanted ? wanted : "" );
-+	const wchar_t *fallbacks[] = { L"Tahoma", L"Verdana", L"Segoe UI", L"Arial" };
-+	const DWORD quality = antialias ? ANTIALIASED_QUALITY : NONANTIALIASED_QUALITY;
-+
-+	for( int i = -1; i < (int)( sizeof( fallbacks ) / sizeof( fallbacks[0] )); ++i )
-+	{
-+		const wchar_t *face = i < 0 ? first.c_str() : fallbacks[i];
-+
-+		if( !face[0] || wcslen( face ) >= LF_FACESIZE )
-+			continue;
-+
-+		// a negative height is the height of the letters (em)
-+		HFONT font = CreateFontW( -emHeight, 0, 0, 0, weight, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-+			OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, quality, DEFAULT_PITCH | FF_SWISS, face );
-+
-+		if( !font )
-+			continue;
-+
-+		HGDIOBJ old = SelectObject( dc, font );
-+		wchar_t actual[LF_FACESIZE] = {};
-+		GetTextFaceW( dc, LF_FACESIZE, actual );
-+		SelectObject( dc, old );
-+
-+		if( _wcsicmp( actual, face ) == 0 )
-+			return font;
-+
-+		DeleteObject( font ); // the system gave another font instead
-+	}
-+
-+	return CreateFontW( -emHeight, 0, 0, 0, weight, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-+		OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, quality, DEFAULT_PITCH | FF_SWISS, L"Arial" );
-+}
-+
-+// the fonts already made (a font of Windows is slow to make: it is looked for among the fonts of the system)
-+static HFONT CachedFont( HDC dc, const char *fontName, int emHeight, int weight, bool antialias )
-+{
-+	struct Entry { char name[64]; int em, weight; bool antialias; HFONT font; };
-+	static Entry cache[32];
-+	static int count = 0;
-+
-+	const char *name = fontName ? fontName : "";
-+	for( int i = 0; i < count; ++i )
-+	{
-+		if( cache[i].em == emHeight && cache[i].weight == weight && cache[i].antialias == antialias && !strcmp( cache[i].name, name ))
-+			return cache[i].font;
-+	}
-+
-+	HFONT font = CreateFontFromList( dc, fontName, emHeight, weight, antialias );
-+	if( font && count < (int)( sizeof( cache ) / sizeof( cache[0] )) && strlen( name ) < sizeof( cache[0].name ))
-+	{
-+		Entry &e = cache[count++];
-+		strcpy( e.name, name );
-+		e.em = emHeight;
-+		e.weight = weight;
-+		e.antialias = antialias;
-+		e.font = font;
-+	}
-+	return font;
-+}
-+
-+bool GDI_RenderTextBlock( const char *utf8, const char *fontName, int emHeight, int weight, bool antialias,
-+						  int maxWidth, std::vector<unsigned char> &alpha, int &width, int &height )
-+{
-+	if( !utf8 || !utf8[0] || emHeight < 4 || maxWidth < 8 )
-+		return false;
-+
-+	const std::wstring text = Utf8ToWide( utf8 );
-+
-+	if( text.empty() )
-+		return false;
-+
-+	// one memory DC for all the texts (GetDC of the screen is slow while the game is shown: it waits for the
-+	// desktop) and the fonts made once
-+	static HDC dc = nullptr;
-+	if( !dc )
-+		dc = CreateCompatibleDC( nullptr );
-+
-+	if( !dc )
-+		return false;
-+
-+	bool ok = false;
-+	HFONT font = CachedFont( dc, fontName, emHeight, weight, antialias );
-+	HGDIOBJ oldFont = font ? SelectObject( dc, font ) : nullptr;
-+	// no wrapping (as the Steam version): every line of the text is one line on the screen
-+	const UINT format = DT_LEFT | DT_TOP | DT_NOPREFIX | DT_EXPANDTABS | DT_NOCLIP;
-+
-+	// the size of the block
-+	RECT rc = { 0, 0, 0, 0 };
-+
-+	if( font && DrawTextW( dc, text.c_str(), (int)text.size(), &rc, format | DT_CALCRECT ) > 0 )
-+	{
-+		int w = rc.right - rc.left;
-+		int h = rc.bottom - rc.top;
-+
-+		// a line wider than the screen is cut at the limit
-+		if( w > maxWidth )
-+			w = maxWidth;
-+		if( h > 2048 )
-+			h = 2048;
-+
-+		BITMAPINFO bi = {};
-+		bi.bmiHeader.biSize = sizeof( BITMAPINFOHEADER );
-+		bi.bmiHeader.biWidth = w;
-+		bi.bmiHeader.biHeight = -h; // from the top to the bottom
-+		bi.bmiHeader.biPlanes = 1;
-+		bi.bmiHeader.biBitCount = 32;
-+		bi.bmiHeader.biCompression = BI_RGB;
-+
-+		void *bits = nullptr;
-+		HBITMAP bitmap = ( w > 0 && h > 0 ) ? CreateDIBSection( dc, &bi, DIB_RGB_COLORS, &bits, nullptr, 0 ) : nullptr;
-+
-+		if( bitmap && bits )
-+		{
-+			HGDIOBJ oldBitmap = SelectObject( dc, bitmap );
-+
-+			memset( bits, 0, (size_t)w * h * 4 );
-+			SetBkColor( dc, RGB( 0, 0, 0 ));
-+			SetTextColor( dc, RGB( 255, 255, 255 ));
-+			SetBkMode( dc, OPAQUE );
-+
-+			RECT draw = { 0, 0, w, h };
-+			DrawTextW( dc, text.c_str(), (int)text.size(), &draw, format );
-+			GdiFlush();
-+
-+			// white text on black: the brightness of a pixel is how much of it the glyph covers
-+			alpha.resize( (size_t)w * h );
-+
-+			const unsigned char *p = static_cast<const unsigned char *>( bits );
-+
-+			for( size_t i = 0, n = (size_t)w * h; i < n; ++i, p += 4 )
-+			{
-+				unsigned char m = p[0] > p[1] ? p[0] : p[1];
-+				alpha[i] = m > p[2] ? m : p[2];
-+			}
-+
-+			width = w;
-+			height = h;
-+			ok = true;
-+
-+			SelectObject( dc, oldBitmap );
-+		}
-+
-+		if( bitmap )
-+			DeleteObject( bitmap );
-+	}
-+
-+	if( oldFont )
-+		SelectObject( dc, oldFont );
-+
-+	return ok;
-+}
-+
-+#else // not implemented on other platforms: the font of the HUD is used there
-+
-+bool GDI_RenderTextBlock( const char *, const char *, int, int, bool, int, std::vector<unsigned char> &, int &, int & )
-+{
-+	return false;
-+}
-+
-+#endif
-diff --git a/cl_dll/hud/text_gdi.h b/cl_dll/hud/text_gdi.h
-new file mode 100644
-index 0000000..4034911
---- /dev/null
-+++ b/cl_dll/hud/text_gdi.h
-@@ -0,0 +1,11 @@
-+#pragma once
-+
-+#include <vector>
-+
-+// A block of UTF-8 text drawn by a font of Windows, without wrapping (line ends in the text start new lines);
-+// lines wider than maxWidth are cut. The result is width * height bytes of the coverage of the glyphs.
-+// fontName - the font that is wanted (Tahoma, Verdana, Segoe UI, Arial are tried if the system has no such font),
-+// emHeight - the height of the letters (em) in pixels.
-+// Returns false where the fonts of Windows are not available (the caller uses the font of the HUD).
-+bool GDI_RenderTextBlock( const char *utf8, const char *fontName, int emHeight, int weight, bool antialias,
-+						  int maxWidth, std::vector<unsigned char> &alpha, int &width, int &height );
 diff --git a/cl_dll/hud/text_texture.cpp b/cl_dll/hud/text_texture.cpp
 new file mode 100644
-index 0000000..b107080
+index 0000000..b7a5163
 --- /dev/null
 +++ b/cl_dll/hud/text_texture.cpp
-@@ -0,0 +1,158 @@
+@@ -0,0 +1,274 @@
 +//
 +// text_texture.cpp
 +//
@@ -7249,81 +7458,215 @@ index 0000000..b107080
 +#include <stdio.h>
 +#include <string.h>
 +#include <ctype.h>
++#include <math.h>
 +#include <vector>
 +
 +#include "text_texture.h"
-+#include "text_gdi.h"
++#include "glyph_atlas.h"
 +#include "client_texture.h"
-+
-+static int s_textTextureCounter = 0;
 +
 +void CTextTexture::Free()
 +{
-+	ClientTexture::Free( m_iTex, m_name.c_str() );
-+	m_name.clear();
++	m_pFont = nullptr;
++	m_quads.clear();
 +	m_iWidth = m_iHeight = 0;
 +	m_bFailed = false;
 +	m_key.clear();
 +}
 +
-+bool CTextTexture::Update( const std::string &utf8, const char *fontName, int emHeight, int weight, bool antialias, int maxWidth )
++int CTextTexture::Ascent() const
++{
++	return m_pFont ? m_pFont->Ascent() : 0;
++}
++
++bool CTextTexture::Update( const std::string &utf8, const char *fontName, int emHeight, int weight, bool antialias,
++						   int maxWidth, bool ellipsis )
 +{
 +	if( maxWidth < 8 )
 +		maxWidth = 8;
 +
-+	char extra[112];
-+	snprintf( extra, sizeof( extra ), "|%s|%d|%d|%d|%d", fontName ? fontName : "", emHeight, weight, antialias ? 1 : 0, maxWidth );
++	char extra[128];
++	snprintf( extra, sizeof( extra ), "|%s|%d|%d|%d|%d|%d", fontName ? fontName : "", emHeight, weight,
++		antialias ? 1 : 0, maxWidth, ellipsis ? 1 : 0 );
 +	const std::string key = utf8 + extra;
 +
-+	// the same text: the old picture, unless the engine has freed it (then it is made again)
 +	if( key == m_key )
-+	{
-+		if( m_iTex <= 0 || ClientTexture::Owned( m_iTex, m_name.c_str() ))
-+			return m_iTex > 0 || ( utf8.empty() && !m_bFailed ); // also remembers that it did not work
-+
-+		ClientTexture::ReportLost( m_name.c_str() );
-+	}
++		return !m_bFailed;
 +
 +	Free();
 +	m_key = key;
 +
++	CGlyphFont *font = CGlyphFont::Get( fontName, emHeight, weight, antialias );
++	if( !font )
++	{
++		m_bFailed = true;
++		return false;
++	}
++
++	m_pFont = font;
++
 +	if( utf8.empty() )
 +		return true; // nothing to draw
 +
-+	std::vector<unsigned char> alpha;
-+	int w = 0, h = 0;
++	std::u32string text = GlyphText_Decode( utf8 );
++	font->Prepare( text );
++	if( ellipsis )
++		font->Prepare( U"." );
 +
-+	if( !gRenderAPI.GL_CreateTexture
-+		|| !GDI_RenderTextBlock( utf8.c_str(), fontName, emHeight, weight, antialias, maxWidth, alpha, w, h ))
++	auto advanceOf = [font]( char32_t c ) {
++		const CGlyphFont::Glyph *g = font->Find( c );
++		return g ? g->advance : 0;
++	};
++
++	// the lines
++	std::vector<std::u32string> lines( 1 );
++	for( char32_t c : text )
 +	{
-+		m_bFailed = true;
-+		return false;
++		if( c == '\n' )
++			lines.emplace_back();
++		else if( c != '\r' )
++			lines.back().push_back( c );
 +	}
 +
-+	// white pixels, the glyphs are in the alpha channel (the colour is set when the text is drawn)
-+	std::vector<unsigned char> rgba( (size_t)w * h * 4, 255 );
++	const int lineH = font->Height();
++	const int tab = font->TabWidth();
 +
-+	for( size_t i = 0, n = (size_t)w * h; i < n; ++i )
-+		rgba[i * 4 + 3] = alpha[i];
-+
-+	// every picture has its own name: the engine gives back the old texture for a name it already has
-+	char name[48];
-+	snprintf( name, sizeof( name ), "*text_%d", ++s_textTextureCounter );
-+
-+	m_iTex = gRenderAPI.GL_CreateTexture( name, w, h, rgba.data(), static_cast<texFlags_t>( TF_NOMIPMAP | TF_CLAMP | TF_HAS_ALPHA | TF_NEAREST ));
-+
-+	if( m_iTex <= 0 )
++	for( size_t li = 0; li < lines.size(); ++li )
 +	{
-+		m_iTex = 0;
-+		m_bFailed = true;
-+		return false;
++		std::u32string &line = lines[li];
++
++		// the pen positions of the letters (the tabs go to the next stop, as DT_EXPANDTABS)
++		auto measure = [&]( const std::u32string &s ) {
++			int pen = 0;
++			for( char32_t c : s )
++				pen = ( c == '\t' ) ? ( pen / tab + 1 ) * tab : pen + advanceOf( c );
++			return pen;
++		};
++
++		// too wide with "...": letters are taken away until it fits (as DT_END_ELLIPSIS)
++		if( ellipsis && measure( line ) > maxWidth )
++		{
++			const int dots = advanceOf( '.' ) * 3;
++			while( !line.empty() && measure( line ) + dots > maxWidth )
++				line.pop_back();
++			line += U"...";
++		}
++
++		int pen = 0;
++		const int top = (int)li * lineH;
++
++		for( char32_t c : line )
++		{
++			if( c == '\t' )
++			{
++				pen = ( pen / tab + 1 ) * tab;
++				continue;
++			}
++
++			const CGlyphFont::Glyph *g = font->Find( c );
++			if( !g )
++				g = font->Find( '?' );
++			if( !g )
++				continue;
++
++			if( g->page >= 0 )
++			{
++				Quad q;
++				q.page = g->page;
++				q.x = pen + g->left;
++				q.y = top;
++				q.w = g->w;
++				q.h = g->h;
++				q.sx = g->x;
++				q.sy = g->y;
++
++				// the picture is cut at the edges of the text (as the old picture of the whole text was)
++				if( q.x < 0 )
++				{
++					q.sx -= q.x;
++					q.w += q.x;
++					q.x = 0;
++				}
++				if( q.x + q.w > maxWidth )
++					q.w = maxWidth - q.x;
++
++				if( q.w > 0 )
++					m_quads.push_back( q );
++			}
++
++			pen += g->advance;
++		}
++
++		const int w = pen < maxWidth ? pen : maxWidth;
++		if( w > m_iWidth )
++			m_iWidth = w;
 +	}
 +
-+	m_name = name;
-+	ClientTexture::Note( "create", m_iTex, name );
-+	m_iWidth = w;
-+	m_iHeight = h;
++	m_iHeight = (int)lines.size() * lineH;
 +	return true;
++}
++
++void CTextTexture::Draw( float x, float y, int r, int g, int b, int a ) const
++{
++	if( !m_pFont || m_quads.empty() )
++		return;
++
++	// whole pixels: every texel of the atlas lands on its own pixel
++	const int ox = (int)floorf( x + 0.5f );
++	const int oy = (int)floorf( y + 0.5f );
++
++	gRenderAPI.GL_SelectTexture( 0 );
++	gEngfuncs.pTriAPI->RenderMode( kRenderTransAlpha );
++	gEngfuncs.pTriAPI->Color4f( r / 255.0f, g / 255.0f, b / 255.0f, a / 255.0f );
++
++	// the letters of every page together (a text has almost always one page)
++	std::vector<int> pages;
++
++	for( const Quad &q : m_quads )
++	{
++		bool seen = false;
++		for( int p : pages )
++			seen = seen || p == q.page;
++		if( !seen )
++			pages.push_back( q.page );
++	}
++
++	for( int p : pages )
++	{
++		const int tex = m_pFont->PageTexture( p );
++		if( tex <= 0 )
++			continue;
++
++		const float pw = (float)m_pFont->PageWidth( p );
++		const float ph = (float)m_pFont->PageHeight( p );
++
++		gRenderAPI.GL_Bind( 0, tex );
++		gEngfuncs.pTriAPI->Begin( TRI_QUADS );
++
++		for( const Quad &q : m_quads )
++		{
++			if( q.page != p )
++				continue;
++
++			const float x1 = (float)( ox + q.x ), y1 = (float)( oy + q.y );
++			const float x2 = x1 + q.w, y2 = y1 + q.h;
++			const float s1 = q.sx / pw, t1 = q.sy / ph;
++			const float s2 = ( q.sx + q.w ) / pw, t2 = ( q.sy + q.h ) / ph;
++
++			gEngfuncs.pTriAPI->TexCoord2f( s1, t1 );
++			gEngfuncs.pTriAPI->Vertex3f( x1, y1, 0 );
++			gEngfuncs.pTriAPI->TexCoord2f( s1, t2 );
++			gEngfuncs.pTriAPI->Vertex3f( x1, y2, 0 );
++			gEngfuncs.pTriAPI->TexCoord2f( s2, t2 );
++			gEngfuncs.pTriAPI->Vertex3f( x2, y2, 0 );
++			gEngfuncs.pTriAPI->TexCoord2f( s2, t1 );
++			gEngfuncs.pTriAPI->Vertex3f( x2, y1, 0 );
++		}
++
++		gEngfuncs.pTriAPI->End();
++	}
++
++	gEngfuncs.pTriAPI->RenderMode( kRenderNormal );
 +}
 +
 +// cl_textures_check: the textures of the fonts of the engine (the chat and the kill feed are drawn with them)
@@ -7336,7 +7679,9 @@ index 0000000..b107080
 +		return;
 +	}
 +
-+	int total = 0, text = 0, motd = 0, tutor = 0, chrome = 0;
++	int total = 0, glyphs = 0, chrome = 0;
++	const char *prefix = CGlyphFont::TexturePrefix();
++	const size_t prefixLen = strlen( prefix );
 +
 +	gEngfuncs.Con_Printf( "the textures of the fonts:\n" );
 +	for( int i = 1; i < 8192; ++i )
@@ -7346,9 +7691,7 @@ index 0000000..b107080
 +			continue;
 +
 +		++total;
-+		if( !strncmp( name, "*text_", 6 )) ++text;
-+		else if( !strncmp( name, "*motd_text_", 11 )) ++motd;
-+		else if( !strncmp( name, "*tutor_text_", 12 )) ++tutor;
++		if( !strncmp( name, prefix, prefixLen )) ++glyphs;
 +		else if( !strncmp( name, "*chrome_", 8 )) ++chrome;
 +
 +		char lower[256];
@@ -7365,8 +7708,8 @@ index 0000000..b107080
 +		}
 +	}
 +
-+	gEngfuncs.Con_Printf( "all textures: %d; made by the client: texts %d, MOTD texts %d, tutor %d, browser %d\n",
-+		total, text, motd, tutor, chrome );
++	gEngfuncs.Con_Printf( "all textures: %d; made by the client: pages of the font atlases %d, browser %d\n",
++		total, glyphs, chrome );
 +	ClientTexture::PrintJournal( 64 );
 +	gEngfuncs.Con_Printf( "con_fontsize %s, con_charset %s, cl_charset %s, hud_textmode %s\n",
 +		gEngfuncs.pfnGetCvarString( "con_fontsize" ), gEngfuncs.pfnGetCvarString( "con_charset" ),
@@ -7377,40 +7720,25 @@ index 0000000..b107080
 +{
 +	gEngfuncs.pfnAddCommand( "cl_textures_check", TextTexturesCheck );
 +}
-+
-+bool CTextTexture::Valid() const
-+{
-+	return m_iTex > 0 && ClientTexture::Owned( m_iTex, m_name.c_str() );
-+}
-+
-+void CTextTexture::Draw( float x, float y, int r, int g, int b, int a ) const
-+{
-+	if( !Valid() )
-+		return;
-+
-+	gRenderAPI.GL_SelectTexture( 0 );
-+	gRenderAPI.GL_Bind( 0, m_iTex );
-+	gEngfuncs.pTriAPI->RenderMode( kRenderTransAlpha );
-+	gEngfuncs.pTriAPI->Color4f( r / 255.0f, g / 255.0f, b / 255.0f, a / 255.0f );
-+	DrawUtils::Draw2DQuad( x, y, x + m_iWidth, y + m_iHeight );
-+	gEngfuncs.pTriAPI->RenderMode( kRenderNormal );
-+}
 diff --git a/cl_dll/hud/text_texture.h b/cl_dll/hud/text_texture.h
 new file mode 100644
-index 0000000..2a2805f
+index 0000000..f312f92
 --- /dev/null
 +++ b/cl_dll/hud/text_texture.h
-@@ -0,0 +1,39 @@
+@@ -0,0 +1,50 @@
 +//
 +// text_texture.h
 +//
-+// A piece of text drawn by a Windows font (text_gdi.cpp) and kept as a texture: it is made again only when
-+// the text or the font changes. Used where the client draws text like the VGUI2 panels of the Steam version.
++// A piece of text in a font of Windows, put together from the atlas of the font (glyph_atlas.h): a new text costs
++// no new texture. Used where the client draws text like the VGUI2 panels of the Steam version.
 +//
 +
 +#pragma once
 +
 +#include <string>
++#include <vector>
++
++class CGlyphFont;
 +
 +// adds the command cl_textures_check (the textures of the fonts of the engine, see client_texture.h)
 +void TextTexture_RegisterCommands( void );
@@ -7418,24 +7746,32 @@ index 0000000..2a2805f
 +class CTextTexture
 +{
 +public:
-+	~CTextTexture() { Free(); }
-+
-+	// Makes the picture if something has changed. Returns false if the Windows fonts are not available
-+	// (then the caller draws the text with the font of the HUD). The text is cut at maxWidth pixels.
-+	bool Update( const std::string &utf8, const char *fontName, int emHeight, int weight, bool antialias, int maxWidth = 4096 );
++	// Lays the text out if something has changed. Returns false if the fonts of Windows are not available
++	// (then the caller draws the text with the font of the HUD). Line ends start new lines; a line wider than
++	// maxWidth pixels is cut there, or ends with "..." if ellipsis is set.
++	bool Update( const std::string &utf8, const char *fontName, int emHeight, int weight, bool antialias,
++				 int maxWidth = 4096, bool ellipsis = false );
 +
 +	// Draws the text with the top left corner of its cell at (x, y), in pixels of the screen
 +	void Draw( float x, float y, int r, int g, int b, int a = 255 ) const;
 +
 +	void Free();
 +
-+	int Width() const { return m_iWidth; }
-+	int Height() const { return m_iHeight; }
-+	bool Valid() const;
++	int Width() const { return m_iWidth; }   // the widest line (the advance of its letters)
++	int Height() const { return m_iHeight; } // the lines (the height of the font each)
++	int Ascent() const;                      // from the top of a line to its baseline
++	bool Valid() const { return m_pFont != nullptr; }
 +
 +private:
-+	int m_iTex = 0;
-+	std::string m_name;   // the name of the texture in the engine (see client_texture.h)
++	struct Quad
++	{
++		int page;
++		int x, y, w, h;   // on the screen, from the top left corner of the text
++		int sx, sy;       // in the page
++	};
++
++	CGlyphFont *m_pFont = nullptr;
++	std::vector<Quad> m_quads;
 +	int m_iWidth = 0, m_iHeight = 0;
 +	bool m_bFailed = false;
 +	std::string m_key;
@@ -7729,10 +8065,10 @@ index 0000000..9783d90
 +} // namespace ClientTexture
 diff --git a/cl_dll/hud/tutor.cpp b/cl_dll/hud/tutor.cpp
 new file mode 100644
-index 0000000..f37647a
+index 0000000..0158661
 --- /dev/null
 +++ b/cl_dll/hud/tutor.cpp
-@@ -0,0 +1,398 @@
+@@ -0,0 +1,364 @@
 +//
 +// tutor.cpp
 +//
@@ -7763,7 +8099,6 @@ index 0000000..f37647a
 +#include "tutor_logic.h"
 +#include "client_texture.h"
 +#include "text_utf8.h"
-+#include "text_gdi.h"
 +
 +static const char *const s_iconFiles[Tutor::ICON_COUNT] =
 +{
@@ -7784,12 +8119,10 @@ index 0000000..f37647a
 +	m_bShow = false;
 +	m_iType = Tutor::TYPE_DEFAULT;
 +	m_flShownAt = 0.0f;
-+	m_iTextTex = 0;
-+	m_szTextTexName[0] = 0;
++	m_bTextAtlas = false;
 +	m_iTextW = m_iTextH = 0;
 +	m_bTextDirty = false;
 +	m_bSchemeLoaded = false;
-+	m_iTextureCounter = 0;
 +
 +	for( int i = 0; i < Tutor::ICON_COUNT; ++i )
 +	{
@@ -7833,8 +8166,8 @@ index 0000000..f37647a
 +
 +void CHudTutor::FreeText( void )
 +{
-+	ClientTexture::Free( m_iTextTex, m_szTextTexName );
-+	m_szTextTexName[0] = 0;
++	m_text.Free();
++	m_bTextAtlas = false;
 +	m_iTextW = m_iTextH = 0;
 +	m_lines.clear();
 +	m_bTextDirty = true;
@@ -7961,39 +8294,18 @@ index 0000000..f37647a
 +{
 +	m_bTextDirty = false;
 +
-+	std::vector<unsigned char> alpha;
-+	int w = 0, h = 0;
-+
-+	// the texture is in screen pixels, the layout is in the units of the HUD (the same unless hud_scale is used)
++	// the text is in screen pixels, the layout is in the units of the HUD (the same unless hud_scale is used)
 +	const float scale = gHUD.m_flScale > 0.0f ? gHUD.m_flScale : 1.0f;
 +
-+	if( gRenderAPI.GL_CreateTexture
-+		&& GDI_RenderTextBlock( m_szText.c_str(), m_scheme.fontName.c_str(), (int)( Tutor::FontEmHeight( m_scheme.fontTall ) * scale + 0.5f ), m_scheme.fontWeight,
-+			m_scheme.fontAntialias, (int)( maxWidth * scale ), alpha, w, h ))
++	if( m_text.Update( m_szText, m_scheme.fontName.c_str(), (int)( Tutor::FontEmHeight( m_scheme.fontTall ) * scale + 0.5f ),
++			m_scheme.fontWeight, m_scheme.fontAntialias, (int)( maxWidth * scale )) && m_text.Valid() )
 +	{
-+		// white pixels, the glyphs are in the alpha channel (the colour is set when the text is drawn)
-+		std::vector<unsigned char> rgba( (size_t)w * h * 4, 255 );
-+
-+		for( size_t i = 0, n = (size_t)w * h; i < n; ++i )
-+			rgba[i * 4 + 3] = alpha[i];
-+
-+		// every picture has its own name: the engine gives back the old texture for a name it already has
-+		char name[48];
-+		snprintf( name, sizeof( name ), "*tutor_text_%d", ++m_iTextureCounter );
-+
-+		m_iTextTex = gRenderAPI.GL_CreateTexture( name, w, h, rgba.data(), static_cast<texFlags_t>( TF_NOMIPMAP | TF_CLAMP | TF_HAS_ALPHA | TF_NEAREST ));
-+
-+		if( m_iTextTex > 0 )
-+		{
-+			snprintf( m_szTextTexName, sizeof( m_szTextTexName ), "%s", name );
-+			ClientTexture::Note( "create", m_iTextTex, name );
-+			m_iTextW = w;
-+			m_iTextH = h;
-+			return;
-+		}
-+
-+		m_iTextTex = 0;
++		m_bTextAtlas = true;
++		m_iTextW = m_text.Width();
++		m_iTextH = m_text.Height();
++		return;
 +	}
++	m_bTextAtlas = false;
 +
 +	// no Windows fonts: the font of the HUD
 +	m_lines = Tutor::ClipLines( m_szText, maxWidth, []( const std::string &s ) { return DrawUtils::HudStringLen( s.c_str() ); } );
@@ -8069,22 +8381,12 @@ index 0000000..f37647a
 +
 +	const float scale = gHUD.m_flScale > 0.0f ? gHUD.m_flScale : 1.0f;
 +
-+	// the engine has freed the picture of the text (its number may belong to another texture now): made again
-+	if( m_iTextTex > 0 && !ClientTexture::Owned( m_iTextTex, m_szTextTexName ))
-+	{
-+		ClientTexture::ReportLost( m_szTextTexName );
-+		m_iTextTex = 0;
-+		m_szTextTexName[0] = 0;
-+		m_lines.clear();
-+		m_bTextDirty = true;
-+	}
-+
 +	if( m_bTextDirty )
 +		BuildText( Tutor::MaxTextWidth( ScreenWidth ));
 +
 +	// in units of the HUD
-+	const int textW = m_iTextTex > 0 ? (int)( m_iTextW / scale + 0.5f ) : m_iTextW;
-+	const int textH = m_iTextTex > 0 ? (int)( m_iTextH / scale + 0.5f ) : m_iTextH;
++	const int textW = m_bTextAtlas ? (int)( m_iTextW / scale + 0.5f ) : m_iTextW;
++	const int textH = m_bTextAtlas ? (int)( m_iTextH / scale + 0.5f ) : m_iTextH;
 +
 +	// in the spectator mode the window is below the upper bar of the spectator
 +	int top = 0;
@@ -8113,9 +8415,9 @@ index 0000000..f37647a
 +	}
 +
 +	// the text
-+	if( m_iTextTex > 0 )
++	if( m_bTextAtlas )
 +	{
-+		DrawTexture( m_iTextTex, (float)l.textX, (float)l.textY, m_iTextW / scale, m_iTextH / scale, color, scale );
++		m_text.Draw( l.textX * scale, l.textY * scale, color.r, color.g, color.b, color.a );
 +	}
 +	else
 +	{
