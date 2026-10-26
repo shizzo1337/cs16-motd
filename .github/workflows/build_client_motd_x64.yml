@@ -1,4 +1,4 @@
-name: Build cs16-client 3999 (x64) with MOTD in the browser
+name: Build cs16-client 4011 (x64) with MOTD in the browser
 
 on:
   workflow_dispatch:
@@ -10,8 +10,8 @@ jobs:
       # The client version these patches are made for. When you move to another client version change BOTH
       # values below and the label "<number>-motd" in cl_dll/hud.cpp inside the patch (see the README).
       # The check at the end of the build fails if the built client does not have the label "<CLIENT_BUILD>-motd".
-      CLIENT_BUILD: "3999"
-      CLIENT_REF: 6a49bcc6f5292dec13046b23140c1e555dca8b31
+      CLIENT_BUILD: "4011"
+      CLIENT_REF: a238ef131803ed7592c4ba701499027c862889ee
     defaults:
       run:
         shell: bash
@@ -24,7 +24,7 @@ jobs:
         with:
           path: mypatch
 
-      - name: Get cs16-client sources (build 3999)
+      - name: Get cs16-client sources (build 4011)
         uses: actions/checkout@v5
         with:
           repository: Velaron/cs16-client
@@ -34,7 +34,7 @@ jobs:
 
       - name: Apply the MOTD patch
         working-directory: cs16
-        run: git apply --ignore-whitespace --whitespace=nowarn ../mypatch/cs16_motd_browser_3999.patch
+        run: git apply --ignore-whitespace --whitespace=nowarn ../mypatch/cs16_motd_browser_4011.patch
 
       - name: Setup Visual Studio (64-bit)
         shell: pwsh
@@ -50,11 +50,12 @@ jobs:
 
       - name: Configure
         working-directory: cs16
-        run: cmake --preset win32-release-amd64 -DBUILD_MAINUI=OFF -DBUILD_SERVER=OFF
+        run: cmake --preset win32-release-amd64 -DBUILD_MAINUI=ON -DBUILD_SERVER=OFF
 
-      - name: Build client only
+      - name: Build client and menu library
         working-directory: cs16
-        run: cmake --build build --target client
+        # the menu library (menu_amd64.dll) has the team menu of the Steam version
+        run: cmake --build build --target client menu
 
       - name: Collect result
         working-directory: cs16
@@ -62,6 +63,7 @@ jobs:
           OUT="$GITHUB_WORKSPACE/result"
           mkdir -p "$OUT/cstrike/cl_dlls"
           find build -name "client*.dll" -exec cp -v {} "$OUT/cstrike/cl_dlls/" \;
+          find build -name "menu*.dll" -exec cp -v {} "$OUT/cstrike/cl_dlls/" \;
           ls -la "$OUT/cstrike/cl_dlls"
 
       - name: Check result (64-bit client with the MOTD patch)
@@ -69,6 +71,9 @@ jobs:
         run: |
           set -eu
           f=$(ls cstrike/cl_dlls/client*.dll | head -n1)
+          m=$(ls cstrike/cl_dlls/menu*.dll | head -n1)
+          echo "menu: $m"
+          grep -aq "Trebuchet MS" "$m" || { echo "ERROR: the menu library has no team menu of the Steam version"; exit 1; }
           echo "client: $f"
           python - "$f" <<'PY'
           import struct, sys
@@ -87,5 +92,5 @@ jobs:
       - name: Upload result
         uses: actions/upload-artifact@v6
         with:
-          name: cs16-client-3999-motd-x64
+          name: cs16-client-4011-motd-x64
           path: result/*
