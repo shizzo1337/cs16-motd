@@ -9550,6 +9550,72 @@ index 0000000..07db7bf
 +
 +endfunction()
 \ No newline at end of file
+diff --git a/game_shared/voice_status_hud.h b/game_shared/voice_status_hud.h
+index 6ecd48d..6f48a48 100644
+--- a/game_shared/voice_status_hud.h
++++ b/game_shared/voice_status_hud.h
+@@ -27,6 +27,8 @@
+ #include "cl_entity.h"
+ #include "voice_banmgr.h"
+ #include "draw_util.h"
++#include "hud/spectator_layout.h"
++#include "hud/text_utf8.h"
+ #include "triangleapi.h"
+ 
+ extern int g_VoiceLabelIcon;
+@@ -60,10 +62,26 @@ public:
+ 	void SetVisible( bool state ) { m_visible = state; }
+ 	bool GetVisible() { return m_visible; }
+ 
++	// the name in "Default" of the Steam version (Verdana, weight 600) from the atlas of the font: sharp, one texel
++	// on one pixel (the font of the HUD was scaled and blurred); false without the fonts of Windows
++	bool UpdateText()
++	{
++		if( DrawUtils::UseHudFont() )
++			return false;
++
++		const SpecBar::Font font = SpecBar::FontFor( TrueHeight );
++		return m_text.Update( TextUtf::ToUtf8( m_buf ), "Verdana", SpecBar::FontEm( font.tall ), 600, font.antialias )
++			&& m_text.Valid();
++	}
++
+ 	void GetContentSize( int &wide, int &tall )
+ 	{
+ 		// m_pLabel->GetContentSize( wide, tall );
+-		wide = DrawUtils::HudStringLen( m_buf );
++		const float scale = gHUD.m_flScale > 0.0f ? gHUD.m_flScale : 1.0f;
++		if( UpdateText() )
++			wide = (int)( m_text.Width() / scale + 0.999f );
++		else
++			wide = DrawUtils::HudStringLen( m_buf );
+ 
+ 		tall = gHUD.GetCharHeight();
+ 
+@@ -104,6 +122,16 @@ public:
+ 		                       ( y + iconsize + offset ) * gHUD.m_flScale );
+ 
+ 		int textx = x + iconsize + offset;
++
++		if( UpdateText() )
++		{
++			// in the middle of the label, in whole pixels of the screen
++			const float scale = gHUD.m_flScale > 0.0f ? gHUD.m_flScale : 1.0f;
++			const int top = (int)( ( y + tall * 0.5f ) * scale ) - m_text.Height() / 2;
++			m_text.Draw( textx * scale, (float)top, m_fgColor.r, m_fgColor.g, m_fgColor.b );
++			return;
++		}
++
+ 		int texty = y + ( tall - gHUD.GetCharHeight() ) / 2;
+ 		DrawUtils::DrawHudString( textx, texty, textx + wide, m_buf, m_fgColor.r, m_fgColor.g, m_fgColor.b );
+ 	}
+@@ -148,6 +176,7 @@ private:
+ 	bool m_visible;
+ 
+ 	int x, y, wide, tall;
++	CTextTexture m_text; // the name (see UpdateText)
+ 	char m_buf[512];
+ 	int iconwidth;
+ };
 diff --git a/scripts/ci_fetch_cef.py b/scripts/ci_fetch_cef.py
 new file mode 100644
 index 0000000..9f67fd6
@@ -11518,7 +11584,7 @@ index 9234322..ac7cad2 100644
  	uiJoinClassCT.Show();
  }
 diff --git a/3rdparty/mainui_cpp/menus/client/JoinGame.cpp b/3rdparty/mainui_cpp/menus/client/JoinGame.cpp
-index c413e90..8d72a3f 100644
+index c413e90..de51d56 100644
 --- a/3rdparty/mainui_cpp/menus/client/JoinGame.cpp
 +++ b/3rdparty/mainui_cpp/menus/client/JoinGame.cpp
 @@ -16,7 +16,7 @@ GNU General Public License for more details.
@@ -11568,7 +11634,7 @@ index c413e90..8d72a3f 100644
  	void ConfirmSelection()
  	{
  		Hide();
-@@ -60,106 +69,184 @@ private:
+@@ -60,106 +69,185 @@ private:
  
  void CClientJoinGame::_Init()
  {
@@ -11662,17 +11728,18 @@ index c413e90..8d72a3f 100644
 +	DrawFrame( bx, by, bw, bh, border );
 +
 +	// the scroll bar: a darker track and two buttons in frames with grey arrows (1445..1497 x 262..314 and
-+	// 850..902 at 1080)
++	// 850..902 at 1080); the buttons are as wide as the track, their frames touch the frame of the box (as the
++	// scroll bar of the list of the players of the spectator mode)
 +	const int trackY = by + 1, trackH = bh - 2, trackW = bx + bw - 1 - sx;
 +	UI_FillRect( sx, trackY, trackW, trackH, PackRGBA( 0, 0, 0, 128 ));
-+	DrawFrame( sx, trackY, sbh, sbh, border );
-+	DrawFrame( sx, trackY + trackH - sbh, sbh, sbh, border );
++	DrawFrame( sx, trackY, trackW, sbh, border );
++	DrawFrame( sx, trackY + trackH - sbh, trackW, sbh, border );
 +
 +	const unsigned int arrow = PackRGBA( 176, 175, 173, 255 );
 +	const int arrowW = m_frame.U( 3.1f ) | 1;        // 7 at 1080
 +	const int arrowH = ( arrowW + 1 ) / 2;           // 4
 +	// in the middle of the buttons (the Steam version has them 9 pixels from the right edge)
-+	const int arrowX = sx + sbh / 2;
++	const int arrowX = sx + trackW / 2;
 +	const int upY = trackY + ( sbh - arrowH ) / 2;
 +	const int downY = trackY + trackH - sbh + ( sbh - arrowH ) / 2;
  
