@@ -5479,7 +5479,7 @@ index 0000000..53fcfae
 +
 +} // namespace MotdUtil
 diff --git a/cl_dll/hud/scoreboard.cpp b/cl_dll/hud/scoreboard.cpp
-index e1feea4..a4ab2b0 100644
+index e1feea4..8cd9f25 100644
 --- a/cl_dll/hud/scoreboard.cpp
 +++ b/cl_dll/hud/scoreboard.cpp
 @@ -29,6 +29,14 @@
@@ -5506,7 +5506,18 @@ index e1feea4..a4ab2b0 100644
  	xstart = ScreenWidth * 0.125f;
  	xend = ScreenWidth - xstart;
  	ystart = 100;
-@@ -204,6 +214,442 @@ bool CHudScoreboard :: ShouldDrawScoreboard() const
+@@ -185,7 +195,9 @@ void CHudScoreboard :: InitHUDData( void )
+ 		g_PlayerExtraInfo[i].sb_account = -1;
+ 	}
+ 
+-	m_iFlags &= ~HUD_DRAW;  // starts out inactive
++	// always active, ShouldDrawScoreboard() decides: it used to wait for the first ScoreInfo of the server, and on
++	// servers that never send it (their own score systems) Tab did nothing
++	m_iFlags |= HUD_DRAW;
+ 
+ 	m_iFlags |= HUD_INTERMISSION; // is always drawn during an intermission
+ }
+@@ -204,6 +216,442 @@ bool CHudScoreboard :: ShouldDrawScoreboard() const
  	return false;
  }
  
@@ -5949,7 +5960,7 @@ index e1feea4..a4ab2b0 100644
  // Y positions
  #define ROW_GAP  15
  
-@@ -247,6 +693,10 @@ int CHudScoreboard :: Draw( float flTime )
+@@ -247,6 +695,10 @@ int CHudScoreboard :: Draw( float flTime )
  int CHudScoreboard :: DrawScoreboard( float fTime )
  {
  	GetAllPlayersInfo();
@@ -5960,7 +5971,7 @@ index e1feea4..a4ab2b0 100644
  	char ServerName[90];
  
  //	Packetloss removed on Kelly 'shipping nazi' Bailey's orders
-@@ -269,10 +719,10 @@ int CHudScoreboard :: DrawScoreboard( float fTime )
+@@ -269,10 +721,10 @@ int CHudScoreboard :: DrawScoreboard( float fTime )
  	g_Columns[COL_KILLS] = Column( g_Columns[COL_DEATHS].end - 10, Localize( "#PlayerScore" ) );
  	g_Columns[COL_KILLS].end = min( g_Columns[COL_KILLS].end, g_Columns[COL_KILLS].start - DrawUtils::HudStringLen( "9999" ) );
  
@@ -5973,7 +5984,7 @@ index e1feea4..a4ab2b0 100644
  	g_Columns[COL_HP].end = min( g_Columns[COL_HP].end, g_Columns[COL_HP].start - DrawUtils::HudStringLen( "999999" ) );
  
  	g_Columns[COL_ATTRIB] = Column( g_Columns[COL_HP].end - 10 );
-@@ -283,7 +733,13 @@ int CHudScoreboard :: DrawScoreboard( float fTime )
+@@ -283,7 +735,13 @@ int CHudScoreboard :: DrawScoreboard( float fTime )
  
  	// print the heading line
  
@@ -9008,7 +9019,7 @@ index 0000000..0299152
 +
 +} // namespace Tutor
 diff --git a/cl_dll/hud_redraw.cpp b/cl_dll/hud_redraw.cpp
-index 1f2ad59..8e640cf 100644
+index 1f2ad59..740761e 100644
 --- a/cl_dll/hud_redraw.cpp
 +++ b/cl_dll/hud_redraw.cpp
 @@ -17,12 +17,14 @@
@@ -9036,7 +9047,20 @@ index 1f2ad59..8e640cf 100644
  	if (m_flShotTime && m_flShotTime < flTime)
  	{
  		gEngfuncs.pfnClientCmd("snapshot\n");
-@@ -153,6 +158,12 @@ int CHud :: Redraw( float flTime, int intermission )
+@@ -115,6 +120,12 @@ int CHud :: Redraw( float flTime, int intermission )
+ 			}
+ 		}
+ 	}
++	else if( m_pCvarDraw->value )
++	{
++		// the server has hidden the whole HUD (HideWeapon with HIDEHUD_ALL): the table of the players is still
++		// shown with Tab, as the VGUI2 table of the Steam version (it is not a part of the HUD there)
++		m_Scoreboard.Draw( flTime );
++	}
+ 
+ 	// are we in demo mode? do we need to draw the logo in the top corner?
+ 	if (m_iLogo)
+@@ -153,6 +164,12 @@ int CHud :: Redraw( float flTime, int intermission )
  
  	g_accept_utf8 = !stricmp( cl_charset->string, "utf-8" );
  
