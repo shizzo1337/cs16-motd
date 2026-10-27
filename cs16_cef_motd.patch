@@ -4488,7 +4488,7 @@ index 0000000..c24bcd8
 +} // namespace ClientTexture
 diff --git a/cl_dll/hud/glyph_atlas.cpp b/cl_dll/hud/glyph_atlas.cpp
 new file mode 100644
-index 0000000..fd998fc
+index 0000000..5f0f18e
 --- /dev/null
 +++ b/cl_dll/hud/glyph_atlas.cpp
 @@ -0,0 +1,306 @@
@@ -4610,8 +4610,8 @@ index 0000000..fd998fc
 +
 +	for( char32_t c : text )
 +	{
-+		if( c == '\n' || c == '\r' || c == '\t' )
-+			continue;
++		if( c < 0x20 )
++			continue; // line ends, tabs, the colour codes of the chat: no letters
 +		if( m_glyphs.count( c ) || m_missing.count( c ))
 +			continue;
 +
@@ -7569,10 +7569,10 @@ index 0000000..708aa26
 +} // namespace SpecMenu
 diff --git a/cl_dll/hud/text_texture.cpp b/cl_dll/hud/text_texture.cpp
 new file mode 100644
-index 0000000..b7a5163
+index 0000000..696ba2b
 --- /dev/null
 +++ b/cl_dll/hud/text_texture.cpp
-@@ -0,0 +1,274 @@
+@@ -0,0 +1,278 @@
 +//
 +// text_texture.cpp
 +//
@@ -7689,6 +7689,10 @@ index 0000000..b7a5163
 +				pen = ( pen / tab + 1 ) * tab;
 +				continue;
 +			}
++
++			// the other control characters (the colour codes of the chat) have no letters
++			if( c < 0x20 )
++				continue;
 +
 +			const CGlyphFont::Glyph *g = font->Find( c );
 +			if( !g )
@@ -9380,7 +9384,7 @@ index a3d14df..2fd51a6 100644
  					if ( !strcmp( message->pMessage, m_pMessages[j].pMessage->pMessage ) )
  					{
 diff --git a/cl_dll/saytext.cpp b/cl_dll/saytext.cpp
-index 8fe0064..ab81456 100644
+index 8fe0064..7f681cf 100644
 --- a/cl_dll/saytext.cpp
 +++ b/cl_dll/saytext.cpp
 @@ -30,6 +30,9 @@
@@ -9393,25 +9397,20 @@ index 8fe0064..ab81456 100644
  //#include "vgui_TeamFortressViewport.h"
  
  extern float *GetClientColor( int clientIndex );
-@@ -66,6 +69,112 @@ static float flScrollTime = 0;  // the time at which the lines next scroll up
+@@ -66,6 +69,108 @@ static float flScrollTime = 0;  // the time at which the lines next scroll up
  static int Y_START = 0;
  static int line_height = 0;
  
 +// The chat as in the Steam version (measured on its screenshots at 1920x1080 and 720x480): the font "Default" of
 +// resource/ClientScheme.res (Verdana, weight 600: 12 pixels without antialiasing up to 599 lines of the screen ...
 +// 20 with it at 1080), from the atlas of the font, one texel on one pixel; the lines as high as the font (19 pixels
-+// at 1080); a shadow of 1 pixel under the fonts without antialiasing. Without the fonts of Windows (or with
++// at 1080); a black shadow of 1 pixel. Without the fonts of Windows (or with
 +// hud_textmode 1) the console font of the engine is used, as before.
 +namespace ChatText {
 +
 +static float Scale( void )
 +{
 +	return gHUD.m_flScale > 0.0f ? gHUD.m_flScale : 1.0f; // pixels of the screen per unit of the HUD
-+}
-+
-+static bool Antialias( void )
-+{
-+	return SpecBar::FontFor( TrueHeight ).antialias;
 +}
 +
 +static CGlyphFont *Font( void )
@@ -9494,9 +9493,10 @@ index 8fe0064..ab81456 100644
 +	if( !font || !tex.Update( TextUtf::ToUtf8( text ), "Verdana", SpecBar::FontEm( f.tall ), 600, f.antialias ) || !tex.Valid() )
 +		return x;
 +
++	// a black shadow 1 pixel to the right and down, as the chat of the Steam version (at every resolution): the
++	// letters stay readable on bright walls
 +	const float scale = Scale();
-+	if( !Antialias() )
-+		tex.Draw( x * scale + 1, y * scale + 1, 0, 0, 0, 255 ); // the shadow
++	tex.Draw( x * scale + 1, y * scale + 1, 0, 0, 0, 255 );
 +	tex.Draw( x * scale, y * scale, (int)( r * 255.0f ), (int)( g * 255.0f ), (int)( b * 255.0f ), 255 );
 +	return x + (int)( tex.Width() / scale + 0.5f );
 +}
@@ -9506,7 +9506,7 @@ index 8fe0064..ab81456 100644
  int CHudSayText :: Init( void )
  {
  	gHUD.AddHudElem( this );
-@@ -150,6 +259,9 @@ int CHudSayText :: Draw( float flTime )
+@@ -150,6 +255,9 @@ int CHudSayText :: Draw( float flTime )
  		int current_x = LINE_START;
  		const char* text = g_szLineBuffer[i];
  		size_t length = strlen(text);
@@ -9516,7 +9516,14 @@ index 8fe0064..ab81456 100644
  
  		// default color if not set
  		DrawUtils::SetConsoleTextColor(g_ColorYellow[0], g_ColorYellow[1], g_ColorYellow[2]);
-@@ -168,7 +280,10 @@ int CHudSayText :: Draw( float flTime )
+@@ -162,13 +270,16 @@ int CHudSayText :: Draw( float flTime )
+ 		{
+ 			// color code parse
+ 			// '\x01' - normal (yellow); '\0x03' - teamcolor (R GREY B); '\x04' - green
+-			if (text[c] == '\x01' || text[c] == '\x03' || text[c] == '\x04')
++			if (text[c] == '\x01' || text[c] == '\x02' || text[c] == '\x03' || text[c] == '\x04')
+ 			{
+ 				// if there are characters in the buffer, we draw them with the current color
  				if (buffer_pos > 0)
  				{
  					color_buffer[buffer_pos] = '\x00';
@@ -9528,12 +9535,13 @@ index 8fe0064..ab81456 100644
  					buffer_pos = 0;
  				}
  
-@@ -178,15 +293,18 @@ int CHudSayText :: Draw( float flTime )
+@@ -178,15 +289,19 @@ int CHudSayText :: Draw( float flTime )
  				{
  					case '\x01': // yellow normal
  						DrawUtils::SetConsoleTextColor(g_ColorYellow[0], g_ColorYellow[1], g_ColorYellow[2]);
 +						cr = g_ColorYellow[0]; cg = g_ColorYellow[1]; cb = g_ColorYellow[2];
  						break;
++					case '\x02': // the colour of the player's name in the Steam version (as the team colour here)
  					case '\x03': // team color
  						if (g_pflNameColors[i])
  						{
@@ -9547,7 +9555,7 @@ index 8fe0064..ab81456 100644
  						break;
  				}
  				continue;
-@@ -203,7 +321,10 @@ int CHudSayText :: Draw( float flTime )
+@@ -203,7 +318,10 @@ int CHudSayText :: Draw( float flTime )
  		if (buffer_pos > 0)
  		{
  			color_buffer[buffer_pos] = '\x00';
@@ -9559,7 +9567,80 @@ index 8fe0064..ab81456 100644
  		}
  
  		y += line_height;
-@@ -419,7 +540,8 @@ void CHudSayText :: SayTextPrint( const char *pszBuf, int iBufSize, int clientIn
+@@ -220,59 +338,61 @@ struct
+ 	bool allowDead;
+ } sayTextFmt[] =
+ {
++	// the formats of the Steam version (resource/cstrike_english.txt): the prefix and the text in the normal colour,
++	// the name in the colour of the team, " :  " with two spaces
+ 	{
+ 		"#Cstrike_Chat_CT",
+-		"\x03(Counter-Terrorist) %s1 : \x01%s2",
++		"\x01(Counter-Terrorist) \x03%s1\x01 :  %s2",
+ 		2, true
+ 	},
+ 	{
+ 		"#Cstrike_Chat_T",
+-		"\x03(Terrorist) %s1 : \x01%s2",
++		"\x01(Terrorist) \x03%s1\x01 :  %s2",
+ 		2, true
+ 	},
+ 	{
+ 		"#Cstrike_Chat_CT_Dead",
+-		"\x03*DEAD*(Counter-Terrorist) %s1 : \x01%s2",
++		"\x01*DEAD*(Counter-Terrorist) \x03%s1\x01 :  %s2",
+ 		2, false
+ 	},
+ 	{
+ 		"#Cstrike_Chat_T_Dead",
+-		"\x03*DEAD*(Terrorist) %s1 : \x01%s2",
++		"\x01*DEAD*(Terrorist) \x03%s1\x01 :  %s2",
+ 		2, false
+ 	},
+ 	{
+ 		"#Cstrike_Chat_Spec",
+-		"\x03(Spectator) %s1 : \x03%s2",
++		"\x01(Spectator) \x03%s1\x01 :  %s2",
+ 		2, false
+ 	},
+ 	{
+ 		"#Cstrike_Chat_All",
+-		"\x03%s1 : \x01%s2",
++		"\x03%s1 :  \x01%s2",
+ 		2, true
+ 	},
+ 	{
+ 		"#Cstrike_Chat_AllDead",
+-		"\x03*DEAD* %s1: \x01%s2",
++		"\x01*DEAD* \x03%s1\x01 :  %s2",
+ 		2, false
+ 	},
+ 	{
+ 		"#Cstrike_Chat_AllSpec",
+-		"\x03*SPEC* %s1: \x03%s2",
++		"\x01*SPEC* \x03%s1\x01 :  %s2",
+ 		2, false
+ 	},
+ 	{
+ 		"#Cstrike_Name_Change",
+-		"\x03* %s1 changed name to %s2",
++		"\x01* \x03%s1\x01 changed name to \x03%s2",
+ 		2, true
+ 	},
+ 	{
+ 		"#Cstrike_Chat_T_Loc",
+-		"\x03*(Terrorist) %s1 @ %s3 : \x01%s2",
++		"\x01*(Terrorist) \x03%s1\x01 @ %s3 :  %s2",
+ 		3, true
+ 	},
+ 	{
+ 		"#Cstrike_Chat_CT_Loc",
+-		"\x03*(Counter-Terrorist) %s1 @ %s3 : \x01%s2",
++		"\x01*(Counter-Terrorist) \x03%s1\x01 @ %s3 :  %s2",
+ 		3, true
+ 	},
+ 	{
+@@ -419,7 +539,8 @@ void CHudSayText :: SayTextPrint( const char *pszBuf, int iBufSize, int clientIn
  	}
  	else
  	{
@@ -9569,7 +9650,7 @@ index 8fe0064..ab81456 100644
  	}
  	Y_START -= (line_height * (MAX_LINES+1));
  
-@@ -428,7 +550,14 @@ void CHudSayText :: SayTextPrint( const char *pszBuf, int iBufSize, int clientIn
+@@ -428,7 +549,14 @@ void CHudSayText :: SayTextPrint( const char *pszBuf, int iBufSize, int clientIn
  void CHudSayText :: EnsureTextFitsInOneLineAndWrapIfHaveTo( int line )
  {
  	int line_width = 0;
@@ -9585,7 +9666,7 @@ index 8fe0064..ab81456 100644
  
  	if ( (line_width + LINE_START) > MAX_LINE_WIDTH )
  	{ // string is too long to fit on line
-@@ -459,14 +588,25 @@ void CHudSayText :: EnsureTextFitsInOneLineAndWrapIfHaveTo( int line )
+@@ -459,14 +587,25 @@ void CHudSayText :: EnsureTextFitsInOneLineAndWrapIfHaveTo( int line )
  			if ( *x == ' ' && x != g_szLineBuffer[line] )  // store each line break,  except for the very first character
  				last_break = x;
  
