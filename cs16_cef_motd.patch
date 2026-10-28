@@ -9384,7 +9384,7 @@ index a3d14df..2fd51a6 100644
  					if ( !strcmp( message->pMessage, m_pMessages[j].pMessage->pMessage ) )
  					{
 diff --git a/cl_dll/saytext.cpp b/cl_dll/saytext.cpp
-index 8fe0064..7f681cf 100644
+index 8fe0064..fc5281e 100644
 --- a/cl_dll/saytext.cpp
 +++ b/cl_dll/saytext.cpp
 @@ -30,6 +30,9 @@
@@ -9640,7 +9640,37 @@ index 8fe0064..7f681cf 100644
  		3, true
  	},
  	{
-@@ -419,7 +539,8 @@ void CHudSayText :: SayTextPrint( const char *pszBuf, int iBufSize, int clientIn
+@@ -357,7 +477,17 @@ void CHudSayText :: SayTextPrint( const char *pszBuf, int iBufSize, int clientIn
+ 	{
+ 		// Print it straight to the console
+ 		char szConsoleText[ MAX_CHARS_PER_LINE ];
+-		StripSayTextControlCodes( pszBuf, szConsoleText, sizeof( szConsoleText ) );
++		StripSayTextControlCodes( pszBuf, szConsoleText, sizeof( szConsoleText ) - 1 );
++
++		// every message is a line of its own in the console, as in the Steam version: the messages of the plugins
++		// (client_print_color and the like) come without a line end, and the next text of the console was glued to
++		// them ("...Собрано 3 игроков!Warning: ...")
++		const size_t len = strlen( szConsoleText );
++		if( len > 0 && szConsoleText[len - 1] != '\n' )
++		{
++			szConsoleText[len] = '\n';
++			szConsoleText[len + 1] = '\0';
++		}
+ 		ConsolePrint( szConsoleText );
+ 	}
+ 
+@@ -401,6 +531,10 @@ void CHudSayText :: SayTextPrint( const char *pszBuf, int iBufSize, int clientIn
+ 
+ 	strlcpy( g_szLineBuffer[i], pszBuf, sizeof( g_szLineBuffer[i] ) );
+ 
++	// the line end of the message is not a line of the chat
++	for( size_t n = strlen( g_szLineBuffer[i] ); n > 0 && ( g_szLineBuffer[i][n - 1] == '\n' || g_szLineBuffer[i][n - 1] == '\r' ); --n )
++		g_szLineBuffer[i][n - 1] = 0;
++
+ 	// make sure the text fits in one line
+ 	EnsureTextFitsInOneLineAndWrapIfHaveTo( i );
+ 
+@@ -419,7 +553,8 @@ void CHudSayText :: SayTextPrint( const char *pszBuf, int iBufSize, int clientIn
  	}
  	else
  	{
@@ -9650,7 +9680,7 @@ index 8fe0064..7f681cf 100644
  	}
  	Y_START -= (line_height * (MAX_LINES+1));
  
-@@ -428,7 +549,14 @@ void CHudSayText :: SayTextPrint( const char *pszBuf, int iBufSize, int clientIn
+@@ -428,7 +563,14 @@ void CHudSayText :: SayTextPrint( const char *pszBuf, int iBufSize, int clientIn
  void CHudSayText :: EnsureTextFitsInOneLineAndWrapIfHaveTo( int line )
  {
  	int line_width = 0;
@@ -9666,7 +9696,7 @@ index 8fe0064..7f681cf 100644
  
  	if ( (line_width + LINE_START) > MAX_LINE_WIDTH )
  	{ // string is too long to fit on line
-@@ -459,14 +587,25 @@ void CHudSayText :: EnsureTextFitsInOneLineAndWrapIfHaveTo( int line )
+@@ -459,14 +601,25 @@ void CHudSayText :: EnsureTextFitsInOneLineAndWrapIfHaveTo( int line )
  			if ( *x == ' ' && x != g_szLineBuffer[line] )  // store each line break,  except for the very first character
  				last_break = x;
  
