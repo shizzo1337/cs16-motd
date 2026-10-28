@@ -3838,7 +3838,7 @@ index 9ae956c..35b700d 100644
  
  	GetClientVoice()->Init( &g_VoiceStatusHelper );
 diff --git a/cl_dll/hud.h b/cl_dll/hud.h
-index bcfdf6e..21e9fc4 100644
+index bcfdf6e..18f5ceb 100644
 --- a/cl_dll/hud.h
 +++ b/cl_dll/hud.h
 @@ -37,6 +37,10 @@
@@ -3898,7 +3898,15 @@ index bcfdf6e..21e9fc4 100644
  	int m_HUD_d_skull;  // sprite index of skull icon
  	int m_HUD_d_headshot;
  	cvar_t *hud_deathnotice_time;
-@@ -765,6 +785,8 @@ public:
+@@ -573,6 +593,7 @@ private:
+ 	struct cvar_s *	m_HUD_saytext;
+ 	struct cvar_s *	m_HUD_saytext_time;
+ 	struct cvar_s *	m_HUD_saytext_console;
++	cvar_t *m_HUD_saytext_sound;
+ };
+ 
+ //
+@@ -765,6 +786,8 @@ public:
  	CHudMsgFunc(Money);
  	CHudMsgFunc(BlinkAcct);
  
@@ -3907,7 +3915,7 @@ index bcfdf6e..21e9fc4 100644
  private:
  	int m_iMoneyCount;
  	int m_iDelta;
-@@ -886,6 +908,50 @@ private:
+@@ -886,6 +909,50 @@ private:
  //-----------------------------------------------------
  //
  
@@ -3958,7 +3966,7 @@ index bcfdf6e..21e9fc4 100644
  class CHudScenario : public CHudBase
  {
  public:
-@@ -910,6 +976,14 @@ private:
+@@ -910,6 +977,14 @@ private:
  class CHudSpectatorGui: public CHudBase
  {
  public:
@@ -3973,7 +3981,7 @@ index bcfdf6e..21e9fc4 100644
  	int Init();
  	int VidInit();
  	int Draw( float flTime );
-@@ -924,6 +998,11 @@ public:
+@@ -924,6 +999,11 @@ public:
  	CHudUserCmd( ToggleSpectatorMenuOptions );
  	CHudUserCmd( ToggleSpectatorMenuOptionsSettings );
  	CHudUserCmd( ToggleSpectatorMenuSpectateOptions );
@@ -3985,7 +3993,7 @@ index bcfdf6e..21e9fc4 100644
  
  	void CalcAllNeededData( );
  
-@@ -951,9 +1030,25 @@ private:
+@@ -951,9 +1031,25 @@ private:
  		ROOT_MENU = (1<<0),
  		MENU_OPTIONS = (1<<1),
  		MENU_OPTIONS_SETTINGS = (1<<2),
@@ -4012,7 +4020,7 @@ index bcfdf6e..21e9fc4 100644
  };
  
  //
-@@ -1090,6 +1185,7 @@ public:
+@@ -1090,6 +1186,7 @@ public:
  	CHudRadar       m_Radar;
  	CHudSpectatorGui m_SpectatorGui;
  	CHudScenario	m_Scenario;
@@ -9384,7 +9392,7 @@ index a3d14df..2fd51a6 100644
  					if ( !strcmp( message->pMessage, m_pMessages[j].pMessage->pMessage ) )
  					{
 diff --git a/cl_dll/saytext.cpp b/cl_dll/saytext.cpp
-index 8fe0064..fc5281e 100644
+index 8fe0064..c49c096 100644
 --- a/cl_dll/saytext.cpp
 +++ b/cl_dll/saytext.cpp
 @@ -30,6 +30,9 @@
@@ -9506,7 +9514,16 @@ index 8fe0064..fc5281e 100644
  int CHudSayText :: Init( void )
  {
  	gHUD.AddHudElem( this );
-@@ -150,6 +255,9 @@ int CHudSayText :: Draw( float flTime )
+@@ -77,6 +182,8 @@ int CHudSayText :: Init( void )
+ 	m_HUD_saytext =			gEngfuncs.pfnRegisterVariable( "hud_saytext_internal", "1", 0 );
+ 	m_HUD_saytext_time =	gEngfuncs.pfnRegisterVariable( "hud_saytext_time", "5", 0 );
+ 	m_HUD_saytext_console =	gEngfuncs.pfnRegisterVariable( "hud_saytext_console", "1", 0 );
++	// the sound of a new message of the chat (misc/talk.wav of Half-Life): the Steam version of CS has none, 1 - on
++	m_HUD_saytext_sound = gEngfuncs.pfnRegisterVariable( "hud_saytext_sound", "0", FCVAR_ARCHIVE );
+ 
+ 	m_iFlags |= HUD_INTERMISSION; // is always drawn during an intermission
+ 
+@@ -150,6 +257,9 @@ int CHudSayText :: Draw( float flTime )
  		int current_x = LINE_START;
  		const char* text = g_szLineBuffer[i];
  		size_t length = strlen(text);
@@ -9516,7 +9533,7 @@ index 8fe0064..fc5281e 100644
  
  		// default color if not set
  		DrawUtils::SetConsoleTextColor(g_ColorYellow[0], g_ColorYellow[1], g_ColorYellow[2]);
-@@ -162,13 +270,16 @@ int CHudSayText :: Draw( float flTime )
+@@ -162,13 +272,16 @@ int CHudSayText :: Draw( float flTime )
  		{
  			// color code parse
  			// '\x01' - normal (yellow); '\0x03' - teamcolor (R GREY B); '\x04' - green
@@ -9535,7 +9552,7 @@ index 8fe0064..fc5281e 100644
  					buffer_pos = 0;
  				}
  
-@@ -178,15 +289,19 @@ int CHudSayText :: Draw( float flTime )
+@@ -178,15 +291,19 @@ int CHudSayText :: Draw( float flTime )
  				{
  					case '\x01': // yellow normal
  						DrawUtils::SetConsoleTextColor(g_ColorYellow[0], g_ColorYellow[1], g_ColorYellow[2]);
@@ -9555,7 +9572,7 @@ index 8fe0064..fc5281e 100644
  						break;
  				}
  				continue;
-@@ -203,7 +318,10 @@ int CHudSayText :: Draw( float flTime )
+@@ -203,7 +320,10 @@ int CHudSayText :: Draw( float flTime )
  		if (buffer_pos > 0)
  		{
  			color_buffer[buffer_pos] = '\x00';
@@ -9567,7 +9584,7 @@ index 8fe0064..fc5281e 100644
  		}
  
  		y += line_height;
-@@ -220,59 +338,61 @@ struct
+@@ -220,59 +340,61 @@ struct
  	bool allowDead;
  } sayTextFmt[] =
  {
@@ -9640,7 +9657,7 @@ index 8fe0064..fc5281e 100644
  		3, true
  	},
  	{
-@@ -357,7 +477,17 @@ void CHudSayText :: SayTextPrint( const char *pszBuf, int iBufSize, int clientIn
+@@ -357,7 +479,17 @@ void CHudSayText :: SayTextPrint( const char *pszBuf, int iBufSize, int clientIn
  	{
  		// Print it straight to the console
  		char szConsoleText[ MAX_CHARS_PER_LINE ];
@@ -9659,7 +9676,7 @@ index 8fe0064..fc5281e 100644
  		ConsolePrint( szConsoleText );
  	}
  
-@@ -401,6 +531,10 @@ void CHudSayText :: SayTextPrint( const char *pszBuf, int iBufSize, int clientIn
+@@ -401,6 +533,10 @@ void CHudSayText :: SayTextPrint( const char *pszBuf, int iBufSize, int clientIn
  
  	strlcpy( g_szLineBuffer[i], pszBuf, sizeof( g_szLineBuffer[i] ) );
  
@@ -9670,7 +9687,17 @@ index 8fe0064..fc5281e 100644
  	// make sure the text fits in one line
  	EnsureTextFitsInOneLineAndWrapIfHaveTo( i );
  
-@@ -419,7 +553,8 @@ void CHudSayText :: SayTextPrint( const char *pszBuf, int iBufSize, int clientIn
+@@ -411,7 +547,8 @@ void CHudSayText :: SayTextPrint( const char *pszBuf, int iBufSize, int clientIn
+ 	}
+ 
+ 	m_iFlags |= HUD_DRAW;
+-	PlaySound( "misc/talk.wav", 1 );
++	if( m_HUD_saytext_sound && m_HUD_saytext_sound->value )
++		PlaySound( "misc/talk.wav", 1 );
+ 
+ 	if( !g_iUser1 )
+ 	{
+@@ -419,7 +556,8 @@ void CHudSayText :: SayTextPrint( const char *pszBuf, int iBufSize, int clientIn
  	}
  	else
  	{
@@ -9680,7 +9707,7 @@ index 8fe0064..fc5281e 100644
  	}
  	Y_START -= (line_height * (MAX_LINES+1));
  
-@@ -428,7 +563,14 @@ void CHudSayText :: SayTextPrint( const char *pszBuf, int iBufSize, int clientIn
+@@ -428,7 +566,14 @@ void CHudSayText :: SayTextPrint( const char *pszBuf, int iBufSize, int clientIn
  void CHudSayText :: EnsureTextFitsInOneLineAndWrapIfHaveTo( int line )
  {
  	int line_width = 0;
@@ -9696,7 +9723,7 @@ index 8fe0064..fc5281e 100644
  
  	if ( (line_width + LINE_START) > MAX_LINE_WIDTH )
  	{ // string is too long to fit on line
-@@ -459,14 +601,25 @@ void CHudSayText :: EnsureTextFitsInOneLineAndWrapIfHaveTo( int line )
+@@ -459,14 +604,25 @@ void CHudSayText :: EnsureTextFitsInOneLineAndWrapIfHaveTo( int line )
  			if ( *x == ' ' && x != g_szLineBuffer[line] )  // store each line break,  except for the very first character
  				last_break = x;
  
@@ -10024,7 +10051,7 @@ index 0000000..07db7bf
 +endfunction()
 \ No newline at end of file
 diff --git a/game_shared/voice_status_hud.h b/game_shared/voice_status_hud.h
-index 6ecd48d..6f48a48 100644
+index 6ecd48d..ae580b9 100644
 --- a/game_shared/voice_status_hud.h
 +++ b/game_shared/voice_status_hud.h
 @@ -27,6 +27,8 @@
@@ -10036,7 +10063,7 @@ index 6ecd48d..6f48a48 100644
  #include "triangleapi.h"
  
  extern int g_VoiceLabelIcon;
-@@ -60,10 +62,26 @@ public:
+@@ -60,9 +62,55 @@ public:
  	void SetVisible( bool state ) { m_visible = state; }
  	bool GetVisible() { return m_visible; }
  
@@ -10047,41 +10074,87 @@ index 6ecd48d..6f48a48 100644
 +		if( DrawUtils::UseHudFont() )
 +			return false;
 +
++		// the spaces after the name (RebuildLabelText) were the right margin of the label: it is set here
++		std::string name = TextUtf::ToUtf8( m_buf );
++		while( !name.empty() && name.back() == ' ' )
++			name.pop_back();
++
 +		const SpecBar::Font font = SpecBar::FontFor( TrueHeight );
-+		return m_text.Update( TextUtf::ToUtf8( m_buf ), "Verdana", SpecBar::FontEm( font.tall ), 600, font.antialias )
++		return m_text.Update( name, "Verdana", SpecBar::FontEm( font.tall ), 600, font.antialias )
 +			&& m_text.Valid();
++	}
++
++	// As the label of the Steam version (measured at 1920x1080): as high as the font (18 pixels at 1080), the
++	// speaker (gfx/vgui/speaker4.tga, 16 x 16) at its left edge in its own size, the name 2 pixels after it, 4
++	// pixels of margin on the right; everything in whole pixels of the screen
++	enum { ICON_GAP = 2, RIGHT_MARGIN = 4 };
++
++	static int IconSize()
++	{
++		int size = 16;
++		if( g_VoiceLabelIcon > 0 && gRenderAPI.RenderGetParm )
++		{
++			const int w = gRenderAPI.RenderGetParm( PARM_TEX_WIDTH, g_VoiceLabelIcon );
++			if( w > 0 && w <= 64 )
++				size = w;
++		}
++		return size;
 +	}
 +
  	void GetContentSize( int &wide, int &tall )
  	{
  		// m_pLabel->GetContentSize( wide, tall );
--		wide = DrawUtils::HudStringLen( m_buf );
 +		const float scale = gHUD.m_flScale > 0.0f ? gHUD.m_flScale : 1.0f;
 +		if( UpdateText() )
-+			wide = (int)( m_text.Width() / scale + 0.999f );
-+		else
-+			wide = DrawUtils::HudStringLen( m_buf );
++		{
++			const int icon = IconSize();
++			int tallPx = m_text.Height();
++			if( tallPx < icon + 2 )
++				tallPx = icon + 2;
++			wide = (int)( ( icon + ICON_GAP + m_text.Width() + RIGHT_MARGIN ) / scale + 0.999f );
++			tall = (int)( tallPx / scale + 0.999f );
++			return;
++		}
++
+ 		wide = DrawUtils::HudStringLen( m_buf );
  
  		tall = gHUD.GetCharHeight();
+@@ -94,6 +142,26 @@ public:
  
-@@ -104,6 +122,16 @@ public:
+ 		gEngfuncs.pfnFillRGBABlend( x, y, wide, tall, m_bgColor.r, m_bgColor.g, m_bgColor.b, m_bgColor.a );
+ 
++		if( UpdateText() )
++		{
++			const float scale = gHUD.m_flScale > 0.0f ? gHUD.m_flScale : 1.0f;
++			const int px = (int)( x * scale + 0.5f ), py = (int)( y * scale + 0.5f );
++			const int tallPx = (int)( tall * scale + 0.5f );
++			const int icon = IconSize();
++			const int iconY = py + ( tallPx - icon ) / 2;
++
++			gRenderAPI.GL_SelectTexture( 0 );
++			gRenderAPI.GL_Bind( 0, g_VoiceLabelIcon );
++			gEngfuncs.pTriAPI->RenderMode( kRenderTransTexture );
++			gEngfuncs.pTriAPI->Color4f( 1.0f, 1.0f, 1.0f, 1.0f );
++			DrawUtils::Draw2DQuad( (float)px, (float)iconY, (float)( px + icon ), (float)( iconY + icon ));
++
++			// the cell of the text in the middle of the label (at its top when they are as high, as in Steam)
++			const int top = py + ( tallPx - m_text.Height() ) / 2;
++			m_text.Draw( (float)( px + icon + ICON_GAP ), (float)top, m_fgColor.r, m_fgColor.g, m_fgColor.b );
++			return;
++		}
++
+ 		gRenderAPI.GL_SelectTexture( 0 );
+ 		gRenderAPI.GL_Bind( 0, g_VoiceLabelIcon );
+ 		gEngfuncs.pTriAPI->RenderMode( kRenderTransTexture );
+@@ -104,6 +172,7 @@ public:
  		                       ( y + iconsize + offset ) * gHUD.m_flScale );
  
  		int textx = x + iconsize + offset;
 +
-+		if( UpdateText() )
-+		{
-+			// in the middle of the label, in whole pixels of the screen
-+			const float scale = gHUD.m_flScale > 0.0f ? gHUD.m_flScale : 1.0f;
-+			const int top = (int)( ( y + tall * 0.5f ) * scale ) - m_text.Height() / 2;
-+			m_text.Draw( textx * scale, (float)top, m_fgColor.r, m_fgColor.g, m_fgColor.b );
-+			return;
-+		}
-+
  		int texty = y + ( tall - gHUD.GetCharHeight() ) / 2;
  		DrawUtils::DrawHudString( textx, texty, textx + wide, m_buf, m_fgColor.r, m_fgColor.g, m_fgColor.b );
  	}
-@@ -148,6 +176,7 @@ private:
+@@ -148,6 +217,7 @@ private:
  	bool m_visible;
  
  	int x, y, wide, tall;
