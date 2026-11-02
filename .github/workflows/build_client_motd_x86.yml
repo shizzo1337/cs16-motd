@@ -1,0 +1,175 @@
+name: Build cs16-client 4011 (x86 and Windows XP) with MOTD in the browser
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # x86 - the usual 32-bit client, the same build settings as the 32-bit client of Velaron (with the
+        #       Visual C++ runtime of the system, like the official build);
+        # xp  - for Windows XP: YY-Thunks (as the official x86 build: the functions of Windows Vista and later
+        #       are looked up when the game runs, so the DLLs load on XP), the C runtime linked into the DLLs
+        #       (the Visual C++ runtime of today does not install on XP), no thread-safe static locals (they
+        #       need TLS, which XP does not give to a DLL loaded with LoadLibrary), subsystem version 5.01.
+        variant: [ 'x86', 'xp' ]
+    env:
+      # The client version these patches are made for. When you move to another client version change BOTH
+      # values below and the label "<number>-motd" in cl_dll/hud.cpp inside the patch (see the README).
+      # The check at the end of the build fails if the built client does not have the label "<CLIENT_BUILD>-motd".
+      # 9b7850e (31 October 2026) is still build 4011: only the submodules changed (menu from FWGS/mainui_cpp).
+      CLIENT_BUILD: "4011"
+      CLIENT_REF: 9b7850edcd27352126767c794cc987673525a32f
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Keep line endings as is
+        run: git config --global core.autocrlf false
+
+      - name: Get this repository (contains the patch)
+        uses: actions/checkout@v5
+        with:
+          path: mypatch
+
+      - name: Get cs16-client sources (build 4011)
+        uses: actions/checkout@v5
+        with:
+          repository: Velaron/cs16-client
+          ref: ${{ env.CLIENT_REF }}
+          submodules: recursive
+          path: cs16
+
+      - name: Apply the MOTD patch
+        working-directory: cs16
+        run: git apply --ignore-whitespace --whitespace=nowarn ../mypatch/cs16_motd_browser_4011.patch
+
+      - name: Setup YY-Thunks (Windows XP)
+        if: matrix.variant == 'xp'
+        working-directory: cs16
+        # the script of cs16-client: downloads the object of YY-Thunks into 3rdparty/yy-thunks of the current
+        # folder and gives its version and checksum to the next steps
+        run: GITHUB_WORKSPACE="$PWD" bash scripts/setup_yy_thunks.sh
+
+      - name: Setup Visual Studio (32-bit)
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw "Visual Studio with the C++ tools is not found" }
+          $vcvars = Join-Path $vs "VC\Auxiliary\Build\vcvars32.bat"
+          cmd /c "`"$vcvars`" >nul && set" | ForEach-Object {
+            # only plain names (cmd also has internal ones like "=C:" and "ProgramFiles(x86)")
+            if ($_ -match '^([A-Za-z_][A-Za-z0-9_]*)=(.*)$') { "$($matches[1])=$($matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8 }
+          }
+
+      - name: Configure (x86)
+        if: matrix.variant == 'x86'
+        working-directory: cs16
+        run: cmake --preset win32-release-x86 -DBUILD_MAINUI=ON -DBUILD_SERVER=OFF -DENABLE_YY_THUNKS=OFF
+
+      - name: Configure (Windows XP)
+        if: matrix.variant == 'xp'
+        working-directory: cs16
+        # CXXFLAGS and LDFLAGS are added to the usual flags of CMake (setting CMAKE_CXX_FLAGS would replace them)
+        env:
+          CXXFLAGS: "/Zc:threadSafeInit-"
+          LDFLAGS: "/SUBSYSTEM:WINDOWS,5.01"
+        run: >
+          cmake --preset win32-release-x86 -DBUILD_MAINUI=ON -DBUILD_SERVER=OFF -DENABLE_YY_THUNKS=ON
+          -DCMAKE_POLICY_DEFAULT_CMP0091=NEW -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+
+      - name: Check that YY-Thunks is on (Windows XP)
+        if: matrix.variant == 'xp'
+        working-directory: cs16
+        run: |
+          grep -q "^YY_THUNKS_VERSION:STRING=v" build/CMakeCache.txt || { echo "ERROR: YY-Thunks is not on, the DLLs would not load on Windows XP"; exit 1; }
+
+      - name: Build client and menu library
+        working-directory: cs16
+        # the menu library (menu.dll) has the team menu of the Steam version
+        run: cmake --build build --target client menu
+
+      - name: Collect result
+        working-directory: cs16
+        run: |
+          OUT="$GITHUB_WORKSPACE/result"
+          mkdir -p "$OUT/cstrike/cl_dlls"
+          find build -name "client*.dll" -exec cp -v {} "$OUT/cstrike/cl_dlls/" \;
+          find build -name "menu*.dll" -exec cp -v {} "$OUT/cstrike/cl_dlls/" \;
+          ls -la "$OUT/cstrike/cl_dlls"
+
+      - name: Check result (32-bit client with the MOTD patch)
+        working-directory: result
+        run: |
+          set -eu
+          f=$(ls cstrike/cl_dlls/client*.dll | head -n1)
+          m=$(ls cstrike/cl_dlls/menu*.dll | head -n1)
+          echo "menu: $m"
+          grep -aq "Trebuchet MS" "$m" || { echo "ERROR: the menu library has no team menu of the Steam version"; exit 1; }
+          echo "client: $f"
+          python - "$f" "$m" <<'PY'
+          import struct, sys
+          for name in sys.argv[1:]:
+              d = open(name, 'rb').read(4096)
+              pe = struct.unpack_from('<I', d, 0x3c)[0]
+              machine = struct.unpack_from('<H', d, pe + 4)[0]
+              print(name, 'PE machine type:', hex(machine), '(0x14c = 32-bit x86)')
+              if machine != 0x14c:
+                  sys.exit(1)
+          PY
+          grep -aq "cl_motd_browser_iframe" "$f" || { echo "ERROR: the MOTD patch is not in this client"; exit 1; }
+          grep -aq "ShellExecute" "$f" || { echo "ERROR: the client cannot open the browser"; exit 1; }
+          grep -aq "cl_tutor_maxtime" "$f" || { echo "ERROR: the tutor messages are not in this client"; exit 1; }
+          grep -aq -- "${CLIENT_BUILD}-motd" "$f" || { echo "ERROR: the version mark ${CLIENT_BUILD}-motd is not in the client. If the patch was moved to another client version, put the same number into the label in cl_dll/hud.cpp (inside the patch) as in CLIENT_BUILD at the top of this workflow"; exit 1; }
+          echo "Result looks complete"
+
+      - name: Check imports (Windows XP)
+        if: matrix.variant == 'xp'
+        working-directory: result
+        shell: pwsh
+        # every function the DLLs import must exist in Windows XP SP3: no Visual C++ runtime DLLs, no
+        # api-ms-win-* sets, none of the functions that came with Windows Vista and later
+        run: |
+          $vista = @('InitializeSRWLock','AcquireSRWLockExclusive','AcquireSRWLockShared','ReleaseSRWLockExclusive',
+            'ReleaseSRWLockShared','TryAcquireSRWLockExclusive','InitializeConditionVariable','SleepConditionVariableSRW',
+            'SleepConditionVariableCS','WakeConditionVariable','WakeAllConditionVariable','InitOnceExecuteOnce',
+            'InitOnceBeginInitialize','InitOnceComplete','GetTickCount64','FlsAlloc','FlsFree','FlsGetValue','FlsSetValue',
+            'InitializeCriticalSectionEx','CreateEventExW','CreateSemaphoreExW','CreateMutexExW','GetCurrentProcessorNumber',
+            'CompareStringEx','LCMapStringEx','GetLocaleInfoEx','GetUserDefaultLocaleName','LocaleNameToLCID',
+            'LCIDToLocaleName','EnumSystemLocalesEx','IsValidLocaleName','GetDateFormatEx','GetTimeFormatEx',
+            'GetFileInformationByHandleEx','SetFileInformationByHandle','CreateSymbolicLinkW','GetFinalPathNameByHandleW',
+            'GetSystemTimePreciseAsFileTime','SetThreadStackGuarantee','GetLogicalProcessorInformationEx',
+            'CreateThreadpoolWork','SubmitThreadpoolWork','CloseThreadpoolWork','WaitForThreadpoolWorkCallbacks',
+            'CreateThreadpoolTimer','SetThreadpoolTimer','CloseThreadpoolTimer','WaitForThreadpoolTimerCallbacks',
+            'CreateThreadpoolWait','SetThreadpoolWait','CloseThreadpoolWait','FreeLibraryWhenCallbackReturns',
+            'GetCurrentPackageId','AppPolicyGetProcessTerminationMethod','GetNumaHighestNodeNumber','QueryUnbiasedInterruptTime',
+            'RaiseFailFastException','GetDynamicTimeZoneInformation','GetTimeZoneInformationForYear','SetDefaultDllDirectories',
+            'AddDllDirectory','RemoveDllDirectory','SHGetKnownFolderPath','RegGetValueW','RegGetValueA')
+          $bad = 0
+          foreach ($dll in Get-ChildItem cstrike/cl_dlls/*.dll) {
+            $out = & dumpbin /nologo /imports $dll.FullName
+            $dlls = $out | Select-String -Pattern '^\s{4}(\S+\.dll)\s*$' | ForEach-Object { $_.Matches[0].Groups[1].Value.ToLower() }
+            Write-Host "$($dll.Name) imports from: $($dlls -join ', ')"
+            foreach ($d in $dlls) {
+              if ($d -like 'api-ms-win-*' -or $d -like 'vcruntime*' -or $d -like 'msvcp1*' -or $d -like 'ucrtbase*') {
+                Write-Host "ERROR: $($dll.Name) needs $d, which Windows XP does not have"; $bad = 1
+              }
+            }
+            foreach ($fn in $vista) {
+              if ($out | Select-String -Pattern ("\s" + $fn + "\s*$") -Quiet) {
+                Write-Host "ERROR: $($dll.Name) imports $fn, which came with Windows Vista or later"; $bad = 1
+              }
+            }
+          }
+          if ($bad) { exit 1 }
+          Write-Host "The imports are all in Windows XP"
+
+      - name: Upload result
+        uses: actions/upload-artifact@v6
+        with:
+          name: cs16-client-4011-motd-${{ matrix.variant }}
+          path: result/*
