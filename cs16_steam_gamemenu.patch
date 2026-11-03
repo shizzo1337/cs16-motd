@@ -657,10 +657,10 @@ index 0000000..a7c1c08
 +};
 diff --git a/3rdparty/mainui_cpp/menus/SteamOptions.cpp b/3rdparty/mainui_cpp/menus/SteamOptions.cpp
 new file mode 100644
-index 0000000..5e10e6f
+index 0000000..41d64b2
 --- /dev/null
 +++ b/3rdparty/mainui_cpp/menus/SteamOptions.cpp
-@@ -0,0 +1,1208 @@
+@@ -0,0 +1,1216 @@
 +/*
 +SteamOptions.cpp - the Options window of the Steam version (GameUI of VGUI2): Multiplayer, Keyboard, Mouse, Audio,
 +Video, Voice, Lock
@@ -865,7 +865,8 @@ index 0000000..5e10e6f
 +
 +	if( UI::Key::IsEnter( key ))
 +	{
-+		onActivate( this );
++		if( onActivate )
++			onActivate( this );
 +		return true;
 +	}
 +
@@ -890,7 +891,7 @@ index 0000000..5e10e6f
 +			selected = r;
 +			m_iLastClickRow = r;
 +			m_iLastClickTime = uiStatic.realTime;
-+			if( dbl )
++			if( dbl && onActivate )
 +				onActivate( this );
 +		}
 +		return true;
@@ -1413,6 +1414,12 @@ index 0000000..5e10e6f
 +	m_brightness = Get<CSteamSlider>( "Brightness", K_SLIDER );
 +	m_gamma = Get<CSteamSlider>( "Gamma", K_SLIDER );
 +
++	// the colour depth of the older .res (the game is always 32 bit now): one item, nothing to change
++	if( CSteamComboBox *depth = Get<CSteamComboBox>( "ColorDepth", K_COMBO ))
++	{
++		depth->AddItem( Localize( "#GameUI_HighBitDepth" ), "32" );
++		depth->Select( 0 );
++	}
 +	if( m_vsync && !m_vsync->text[0] )
 +		Q_strncpy( m_vsync->text, "Wait for vertical sync", sizeof( m_vsync->text )); // no text in the .res
 +	if( m_renderer )
@@ -1584,7 +1591,8 @@ index 0000000..5e10e6f
 +	if( m_sensitivity )
 +	{
 +		m_sensitivity->value = EngFuncs::GetCvarFloat( "sensitivity" );
-+		m_sensitivity->onChanged( m_sensitivity );
++		if( m_sensitivity->onChanged )
++			m_sensitivity->onChanged( m_sensitivity );
 +	}
 +
 +	// Audio
@@ -1871,10 +1879,10 @@ index 0000000..5e10e6f
 +}
 diff --git a/3rdparty/mainui_cpp/menus/SteamUI.cpp b/3rdparty/mainui_cpp/menus/SteamUI.cpp
 new file mode 100644
-index 0000000..783d447
+index 0000000..6fe377e
 --- /dev/null
 +++ b/3rdparty/mainui_cpp/menus/SteamUI.cpp
-@@ -0,0 +1,1018 @@
+@@ -0,0 +1,1116 @@
 +/*
 +SteamUI.cpp - the windows of the Steam version of Half-Life and its mods (see SteamUI.h)
 +
@@ -2074,9 +2082,26 @@ index 0000000..783d447
 +{
 +	if( !text )
 +		return "";
-+	if( text[0] == '#' )
-+		return L( text );
-+	return text;
++	if( text[0] != '#' )
++		return text;
++
++	const char *t = L( text );
++	if( t != text + 1 )
++		return t;
++
++	// not found: the .res files of the game have keys in another case ("#GameUI_LOW" is "GameUI_Low" in the
++	// translations): the word after the last "_" with only its first letter big
++	char key[128];
++	Q_strncpy( key, text + 1, sizeof( key ));
++	char *word = strrchr( key, '_' );
++	if( !word || !word[1] )
++		return t;
++	for( char *c = word + 2; *c; c++ )
++		if( *c >= 'A' && *c <= 'Z' )
++			*c += 'a' - 'A';
++
++	const char *t2 = L( key );
++	return t2 != key ? t2 : t;
 +}
 +
 +ResNode::~ResNode()
@@ -2259,7 +2284,8 @@ index 0000000..783d447
 +	if( handled && !( iFlags & QMF_GRAYED ) && ( UI::Key::IsEnter( key ) || ( UI::Key::IsLeftMouse( key ) && wasFocused )))
 +	{
 +		checked = !checked;
-+		onChanged( this );
++		if( onChanged )
++			onChanged( this );
 +	}
 +	return handled;
 +}
@@ -2298,7 +2324,8 @@ index 0000000..783d447
 +	if( v != value )
 +	{
 +		value = v;
-+		onChanged( this );
++		if( onChanged )
++			onChanged( this );
 +	}
 +}
 +
@@ -2317,7 +2344,8 @@ index 0000000..783d447
 +		value += UI::Key::IsLeftArrow( key ) ? -step : step;
 +		if( value < minValue ) value = minValue;
 +		if( value > maxValue ) value = maxValue;
-+		onChanged( this );
++		if( onChanged )
++			onChanged( this );
 +		return true;
 +	}
 +
@@ -2546,7 +2574,8 @@ index 0000000..783d447
 +			if( i >= 0 && i < count )
 +			{
 +				Select( first + i );
-+				onChanged( this );
++				if( onChanged )
++					onChanged( this );
 +			}
 +		}
 +		open = false;
@@ -2695,6 +2724,27 @@ index 0000000..783d447
 +	return cx >= x && cx < x + 18 && cy >= y && cy < y + 18;
 +}
 +
++int CSteamFrame::ResizeEdgesAt( int cx, int cy ) const
++{
++	if( !m_bSizeable )
++		return 0;
++
++	const int x = m_scPos.x, y = m_scPos.y, w = m_iWide, h = m_iTall;
++	if( cx < x || cx >= x + w || cy < y || cy >= y + h )
++		return 0;
++
++	// the grip of the bottom right corner, then 4 pixels along every edge (as the frames of VGUI2)
++	if( cx >= x + w - 16 && cy >= y + h - 16 )
++		return 2 | 8;
++
++	int edges = 0;
++	if( cx < x + 4 ) edges |= 1;
++	if( cx >= x + w - 4 ) edges |= 2;
++	if( cy < y + 4 ) edges |= 4;
++	if( cy >= y + h - 4 ) edges |= 8;
++	return edges;
++}
++
 +bool CSteamFrame::MouseMove( int x, int y )
 +{
 +	if( m_pOpenList )
@@ -2723,6 +2773,18 @@ index 0000000..783d447
 +		if( OnClose( cx, cy ))
 +		{
 +			m_bClosePressed = true;
++			return true;
++		}
++
++		const int edges = ResizeEdgesAt( cx, cy );
++		if( edges )
++		{
++			m_iResizeEdges = edges;
++			m_resizeStart = Point( cx, cy );
++			m_iStartX = m_scPos.x;
++			m_iStartY = m_scPos.y;
++			m_iStartW = m_iWide;
++			m_iStartH = m_iTall;
 +			return true;
 +		}
 +
@@ -2762,6 +2824,11 @@ index 0000000..783d447
 +			m_bDragging = false;
 +			return true;
 +		}
++		if( m_iResizeEdges )
++		{
++			m_iResizeEdges = 0;
++			return true;
++		}
 +	}
 +
 +	return BaseClass::KeyUp( key );
@@ -2774,6 +2841,30 @@ index 0000000..783d447
 +		m_scPos.x = uiStatic.cursorX - m_dragOffset.x;
 +		m_scPos.y = uiStatic.cursorY - m_dragOffset.y;
 +		CalcItemsPositions();
++	}
++
++	if( m_iResizeEdges )
++	{
++		const int dx = uiStatic.cursorX - m_resizeStart.x, dy = uiStatic.cursorY - m_resizeStart.y;
++		int x = m_iStartX, y = m_iStartY, w = m_iStartW, h = m_iStartH;
++
++		if( m_iResizeEdges & 2 ) w = m_iStartW + dx;
++		if( m_iResizeEdges & 8 ) h = m_iStartH + dy;
++		if( m_iResizeEdges & 1 ) { w = m_iStartW - dx; if( w < m_iMinWide ) w = m_iMinWide; x = m_iStartX + m_iStartW - w; }
++		if( m_iResizeEdges & 4 ) { h = m_iStartH - dy; if( h < m_iMinTall ) h = m_iMinTall; y = m_iStartY + m_iStartH - h; }
++		if( w < m_iMinWide ) w = m_iMinWide;
++		if( h < m_iMinTall ) h = m_iMinTall;
++
++		if( x != m_scPos.x || y != m_scPos.y || w != m_iWide || h != m_iTall )
++		{
++			m_scPos = Point( x, y );
++			m_iWide = w;
++			m_iTall = h;
++			size = m_scSize = Size( w, h );
++			OnResized();
++			CalcItemsPositions();
++			CalcItemsSizes();
++		}
 +	}
 +
 +	const int x = m_scPos.x, y = m_scPos.y, w = m_iWide, h = m_iTall;
@@ -2837,6 +2928,21 @@ index 0000000..783d447
 +		}
 +	}
 +
++	// the grip of a window that can be resized: a triangle of dots in the bottom right corner, as VGUI2 draws it
++	if( m_bSizeable )
++	{
++		for( int row = 0; row < 3; row++ )
++		{
++			const int dy = y + h - 13 + row * 4;
++			for( int col = 0; col <= row; col++ )
++			{
++				const int dx = x + w - 6 - col * 4;
++				Fill( dx, dy, 2, 2, BorderBright );
++				Fill( dx + 1, dy + 1, 1, 1, BorderDark );
++			}
++		}
++	}
++
 +	CMenuItemsHolder::Draw();
 +
 +	// an open list above everything
@@ -2895,10 +3001,10 @@ index 0000000..783d447
 +}
 diff --git a/3rdparty/mainui_cpp/menus/SteamUI.h b/3rdparty/mainui_cpp/menus/SteamUI.h
 new file mode 100644
-index 0000000..ab681a4
+index 0000000..8e3c2b6
 --- /dev/null
 +++ b/3rdparty/mainui_cpp/menus/SteamUI.h
-@@ -0,0 +1,270 @@
+@@ -0,0 +1,289 @@
 +/*
 +SteamUI.h - the windows of the Steam version of Half-Life and its mods (GameUI of VGUI2): their colours, fonts and
 +controls, drawn in pixels as there
@@ -3121,6 +3227,17 @@ index 0000000..ab681a4
 +
 +	void SetTitle( const char *title );
 +
++	// a window that can be made bigger and smaller by its edges and corners, as the Server Browser and the Console
++	// of the Steam version (the grip of dots in the bottom right corner); OnResized() places the controls again
++	void SetSizeable( bool sizeable, int minWide = 0, int minTall = 0 )
++	{
++		m_bSizeable = sizeable;
++		m_iMinWide = minWide > 0 ? minWide : m_iWide;
++		m_iMinTall = minTall > 0 ? minTall : m_iTall;
++	}
++	int Wide() const { return m_iWide; }
++	int Tall() const { return m_iTall; }
++
 +	// pages (property sheet): their controls are added to the window and shown with their tab
 +	int AddPage( const char *title );
 +	void AddToPage( int page, CMenuBaseItem &item );
@@ -3147,6 +3264,7 @@ index 0000000..ab681a4
 +protected:
 +	void _VidInit() override;
 +	virtual void OnPageChanged( int page ) {}
++	virtual void OnResized() {}
 +
 +	char m_szTitle[128];
 +	int m_iWide, m_iTall;
@@ -3165,8 +3283,15 @@ index 0000000..ab681a4
 +	void TabRect( int page, int &x, int &y, int &w, int &h ) const;
 +	bool OnClose( int x, int y ) const;
 +
++	int ResizeEdgesAt( int x, int y ) const; // the edges under the cursor: 1 left, 2 right, 4 top, 8 bottom
++
 +	bool m_bDragging = false;
 +	Point m_dragOffset;
++	bool m_bSizeable = false;
++	int m_iMinWide = 0, m_iMinTall = 0;
++	int m_iResizeEdges = 0;          // the edges being moved
++	Point m_resizeStart;             // the cursor when the resizing began
++	int m_iStartX = 0, m_iStartY = 0, m_iStartW = 0, m_iStartH = 0;
 +	bool m_bClosePressed = false;
 +};
 diff --git a/3rdparty/mainui_cpp/menus/client/ClientWindow.cpp b/3rdparty/mainui_cpp/menus/client/ClientWindow.cpp
