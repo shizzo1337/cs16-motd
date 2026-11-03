@@ -1,5 +1,5 @@
 diff --git a/cl_dll/CMakeLists.txt b/cl_dll/CMakeLists.txt
-index b0af818..54374d2 100644
+index b0af818..e52356f 100644
 --- a/cl_dll/CMakeLists.txt
 +++ b/cl_dll/CMakeLists.txt
 @@ -10,6 +10,7 @@ file(GLOB CS_WPNSH_SRC "../dlls/wpn_shared/*.cpp")
@@ -18,7 +18,7 @@ index b0af818..54374d2 100644
  list(APPEND CS_CLIENT_SRC ${CS_GAMSH_SRC})
  list(APPEND CS_CLIENT_SRC ${MINIUTL_SRC})
  list(APPEND CS_CLIENT_SRC ${CS_PARTICLEMAN_SRC})
-@@ -74,9 +76,76 @@ else()
+@@ -74,9 +76,100 @@ else()
  endif()
  
  add_library(${CLIENT_LIB} SHARED ${CS_CLIENT_SRC})
@@ -90,6 +90,30 @@ index b0af818..54374d2 100644
 +if(WIN32)
 +	# shell32: opening the MOTD in the browser; gdi32 and user32: the letters of the Windows fonts for the atlases (hud/glyph_gdi.cpp)
 +	target_link_libraries(${CLIENT_LIB} PRIVATE shell32 gdi32 user32)
++endif()
++
++# The fonts for the atlases of the texts (hud/glyph_freetype.cpp) on the systems without the fonts of Windows:
++# FreeType draws the letters, fontconfig finds the font files. Without them the font of the HUD is used.
++if(NOT WIN32 AND NOT ANDROID)
++	find_package(PkgConfig QUIET)
++	if(PkgConfig_FOUND)
++		pkg_check_modules(CS16_FONTS QUIET IMPORTED_TARGET freetype2 fontconfig)
++	endif()
++	# required on Linux and the BSDs: without them the client would have no texts of its own but the font of the
++	# HUD (CS16CLIENT_REQUIRE_FREETYPE=OFF builds such a client anyway)
++	option(CS16CLIENT_REQUIRE_FREETYPE "Fail without FreeType and fontconfig on Linux and the BSDs" ON)
++	if(NOT CS16_FONTS_FOUND AND CS16CLIENT_REQUIRE_FREETYPE AND CMAKE_SYSTEM_NAME MATCHES "Linux|BSD")
++		message(FATAL_ERROR "The texts of the client need FreeType and fontconfig: install their development "
++			"packages (Debian/Ubuntu: libfreetype-dev libfontconfig-dev; Fedora: freetype-devel fontconfig-devel), "
++			"or configure with -DCS16CLIENT_REQUIRE_FREETYPE=OFF to use the font of the HUD")
++	endif()
++	if(CS16_FONTS_FOUND)
++		target_link_libraries(${CLIENT_LIB} PRIVATE PkgConfig::CS16_FONTS)
++		target_compile_definitions(${CLIENT_LIB} PRIVATE CS16CLIENT_FREETYPE=1)
++		message(STATUS "Client texts: FreeType and fontconfig")
++	else()
++		message(STATUS "Client texts: no FreeType/fontconfig, the font of the HUD is used")
++	endif()
 +endif()
 +
  install(TARGETS ${CLIENT_LIB}
@@ -3569,7 +3593,7 @@ index 0000000..9fa8ab7
 +
 +} // namespace MotdWin
 diff --git a/cl_dll/death.cpp b/cl_dll/death.cpp
-index 4a47e75..4f8da85 100644
+index 4a47e75..41ab82d 100644
 --- a/cl_dll/death.cpp
 +++ b/cl_dll/death.cpp
 @@ -23,6 +23,8 @@
@@ -3665,7 +3689,7 @@ index 4a47e75..4f8da85 100644
  		//if ( !gHUD.m_iNoConsolePrint )
  		{
 +			// as in the Steam version (the fonts of Windows); without them the old way below
-+			if( !DrawUtils::UseHudFont() )
++			if( DrawUtils::UseAtlasText() )
 +			{
 +				const int top = g_iUser1 ? CHudSpectatorGui::BarHeight() : YRES( DEATHNOTICE_TOP );
 +				if( DrawSteam( i, top + YRES( 16 ) * i ))
@@ -3838,7 +3862,7 @@ index 9ae956c..35b700d 100644
  
  	GetClientVoice()->Init( &g_VoiceStatusHelper );
 diff --git a/cl_dll/hud.h b/cl_dll/hud.h
-index bcfdf6e..18f5ceb 100644
+index bcfdf6e..4aea60d 100644
 --- a/cl_dll/hud.h
 +++ b/cl_dll/hud.h
 @@ -37,6 +37,10 @@
@@ -3870,7 +3894,7 @@ index bcfdf6e..18f5ceb 100644
  	int m_iMaxLength;
  	bool ignoreThisMotd;
 +
-+	// MOTD in system browser (Windows)
++	// MOTD in the browser of the system (Windows, Linux, the BSDs, Android)
 +	enum { BROWSER_NONE = 0, BROWSER_URL, BROWSER_HTML };
 +	bool m_bMotdStarted;
 +	int m_iBrowserMode;
@@ -3879,7 +3903,7 @@ index bcfdf6e..18f5ceb 100644
  };
  
  
-@@ -367,7 +383,9 @@ public:
+@@ -367,13 +383,17 @@ public:
  	int VidInit( void );
  	int Draw( float flTime );
  
@@ -3889,7 +3913,23 @@ index bcfdf6e..18f5ceb 100644
  	int DrawTeams( float listslot );
  	int DrawPlayers( float listslot, int nameoffset = 0, const char *team = NULL ); // returns the ypos where it finishes drawing
  
-@@ -512,6 +530,8 @@ public:
+ 	void DeathMsg( int killer, int victim );
+ 	void SetScoreboardDefaults( void );
+ 	void GetAllPlayersInfo( void );
++	void Think( void );
++	void RebuildTeams( void );
+ 
+ 	bool ShouldDrawScoreboard() const;
+ 
+@@ -399,6 +419,7 @@ private:
+ 	RGBA m_colors;
+ 	bool m_bDrawStroke;
+ 	float m_flForceRect[4]; // showscoreboard2 rectangle
++	bool m_bSlotUsed[MAX_PLAYERS + 1]; // the slots that had a player at the last Think
+ 	cvar_t *cl_showpacketloss;
+ 	cvar_t *cl_showplayerversion;
+ 	cvar_t *cl_show_scoreboard_on_death;
+@@ -512,6 +533,8 @@ public:
  	CHudMsgFunc(DeathMsg);
  
  private:
@@ -3898,7 +3938,7 @@ index bcfdf6e..18f5ceb 100644
  	int m_HUD_d_skull;  // sprite index of skull icon
  	int m_HUD_d_headshot;
  	cvar_t *hud_deathnotice_time;
-@@ -573,6 +593,7 @@ private:
+@@ -573,6 +596,7 @@ private:
  	struct cvar_s *	m_HUD_saytext;
  	struct cvar_s *	m_HUD_saytext_time;
  	struct cvar_s *	m_HUD_saytext_console;
@@ -3906,7 +3946,7 @@ index bcfdf6e..18f5ceb 100644
  };
  
  //
-@@ -765,6 +786,8 @@ public:
+@@ -765,6 +789,8 @@ public:
  	CHudMsgFunc(Money);
  	CHudMsgFunc(BlinkAcct);
  
@@ -3915,7 +3955,7 @@ index bcfdf6e..18f5ceb 100644
  private:
  	int m_iMoneyCount;
  	int m_iDelta;
-@@ -886,6 +909,50 @@ private:
+@@ -886,6 +912,50 @@ private:
  //-----------------------------------------------------
  //
  
@@ -3966,7 +4006,7 @@ index bcfdf6e..18f5ceb 100644
  class CHudScenario : public CHudBase
  {
  public:
-@@ -910,6 +977,14 @@ private:
+@@ -910,6 +980,14 @@ private:
  class CHudSpectatorGui: public CHudBase
  {
  public:
@@ -3981,7 +4021,7 @@ index bcfdf6e..18f5ceb 100644
  	int Init();
  	int VidInit();
  	int Draw( float flTime );
-@@ -924,6 +999,11 @@ public:
+@@ -924,6 +1002,11 @@ public:
  	CHudUserCmd( ToggleSpectatorMenuOptions );
  	CHudUserCmd( ToggleSpectatorMenuOptionsSettings );
  	CHudUserCmd( ToggleSpectatorMenuSpectateOptions );
@@ -3993,7 +4033,7 @@ index bcfdf6e..18f5ceb 100644
  
  	void CalcAllNeededData( );
  
-@@ -951,9 +1031,25 @@ private:
+@@ -951,9 +1034,25 @@ private:
  		ROOT_MENU = (1<<0),
  		MENU_OPTIONS = (1<<1),
  		MENU_OPTIONS_SETTINGS = (1<<2),
@@ -4020,7 +4060,7 @@ index bcfdf6e..18f5ceb 100644
  };
  
  //
-@@ -1090,6 +1186,7 @@ public:
+@@ -1090,6 +1189,7 @@ public:
  	CHudRadar       m_Radar;
  	CHudSpectatorGui m_SpectatorGui;
  	CHudScenario	m_Scenario;
@@ -4029,7 +4069,7 @@ index bcfdf6e..18f5ceb 100644
  	// user messages
  	CHudMsgFunc(Damage);
 diff --git a/cl_dll/hud/MOTD.cpp b/cl_dll/hud/MOTD.cpp
-index 83208f5..1b9b833 100644
+index 83208f5..a5a0659 100644
 --- a/cl_dll/hud/MOTD.cpp
 +++ b/cl_dll/hud/MOTD.cpp
 @@ -27,6 +27,11 @@
@@ -4059,7 +4099,7 @@ index 83208f5..1b9b833 100644
  	Reset();
  
  	return 1;
-@@ -47,9 +60,229 @@ int CHudMOTD :: Init( void )
+@@ -47,9 +60,235 @@ int CHudMOTD :: Init( void )
  int CHudMOTD :: VidInit( void )
  {
  	// Load sprites here
@@ -4068,9 +4108,15 @@ index 83208f5..1b9b833 100644
  	return 1;
  }
  
-+#if XASH_WIN32 == 1
++// the MOTD can be opened in the browser of the system (hud/MOTD_browser.cpp): Windows, Linux, the BSDs, Android
++#if XASH_WIN32 || XASH_LINUX || XASH_ANDROID || XASH_FREEBSD || XASH_NETBSD || XASH_OPENBSD
++#define MOTD_SYSTEM_BROWSER 1
++#endif
++
++#if MOTD_SYSTEM_BROWSER
 +bool MOTD_OpenInBrowser( const char *target );
 +bool MOTD_SaveTempHtml( const char *html, size_t len, char *outPath, size_t outSize );
++bool MOTD_BrowserOpensFiles( void ); // false: only addresses (Android), an HTML MOTD stays in the game
 +
 +// The system browser is opened not more often than this: a server that sends its MOTD again and again
 +// must not flood the desktop with browser windows and throw the player out of the game every time.
@@ -4154,7 +4200,7 @@ index 83208f5..1b9b833 100644
 +	return out;
 +}
 +
-+#endif // XASH_WIN32
++#endif // MOTD_SYSTEM_BROWSER
 +
 +void CHudMOTD :: ResetBrowserState( void )
 +{
@@ -4171,7 +4217,7 @@ index 83208f5..1b9b833 100644
 +//  - anything else is shown in game as usual
 +bool CHudMOTD :: HandleBrowserMOTD( const char *chunk, bool finished )
 +{
-+#if XASH_WIN32 == 1
++#if MOTD_SYSTEM_BROWSER
 +	int mode = (int)cl_motd_browser->value;
 +
 +	if( mode < 1 )
@@ -4192,7 +4238,7 @@ index 83208f5..1b9b833 100644
 +
 +		if( MotdUtil::IsHttpUrl( p ))
 +			m_iBrowserMode = BROWSER_URL;
-+		else if( MotdUtil::LooksLikeHtml( p ))
++		else if( MotdUtil::LooksLikeHtml( p ) && MOTD_BrowserOpensFiles( ))
 +			m_iBrowserMode = BROWSER_HTML;
 +	}
 +
@@ -4289,7 +4335,7 @@ index 83208f5..1b9b833 100644
  void CHudMOTD :: Reset( void )
  {
  	m_iFlags &= ~HUD_DRAW;  // start out inactive
-@@ -137,13 +370,19 @@ int CHudMOTD :: MsgFunc_MOTD( const char *pszName, int iSize, void *pbuf )
+@@ -137,13 +376,19 @@ int CHudMOTD :: MsgFunc_MOTD( const char *pszName, int iSize, void *pbuf )
  		Reset(); // clear the current MOTD in prep for this one
  	}
  
@@ -4315,10 +4361,10 @@ index 83208f5..1b9b833 100644
  	if( strcasestr( m_szMOTD.String(), "<!DOCTYPE HTML>" ) )
 diff --git a/cl_dll/hud/MOTD_browser.cpp b/cl_dll/hud/MOTD_browser.cpp
 new file mode 100644
-index 0000000..0c32b91
+index 0000000..f370cb0
 --- /dev/null
 +++ b/cl_dll/hud/MOTD_browser.cpp
-@@ -0,0 +1,87 @@
+@@ -0,0 +1,260 @@
 +//
 +// MOTD_browser.cpp
 +//
@@ -4331,6 +4377,7 @@ index 0000000..0c32b91
 +
 +bool MOTD_OpenInBrowser( const char *target );
 +bool MOTD_SaveTempHtml( const char *html, size_t len, char *outPath, size_t outSize );
++bool MOTD_BrowserOpensFiles( void );
 +
 +#if defined( _WIN32 )
 +
@@ -4391,6 +4438,170 @@ index 0000000..0c32b91
 +	return WideCharToMultiByte( CP_UTF8, 0, path, -1, outPath, (int)outSize, NULL, NULL ) > 0;
 +}
 +
++#elif defined( __ANDROID__ )
++
++// Android: the address is opened by SDL_OpenURL of the SDL the engine runs on (an ACTION_VIEW intent: the browser of
++// the device or a Custom Tab over the game). The client is not linked with SDL, so the function is looked up in the
++// library the engine has already loaded. Only addresses: a file of the game can't be given to another app
++// (Android 7+ refuses file:// addresses), so an HTML MOTD stays in the game as text.
++
++#include <dlfcn.h>
++
++typedef int ( *pfnSDL_OpenURL )( const char *url ); // SDL2 returns 0 on success, SDL3 true: the result is not used
++
++static pfnSDL_OpenURL FindSDLOpenURL( void )
++{
++	static pfnSDL_OpenURL func = nullptr;
++	static bool tried = false;
++
++	if( tried )
++		return func;
++	tried = true;
++
++	static const char *const libs[] = { "libSDL2.so", "libSDL3.so" };
++	for( const char *lib : libs )
++	{
++		void *handle = dlopen( lib, RTLD_NOW | RTLD_NOLOAD );
++		if( !handle )
++			continue;
++
++		func = (pfnSDL_OpenURL)dlsym( handle, "SDL_OpenURL" );
++		if( func )
++			break;
++	}
++
++	return func;
++}
++
++bool MOTD_OpenInBrowser( const char *target )
++{
++	pfnSDL_OpenURL openUrl = FindSDLOpenURL();
++
++	if( !target || !target[0] || !openUrl )
++		return false;
++
++	openUrl( target );
++	return true;
++}
++
++bool MOTD_SaveTempHtml( const char *html, size_t len, char *outPath, size_t outSize )
++{
++	(void)html; (void)len; (void)outPath; (void)outSize;
++	return false;
++}
++
++bool MOTD_BrowserOpensFiles( void )
++{
++	return false;
++}
++
++#elif ( defined( __linux__ ) && !defined( __ANDROID__ )) || defined( __FreeBSD__ ) || defined( __NetBSD__ ) || defined( __OpenBSD__ )
++
++// Linux and the BSDs: the browser of the desktop is opened by xdg-open (xdg-utils), in a process of its own
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <fcntl.h>
++#include <unistd.h>
++#include <sys/types.h>
++#include <sys/wait.h>
++
++bool MOTD_OpenInBrowser( const char *target )
++{
++	if( !target || !target[0] )
++		return false;
++
++	const pid_t child = fork();
++
++	if( child < 0 )
++		return false;
++
++	if( child == 0 )
++	{
++		// the child starts the opener and leaves at once, so the game never waits for the browser and no
++		// zombie process is left: the opener is adopted by init
++		if( fork() == 0 )
++		{
++			setsid();
++
++			// the libraries of the game must not be loaded into the browser
++			unsetenv( "LD_PRELOAD" );
++			unsetenv( "LD_LIBRARY_PATH" );
++
++			const int null = open( "/dev/null", O_RDWR );
++			if( null >= 0 )
++			{
++				dup2( null, 0 );
++				dup2( null, 1 );
++				dup2( null, 2 );
++				if( null > 2 )
++					close( null );
++			}
++
++			execlp( "xdg-open", "xdg-open", target, (char *)NULL );
++			_exit( 127 ); // no xdg-open
++		}
++		_exit( 0 );
++	}
++
++	int status = 0;
++	waitpid( child, &status, 0 );
++	return true;
++}
++
++// The page is saved to $XDG_RUNTIME_DIR/cs16_motd.html (a folder of the user only), or to a new file in the folder
++// of the temporary files ($TMPDIR or /tmp) made by mkstemps, so another user can't put a link there instead
++bool MOTD_SaveTempHtml( const char *html, size_t len, char *outPath, size_t outSize )
++{
++	char path[4096];
++	int fd = -1;
++	const char *runtime = getenv( "XDG_RUNTIME_DIR" );
++
++	if( runtime && runtime[0] == '/' && snprintf( path, sizeof( path ), "%s/cs16_motd.html", runtime ) < (int)sizeof( path ))
++		fd = open( path, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0600 );
++
++	if( fd < 0 )
++	{
++		// the file of the previous MOTD is removed, the folder is not filled with them
++		static char previous[4096];
++		if( previous[0] )
++		{
++			unlink( previous );
++			previous[0] = 0;
++		}
++
++		const char *tmp = getenv( "TMPDIR" );
++		if( !tmp || tmp[0] != '/' )
++			tmp = "/tmp";
++
++		if( snprintf( path, sizeof( path ), "%s/cs16_motd_XXXXXX.html", tmp ) >= (int)sizeof( path ))
++			return false;
++
++		fd = mkstemps( path, 5 );
++		if( fd < 0 )
++			return false;
++
++		snprintf( previous, sizeof( previous ), "%s", path );
++	}
++
++	size_t written = 0;
++	while( written < len )
++	{
++		const ssize_t n = write( fd, html + written, len - written );
++		if( n <= 0 )
++			break;
++		written += (size_t)n;
++	}
++	close( fd );
++
++	if( written != len || strlen( path ) + 1 > outSize )
++		return false;
++
++	memcpy( outPath, path, strlen( path ) + 1 );
++	return true;
++}
++
 +#else // not implemented on other platforms yet
 +
 +bool MOTD_OpenInBrowser( const char *target )
@@ -4405,6 +4616,14 @@ index 0000000..0c32b91
 +	return false;
 +}
 +
++#endif
++
++#if !defined( __ANDROID__ )
++// an HTML MOTD can be saved to a file and opened (everywhere but Android)
++bool MOTD_BrowserOpensFiles( void )
++{
++	return true;
++}
 +#endif
 diff --git a/cl_dll/hud/client_texture.h b/cl_dll/hud/client_texture.h
 new file mode 100644
@@ -4884,9 +5103,296 @@ index 0000000..c319e09
 +
 +// UTF-8 to code points (a wrong byte is taken as a Windows-1252 character)
 +std::u32string GlyphText_Decode( const std::string &utf8 );
+diff --git a/cl_dll/hud/glyph_freetype.cpp b/cl_dll/hud/glyph_freetype.cpp
+new file mode 100644
+index 0000000..0788326
+--- /dev/null
++++ b/cl_dll/hud/glyph_freetype.cpp
+@@ -0,0 +1,281 @@
++//
++// glyph_freetype.cpp
++//
++// The letters for the atlases of glyph_atlas.h on the systems without the fonts of Windows (Linux): FreeType draws
++// them from the font files that fontconfig finds. The font asked for is used if the system has it (Verdana and
++// Tahoma come with the "Microsoft core fonts" packages: ttf-mscorefonts-installer, msttcore-fonts), else the font
++// fontconfig puts in its place (DejaVu Sans, Liberation Sans...). A letter the font has not is taken from another
++// font that has it. The metrics are those GDI gives on Windows: the em of the font is the asked height, the line is
++// ascent + descent, the pen moves by the advance of the letter.
++//
++// Built when CMake finds freetype2 and fontconfig (CS16CLIENT_FREETYPE); without them glyph_gdi.cpp returns no
++// font and the client uses the font of the HUD.
++//
++
++#if !defined( _WIN32 ) && defined( CS16CLIENT_FREETYPE )
++
++#include <string.h>
++#include <math.h>
++#include <string>
++#include <vector>
++#include <unordered_map>
++
++#include <ft2build.h>
++#include FT_FREETYPE_H
++#include FT_SYNTHESIS_H
++#include <fontconfig/fontconfig.h>
++
++#include "glyph_gdi.h"
++
++namespace {
++
++FT_Library g_library = nullptr;
++bool g_initFailed = false;
++
++bool InitLibraries( void )
++{
++	if( g_library )
++		return true;
++	if( g_initFailed )
++		return false;
++
++	if( FT_Init_FreeType( &g_library ) != 0 || !FcInit() )
++	{
++		g_library = nullptr;
++		g_initFailed = true;
++		return false;
++	}
++	return true;
++}
++
++// the file (and the index of the face in it) that fontconfig gives for a family, a weight and, if given, a letter
++// the font must have
++bool FindFontFile( const char *family, int weight, unsigned int ch, std::string &path, int &index, bool &bold )
++{
++	FcPattern *pattern = FcPatternCreate();
++	if( !pattern )
++		return false;
++
++	FcPatternAddString( pattern, FC_FAMILY, (const FcChar8 *)( family && family[0] ? family : "Verdana" ));
++	// without the font asked for: DejaVu Sans (made from Bitstream Vera, drawn by the author of Verdana: the closest
++	// widths and shapes among the free fonts), then what the system has
++	FcPatternAddString( pattern, FC_FAMILY, (const FcChar8 *)"DejaVu Sans" );
++	FcPatternAddString( pattern, FC_FAMILY, (const FcChar8 *)"sans-serif" );
++	FcPatternAddInteger( pattern, FC_WEIGHT, weight >= 600 ? FC_WEIGHT_BOLD : FC_WEIGHT_REGULAR );
++	FcPatternAddBool( pattern, FC_SCALABLE, FcTrue );
++
++	FcCharSet *charset = nullptr;
++	if( ch )
++	{
++		charset = FcCharSetCreate();
++		FcCharSetAddChar( charset, ch );
++		FcPatternAddCharSet( pattern, FC_CHARSET, charset );
++	}
++
++	FcConfigSubstitute( nullptr, pattern, FcMatchPattern );
++	FcDefaultSubstitute( pattern );
++
++	FcResult result = FcResultNoMatch;
++	FcPattern *match = FcFontMatch( nullptr, pattern, &result );
++	bool ok = false;
++
++	if( match )
++	{
++		FcChar8 *file = nullptr;
++		int faceIndex = 0, matchWeight = FC_WEIGHT_REGULAR;
++		FcCharSet *has = nullptr;
++
++		if( FcPatternGetString( match, FC_FILE, 0, &file ) == FcResultMatch && file )
++		{
++			// a font that has the letter, when it was asked for
++			ok = !ch || ( FcPatternGetCharSet( match, FC_CHARSET, 0, &has ) == FcResultMatch && FcCharSetHasChar( has, ch ));
++			if( ok )
++			{
++				path = (const char *)file;
++				FcPatternGetInteger( match, FC_INDEX, 0, &faceIndex );
++				FcPatternGetInteger( match, FC_WEIGHT, 0, &matchWeight );
++				index = faceIndex;
++				bold = matchWeight >= FC_WEIGHT_DEMIBOLD;
++			}
++		}
++		FcPatternDestroy( match );
++	}
++
++	if( charset )
++		FcCharSetDestroy( charset );
++	FcPatternDestroy( pattern );
++	return ok;
++}
++
++struct FtFace
++{
++	FT_Face face = nullptr;
++	bool embolden = false; // a bold font was asked for, the file is not bold: the letters are made bold
++};
++
++struct FtFont
++{
++	std::string family;
++	int em = 0, weight = 0;
++	bool antialias = true;
++	int height = 0, ascent = 0;
++	FtFace main;
++	std::unordered_map<std::string, FtFace> fallbacks; // other files, for the letters the main one has not
++};
++
++bool OpenFace( const std::string &path, int index, int em, bool wantBold, bool isBold, FtFace &out )
++{
++	FT_Face face = nullptr;
++	if( FT_New_Face( g_library, path.c_str(), index, &face ) != 0 )
++		return false;
++
++	if( FT_Set_Pixel_Sizes( face, 0, (FT_UInt)em ) != 0 )
++	{
++		FT_Done_Face( face );
++		return false;
++	}
++
++	out.face = face;
++	out.embolden = wantBold && !isBold;
++	return true;
++}
++
++// the face that draws the letter: the main one, or another file that has it
++FtFace *FaceFor( FtFont *f, unsigned int ch )
++{
++	if( FT_Get_Char_Index( f->main.face, ch ))
++		return &f->main;
++
++	std::string path;
++	int index = 0;
++	bool bold = false;
++	if( !FindFontFile( f->family.c_str(), f->weight, ch, path, index, bold ))
++		return nullptr;
++
++	const std::string key = path + "#" + std::to_string( index );
++	auto it = f->fallbacks.find( key );
++	if( it == f->fallbacks.end() )
++	{
++		FtFace face;
++		if( !OpenFace( path, index, f->em, f->weight >= 600, bold, face ))
++			return nullptr;
++		it = f->fallbacks.emplace( key, face ).first;
++	}
++
++	return FT_Get_Char_Index( it->second.face, ch ) ? &it->second : nullptr;
++}
++
++} // namespace
++
++void *GlyphGDI_CreateFont( const char *face, int emHeight, int weight, bool antialias, GlyphFontInfo &info )
++{
++	if( emHeight < 4 || !InitLibraries() )
++		return nullptr;
++
++	std::string path;
++	int index = 0;
++	bool bold = false;
++	if( !FindFontFile( face, weight, 0, path, index, bold ))
++		return nullptr;
++
++	FtFont *f = new FtFont;
++	f->family = face ? face : "";
++	f->em = emHeight;
++	f->weight = weight;
++	f->antialias = antialias;
++
++	if( !OpenFace( path, index, emHeight, weight >= 600, bold, f->main ))
++	{
++		delete f;
++		return nullptr;
++	}
++
++	// the line as GDI makes it: ascent + descent of the font, in whole pixels
++	const FT_Size_Metrics &m = f->main.face->size->metrics;
++	f->ascent = (int)(( m.ascender + 63 ) >> 6 );
++	const int descent = (int)(( -m.descender + 63 ) >> 6 );
++	f->height = f->ascent + descent;
++	if( f->height <= 0 )
++	{
++		f->ascent = emHeight;
++		f->height = emHeight + emHeight / 4;
++	}
++
++	info.height = f->height;
++	info.ascent = f->ascent;
++	info.aveCharWidth = emHeight / 2;
++
++	// the average width of GDI is about the width of "x"
++	if( FT_Load_Char( f->main.face, 'x', FT_LOAD_DEFAULT ) == 0 )
++		info.aveCharWidth = (int)(( f->main.face->glyph->advance.x + 32 ) >> 6 );
++
++	return f;
++}
++
++bool GlyphGDI_Render( void *handle, unsigned int ch, GlyphImage &out )
++{
++	FtFont *f = static_cast<FtFont *>( handle );
++	if( !f || !f->main.face )
++		return false;
++
++	FtFace *face = FaceFor( f, ch );
++	if( !face )
++		return false;
++
++	const FT_Int32 target = f->antialias ? FT_LOAD_TARGET_NORMAL : FT_LOAD_TARGET_MONO;
++	if( FT_Load_Char( face->face, ch, FT_LOAD_DEFAULT | target ) != 0 )
++		return false;
++
++	FT_GlyphSlot slot = face->face->glyph;
++	if( face->embolden )
++		FT_GlyphSlot_Embolden( slot );
++
++	if( FT_Render_Glyph( slot, f->antialias ? FT_RENDER_MODE_NORMAL : FT_RENDER_MODE_MONO ) != 0 )
++		return false;
++
++	const FT_Bitmap &bm = slot->bitmap;
++	out.advance = (int)(( slot->advance.x + 32 ) >> 6 );
++	out.left = slot->bitmap_left;
++	out.w = (int)bm.width;
++	out.h = f->height;
++	out.alpha.assign( (size_t)( out.w > 0 ? out.w : 0 ) * out.h, 0 );
++
++	// the picture in the cell of the line: its top is "bitmap_top" above the baseline
++	const int top = f->ascent - slot->bitmap_top;
++
++	for( int row = 0; row < (int)bm.rows; ++row )
++	{
++		const int y = top + row;
++		if( y < 0 || y >= out.h )
++			continue;
++
++		const unsigned char *src = bm.buffer + row * bm.pitch;
++		for( int x = 0; x < out.w; ++x )
++		{
++			unsigned char a;
++			if( bm.pixel_mode == FT_PIXEL_MODE_MONO )
++				a = ( src[x >> 3] & ( 0x80 >> ( x & 7 ))) ? 255 : 0;
++			else
++				a = src[x];
++			out.alpha[(size_t)y * out.w + x] = a;
++		}
++	}
++
++	return true;
++}
++
++void GlyphGDI_FreeFont( void *handle )
++{
++	FtFont *f = static_cast<FtFont *>( handle );
++	if( !f )
++		return;
++
++	if( f->main.face )
++		FT_Done_Face( f->main.face );
++	for( auto &it : f->fallbacks )
++		if( it.second.face )
++			FT_Done_Face( it.second.face );
++	delete f;
++}
++
++#endif
 diff --git a/cl_dll/hud/glyph_gdi.cpp b/cl_dll/hud/glyph_gdi.cpp
 new file mode 100644
-index 0000000..31018eb
+index 0000000..e14e9b8
 --- /dev/null
 +++ b/cl_dll/hud/glyph_gdi.cpp
 @@ -0,0 +1,239 @@
@@ -5112,7 +5618,7 @@ index 0000000..31018eb
 +	delete f;
 +}
 +
-+#else // no fonts of Windows on the other systems: the font of the HUD is used there
++#elif !defined( CS16CLIENT_FREETYPE ) // no fonts of Windows, no FreeType: the font of the HUD is used (see glyph_freetype.cpp)
 +
 +void *GlyphGDI_CreateFont( const char *, int, int, bool, GlyphFontInfo & )
 +{
@@ -5131,18 +5637,19 @@ index 0000000..31018eb
 +#endif
 diff --git a/cl_dll/hud/glyph_gdi.h b/cl_dll/hud/glyph_gdi.h
 new file mode 100644
-index 0000000..5cad6f0
+index 0000000..f6373b6
 --- /dev/null
 +++ b/cl_dll/hud/glyph_gdi.h
-@@ -0,0 +1,37 @@
+@@ -0,0 +1,38 @@
 +//
 +// glyph_gdi.h
 +//
 +// The letters of a Windows font, one at a time (glyph_gdi.cpp), for the atlas of glyph_atlas.h. Every letter is
 +// drawn by ExtTextOut as Windows draws it in a string (the same antialiasing) and comes with the metrics GDI moves
 +// the pen by (ABC widths), so a text put together from the atlas looks like the same text drawn by DrawText.
-+// Kept apart because <windows.h> conflicts with the headers of the engine. No fonts of Windows on the other
-+// systems: GlyphGDI_CreateFont returns nullptr there and the client uses the font of the HUD.
++// Kept apart because <windows.h> conflicts with the headers of the engine. On the other systems the same functions
++// are made with FreeType and fontconfig (glyph_freetype.cpp); without them GlyphGDI_CreateFont returns nullptr and
++// the client uses the font of the HUD.
 +//
 +
 +#pragma once
@@ -5487,7 +5994,7 @@ index 0000000..53fcfae
 +
 +} // namespace MotdUtil
 diff --git a/cl_dll/hud/scoreboard.cpp b/cl_dll/hud/scoreboard.cpp
-index e1feea4..8cd9f25 100644
+index e1feea4..c1b33f2 100644
 --- a/cl_dll/hud/scoreboard.cpp
 +++ b/cl_dll/hud/scoreboard.cpp
 @@ -29,6 +29,14 @@
@@ -5514,7 +6021,7 @@ index e1feea4..8cd9f25 100644
  	xstart = ScreenWidth * 0.125f;
  	xend = ScreenWidth - xstart;
  	ystart = 100;
-@@ -185,7 +195,9 @@ void CHudScoreboard :: InitHUDData( void )
+@@ -185,9 +195,50 @@ void CHudScoreboard :: InitHUDData( void )
  		g_PlayerExtraInfo[i].sb_account = -1;
  	}
  
@@ -5524,8 +6031,49 @@ index e1feea4..8cd9f25 100644
 +	m_iFlags |= HUD_DRAW;
  
  	m_iFlags |= HUD_INTERMISSION; // is always drawn during an intermission
++	m_iFlags |= HUD_THINK; // follows the players who leave and come (see Think)
++	memset( m_bSlotUsed, 0, sizeof( m_bSlotUsed ));
++}
++
++// The team, the score and the rest of a slot belong to the player who had it. When he leaves, nothing of the server
++// says so to the client, and a player who takes the slot later was shown in the old team, with the old score, till
++// the server sent his own TeamInfo (on some servers only when he chose a team). Now a slot that empties is cleared,
++// and a player who comes without a team is among the spectators (as the server makes him: "UNASSIGNED"), as in the
++// Steam version.
++void CHudScoreboard :: Think( void )
++{
++	bool changed = false;
++
++	for( int i = 1; i <= MAX_PLAYERS; i++ )
++	{
++		hud_player_info_t info = {};
++		GetPlayerInfo( i, &info );
++		const bool used = info.name && info.name[0];
++
++		if( !used && m_bSlotUsed[i] )
++		{
++			memset( &g_PlayerExtraInfo[i], 0, sizeof( g_PlayerExtraInfo[i] ));
++			g_PlayerExtraInfo[i].sb_health = -1;
++			g_PlayerExtraInfo[i].sb_account = -1;
++			changed = true;
++		}
++		else if( used && !m_bSlotUsed[i] && gHUD.m_Teamplay && !g_PlayerExtraInfo[i].teamname[0] )
++		{
++			strncpy( g_PlayerExtraInfo[i].teamname, "SPECTATOR", MAX_TEAM_NAME );
++			g_PlayerExtraInfo[i].teamname[MAX_TEAM_NAME - 1] = 0;
++			g_PlayerExtraInfo[i].teamnumber = TEAM_UNASSIGNED;
++			changed = true;
++		}
++
++		m_bSlotUsed[i] = used;
++	}
++
++	if( changed )
++		RebuildTeams();
  }
-@@ -204,6 +216,442 @@ bool CHudScoreboard :: ShouldDrawScoreboard() const
+ 
+ bool CHudScoreboard :: ShouldDrawScoreboard() const
+@@ -204,6 +255,442 @@ bool CHudScoreboard :: ShouldDrawScoreboard() const
  	return false;
  }
  
@@ -5968,7 +6516,7 @@ index e1feea4..8cd9f25 100644
  // Y positions
  #define ROW_GAP  15
  
-@@ -247,6 +695,10 @@ int CHudScoreboard :: Draw( float flTime )
+@@ -247,6 +734,10 @@ int CHudScoreboard :: Draw( float flTime )
  int CHudScoreboard :: DrawScoreboard( float fTime )
  {
  	GetAllPlayersInfo();
@@ -5979,7 +6527,7 @@ index e1feea4..8cd9f25 100644
  	char ServerName[90];
  
  //	Packetloss removed on Kelly 'shipping nazi' Bailey's orders
-@@ -269,10 +721,10 @@ int CHudScoreboard :: DrawScoreboard( float fTime )
+@@ -269,10 +760,10 @@ int CHudScoreboard :: DrawScoreboard( float fTime )
  	g_Columns[COL_KILLS] = Column( g_Columns[COL_DEATHS].end - 10, Localize( "#PlayerScore" ) );
  	g_Columns[COL_KILLS].end = min( g_Columns[COL_KILLS].end, g_Columns[COL_KILLS].start - DrawUtils::HudStringLen( "9999" ) );
  
@@ -5992,7 +6540,7 @@ index e1feea4..8cd9f25 100644
  	g_Columns[COL_HP].end = min( g_Columns[COL_HP].end, g_Columns[COL_HP].start - DrawUtils::HudStringLen( "999999" ) );
  
  	g_Columns[COL_ATTRIB] = Column( g_Columns[COL_HP].end - 10 );
-@@ -283,7 +735,13 @@ int CHudScoreboard :: DrawScoreboard( float fTime )
+@@ -283,7 +774,13 @@ int CHudScoreboard :: DrawScoreboard( float fTime )
  
  	// print the heading line
  
@@ -6007,6 +6555,30 @@ index e1feea4..8cd9f25 100644
  		m_colors.r, m_colors.g, m_colors.b, m_colors.a, m_bDrawStroke);
  
  	int ypos = ystart + (list_slot * ROW_GAP) + 5;
+@@ -677,7 +1174,13 @@ int CHudScoreboard :: MsgFunc_TeamInfo( const char *pszName, int iSize, void *pb
+ 		g_PlayerExtraInfo[cl].teamnumber = teamNumber;
+ 	}
+ 
+-	// rebuild the list of teams
++	RebuildTeams();
++	return 1;
++}
++
++// the list of teams from the teams of the players
++void CHudScoreboard :: RebuildTeams( void )
++{
+ 
+ 	// clear out player counts from teams
+ 	for ( int i = 1; i <= m_iNumTeams; i++ )
+@@ -734,8 +1237,6 @@ int CHudScoreboard :: MsgFunc_TeamInfo( const char *pszName, int iSize, void *pb
+ 		if ( g_TeamInfo[i].players < 1 )
+ 			memset( &g_TeamInfo[i], 0, sizeof(team_info_t) );
+ 	}
+-
+-	return 1;
+ }
+ 
+ // Message handler for TeamScore message
 diff --git a/cl_dll/hud/scoreboard_layout.h b/cl_dll/hud/scoreboard_layout.h
 new file mode 100644
 index 0000000..19bb2e6
@@ -9140,7 +9712,7 @@ index e98c4ef..ce2e896 100644
  	void SetSpectatorStartPosition();
  	CHudMsgFunc(Spectator);
 diff --git a/cl_dll/include/draw_util.h b/cl_dll/include/draw_util.h
-index 1fa2af1..401adf2 100644
+index 1fa2af1..20bc23f 100644
 --- a/cl_dll/include/draw_util.h
 +++ b/cl_dll/include/draw_util.h
 @@ -44,6 +44,8 @@ extern cvar_t *cl_charset;
@@ -9152,7 +9724,7 @@ index 1fa2af1..401adf2 100644
  class DrawUtils
  {
  public:
-@@ -93,9 +95,16 @@ public:
+@@ -93,9 +95,24 @@ public:
  		return 3;
  	}
  
@@ -9163,6 +9735,14 @@ index 1fa2af1..401adf2 100644
 +		return gHUD.hud_textmode->value || ClientTexture::EngineFontBroken();
 +	}
 +
++	// the texts the client draws from the atlases of the fonts (hud/glyph_atlas.h): they don't use the console
++	// font of the engine, so a broken texture of that font does not concern them; only hud_textmode 1 asks for
++	// the font of the HUD
++	static inline bool UseAtlasText( void )
++	{
++		return !gHUD.hud_textmode->value;
++	}
++
  	static inline int DrawConsoleString(int x, int y, const char *string)
  	{
 -		if ( gHUD.hud_textmode->value )
@@ -9170,7 +9750,7 @@ index 1fa2af1..401adf2 100644
  		{
  			int ret  = DrawHudString( x, y, 9999, (char *)string, color[0] * 255, color[1] * 255, color[2] * 255 );
  			color[0] = color[1] = color[2] = 1.0f;
-@@ -107,7 +116,7 @@ public:
+@@ -107,7 +124,7 @@ public:
  
  	static inline void SetConsoleTextColor( float r, float g, float b )
  	{
@@ -9179,7 +9759,7 @@ index 1fa2af1..401adf2 100644
  			color[0] = r, color[1] = g, color[2] = b;
  		else
  			gEngfuncs.pfnDrawSetTextColor( r, g, b );
-@@ -115,7 +124,7 @@ public:
+@@ -115,7 +132,7 @@ public:
  
  	static inline void SetConsoleTextColor( unsigned char r, unsigned char g, unsigned char b )
  	{
@@ -9188,7 +9768,7 @@ index 1fa2af1..401adf2 100644
  			color[0] = r / 255.0f, color[1] = g / 255.0f, color[2] = b / 255.0f;
  		else
  			gEngfuncs.pfnDrawSetTextColor( r / 255.0f, g / 255.0f, b / 255.0f );
-@@ -123,7 +132,7 @@ public:
+@@ -123,7 +140,7 @@ public:
  
  	static inline int ConsoleStringLen(  const char *szIt )
  	{
@@ -9197,7 +9777,7 @@ index 1fa2af1..401adf2 100644
  		{
  			return HudStringLen( (char *)szIt );
  		}
-@@ -139,7 +148,7 @@ public:
+@@ -139,7 +156,7 @@ public:
  
  	static inline void ConsoleStringSize( const char *szIt, int *width, int *height )
  	{
@@ -9206,7 +9786,7 @@ index 1fa2af1..401adf2 100644
  			*height = 13, *width = HudStringLen( (char *)szIt );
  		else
  			gEngfuncs.pfnDrawConsoleStringLen( szIt, width, height );
-@@ -184,6 +193,15 @@ public:
+@@ -184,6 +201,15 @@ public:
  		}
  	}
  
@@ -9392,7 +9972,7 @@ index a3d14df..2fd51a6 100644
  					if ( !strcmp( message->pMessage, m_pMessages[j].pMessage->pMessage ) )
  					{
 diff --git a/cl_dll/saytext.cpp b/cl_dll/saytext.cpp
-index 8fe0064..c49c096 100644
+index 8fe0064..00f39b6 100644
 --- a/cl_dll/saytext.cpp
 +++ b/cl_dll/saytext.cpp
 @@ -30,6 +30,9 @@
@@ -9423,7 +10003,7 @@ index 8fe0064..c49c096 100644
 +
 +static CGlyphFont *Font( void )
 +{
-+	if( DrawUtils::UseHudFont() )
++	if( !DrawUtils::UseAtlasText() )
 +		return nullptr;
 +
 +	const SpecBar::Font font = SpecBar::FontFor( TrueHeight );
@@ -9754,7 +10334,7 @@ index 8fe0064..c49c096 100644
  				x = last_break;
  
 diff --git a/cl_dll/statusbar.cpp b/cl_dll/statusbar.cpp
-index a33f2e0..689942f 100644
+index a33f2e0..5973328 100644
 --- a/cl_dll/statusbar.cpp
 +++ b/cl_dll/statusbar.cpp
 @@ -26,6 +26,8 @@
@@ -9804,7 +10384,7 @@ index a33f2e0..689942f 100644
 +	// a black shadow of 1 pixel, the whole line in the colour of the player, its cell 30 units above the bottom
 +	// of the screen (1012 at 1080), 7.1 units from the left edge (16 pixels); the font of the HUD without the fonts
 +	// of Windows (or with hud_textmode 1)
-+	if( !DrawUtils::UseHudFont() )
++	if( DrawUtils::UseAtlasText() )
 +	{
 +		static CTextTexture lines[MAX_STATUSBAR_LINES];
 +		const float scale = gHUD.m_flScale > 0.0f ? gHUD.m_flScale : 1.0f;
@@ -10051,7 +10631,7 @@ index 0000000..07db7bf
 +endfunction()
 \ No newline at end of file
 diff --git a/game_shared/voice_status_hud.h b/game_shared/voice_status_hud.h
-index 6ecd48d..ae580b9 100644
+index 6ecd48d..7218543 100644
 --- a/game_shared/voice_status_hud.h
 +++ b/game_shared/voice_status_hud.h
 @@ -27,6 +27,8 @@
@@ -10071,7 +10651,7 @@ index 6ecd48d..ae580b9 100644
 +	// on one pixel (the font of the HUD was scaled and blurred); false without the fonts of Windows
 +	bool UpdateText()
 +	{
-+		if( DrawUtils::UseHudFont() )
++		if( !DrawUtils::UseAtlasText() )
 +			return false;
 +
 +		// the spaces after the name (RebuildLabelText) were the right margin of the label: it is set here
@@ -10282,6 +10862,25 @@ index 41dd3e3..acf8c32 100755
  	}
  }
  
+diff --git a/3rdparty/mainui_cpp/CMakeLists.txt b/3rdparty/mainui_cpp/CMakeLists.txt
+index 10c8c11..2c9e31c 100644
+--- a/3rdparty/mainui_cpp/CMakeLists.txt
++++ b/3rdparty/mainui_cpp/CMakeLists.txt
+@@ -75,6 +75,14 @@ if(MAINUI_USE_CUSTOM_FONT_RENDER)
+ 			include_directories(${FREETYPE_INCLUDE_DIRS})
+ 			target_link_libraries(menu ${FREETYPE_LIBRARIES})
+ 			add_definitions(-DMAINUI_USE_FREETYPE)
++			# the font files of the system (Verdana of the client menus and the like), when fontconfig is there
++			if(PkgConfig_FOUND)
++				pkg_check_modules(MAINUI_FONTCONFIG QUIET IMPORTED_TARGET fontconfig)
++			endif()
++			if(MAINUI_FONTCONFIG_FOUND)
++				target_link_libraries(menu PkgConfig::MAINUI_FONTCONFIG)
++				add_definitions(-DMAINUI_USE_FONTCONFIG)
++			endif()
+ 		endif()
+ 	endif()
+ 
 diff --git a/3rdparty/mainui_cpp/font/BaseFontBackend.cpp b/3rdparty/mainui_cpp/font/BaseFontBackend.cpp
 index abf987c..78e5491 100644
 --- a/3rdparty/mainui_cpp/font/BaseFontBackend.cpp
@@ -10308,6 +10907,151 @@ index abf987c..78e5491 100644
  	if( m_iBlur )
  	{
  		int chars = snprintf( attribs + i, sizeof( attribs ) - 1 - i, "g%i%.2f", m_iBlur, m_fBrighten );
+diff --git a/3rdparty/mainui_cpp/font/FontManager.cpp b/3rdparty/mainui_cpp/font/FontManager.cpp
+index 971cab5..e2bd5e0 100644
+--- a/3rdparty/mainui_cpp/font/FontManager.cpp
++++ b/3rdparty/mainui_cpp/font/FontManager.cpp
+@@ -28,6 +28,15 @@ GNU General Public License for more details.
+ #endif
+ 
+ #include "BitmapFont.h"
++#if defined( MAINUI_USE_FONTCONFIG )
++#include <stdio.h>
++#include <string.h>
++#include <strings.h>
++#include <map>
++#include <string>
++#include <vector>
++#include <fontconfig/fontconfig.h>
++#endif
+ #include "utflib.h"
+ 
+ #define DEFAULT_MENUFONT "Trebuchet MS"
+@@ -538,8 +547,58 @@ HFont CFontBuilder::Create()
+ 	return g_FontMgr->m_Fonts.AddToTail(font) + 1;
+ }
+ 
++#if defined( MAINUI_USE_FONTCONFIG )
++// The font file of the system for a family and a weight (fontconfig). exact: only if the system really has that
++// family (Trebuchet MS and Tahoma have their replacements among the files of the game otherwise)
++static bool FindSystemFont( const char *name, int weight, bool exact, char *dataFile, size_t dataFileChars )
++{
++	if( !FcInit() )
++		return false;
++
++	FcPattern *pattern = FcPatternCreate();
++	if( !pattern )
++		return false;
++
++	FcPatternAddString( pattern, FC_FAMILY, (const FcChar8 *)name );
++	// without the font asked for: DejaVu Sans (made from Bitstream Vera, drawn by the author of Verdana)
++	FcPatternAddString( pattern, FC_FAMILY, (const FcChar8 *)"DejaVu Sans" );
++	FcPatternAddString( pattern, FC_FAMILY, (const FcChar8 *)"sans-serif" );
++	FcPatternAddInteger( pattern, FC_WEIGHT, weight >= 600 ? FC_WEIGHT_BOLD : FC_WEIGHT_REGULAR );
++	FcPatternAddBool( pattern, FC_SCALABLE, FcTrue );
++	FcConfigSubstitute( NULL, pattern, FcMatchPattern );
++	FcDefaultSubstitute( pattern );
++
++	FcResult result = FcResultNoMatch;
++	FcPattern *match = FcFontMatch( NULL, pattern, &result );
++	bool ok = false;
++
++	if( match )
++	{
++		FcChar8 *file = NULL, *family = NULL;
++		if( FcPatternGetString( match, FC_FILE, 0, &file ) == FcResultMatch && file && file[0] == '/' )
++		{
++			ok = !exact || ( FcPatternGetString( match, FC_FAMILY, 0, &family ) == FcResultMatch && family
++				&& !strcasecmp( (const char *)family, name ));
++			if( ok )
++				Q_strncpy( dataFile, (const char *)file, dataFileChars );
++		}
++		FcPatternDestroy( match );
++	}
++
++	FcPatternDestroy( pattern );
++	return ok;
++}
++#endif
++
+ bool CFontManager::FindFontDataFile( const char *name, int tall, int weight, int flags, char *dataFile, size_t dataFileChars )
+ {
++#if defined( MAINUI_USE_FONTCONFIG )
++	// the font of the system when it has that very family (Verdana, Tahoma, Trebuchet MS of the "Microsoft core fonts"
++	// packages: the menus look as on Windows)
++	if( FindSystemFont( name, weight, true, dataFile, dataFileChars ))
++		return true;
++#endif
++
+ 	if( !strcmp( name, "Trebuchet MS" ))
+ 	{
+ 		Q_strncpy( dataFile, "gfx/fonts/FiraSans-Regular.ttf", dataFileChars );
+@@ -551,6 +610,12 @@ bool CFontManager::FindFontDataFile( const char *name, int tall, int weight, int
+ 		return true;
+ 	}
+ 
++#if defined( MAINUI_USE_FONTCONFIG )
++	// any other font (Verdana of the client menus): what the system has in its place
++	if( FindSystemFont( name, weight, false, dataFile, dataFileChars ))
++		return true;
++#endif
++
+ 	return false;
+ }
+ 
+@@ -565,7 +630,51 @@ byte *CFontManager::LoadFontDataFile( const char *vfspath, int *plen )
+ 		return m_FontFiles[i].data;
+ 	}
+ 	int len = 0;
+-	byte *p = EngFuncs::COM_LoadFile( vfspath, &len );
++	byte *p = NULL;
++
++#if defined( MAINUI_USE_FONTCONFIG )
++	// a font file of the system (FindSystemFont): read directly, the file system of the engine sees only the game.
++	// Kept until the end of the game (fonts are few), not in m_FontFiles: those are freed by the engine
++	if( vfspath[0] == '/' )
++	{
++		static std::map<std::string, std::vector<byte>> systemFiles;
++		auto found = systemFiles.find( vfspath );
++		if( found != systemFiles.end( ))
++		{
++			if( plen )
++				*plen = (int)found->second.size();
++			return found->second.data();
++		}
++
++		FILE *f = fopen( vfspath, "rb" );
++		if( !f )
++			return NULL;
++
++		fseek( f, 0, SEEK_END );
++		const long size = ftell( f );
++		fseek( f, 0, SEEK_SET );
++
++		std::vector<byte> data;
++		if( size > 0 && size < 64 * 1024 * 1024 )
++		{
++			data.resize( (size_t)size );
++			if( fread( data.data(), 1, (size_t)size, f ) != (size_t)size )
++				data.clear();
++		}
++		fclose( f );
++
++		if( data.empty( ))
++			return NULL;
++
++		std::vector<byte> &kept = systemFiles[vfspath];
++		kept.swap( data );
++		if( plen )
++			*plen = (int)kept.size();
++		return kept.data();
++	}
++#endif
++
++	p = EngFuncs::COM_LoadFile( vfspath, &len );
+ 	if( p != nullptr )
+ 	{
+ 		if( plen )
 diff --git a/3rdparty/mainui_cpp/font/WinAPIFont.cpp b/3rdparty/mainui_cpp/font/WinAPIFont.cpp
 index 7073e5c..0eda774 100644
 --- a/3rdparty/mainui_cpp/font/WinAPIFont.cpp
@@ -11386,10 +12130,10 @@ index 35f984c..f582eb0 100644
  	AddWeapon( BuyMenuWeaponInfo{ "Kevlar", "kevlar", "vest", "Kevlar" });
  	AddWeapon( BuyMenuWeaponInfo{ "Kevlar_Helmet", "kevlar_helmet", "vesthelm", "KevlarHelmet" });
 diff --git a/3rdparty/mainui_cpp/menus/client/ClientWindow.cpp b/3rdparty/mainui_cpp/menus/client/ClientWindow.cpp
-index 7d67022..a636abc 100644
+index 7d67022..8f8e9cf 100644
 --- a/3rdparty/mainui_cpp/menus/client/ClientWindow.cpp
 +++ b/3rdparty/mainui_cpp/menus/client/ClientWindow.cpp
-@@ -16,47 +16,234 @@ GNU General Public License for more details.
+@@ -16,47 +16,239 @@ GNU General Public License for more details.
  
  #include "BaseMenu.h"
  #include "ClientWindow.h"
@@ -11508,7 +12252,12 @@ index 7d67022..a636abc 100644
 +
 +	// FONT_GDI_TEXT: the letters are drawn by Windows as in a whole string and placed by their ABC widths, as the
 +	// VGUI2 fonts of the Steam version (even spaces between the letters, "1 PISTOLS", "PREVIOUS")
++#if defined( _WIN32 )
 +	HFont font = CFontBuilder( name, cell - 6, weight ).SetFlags( FONT_GDI_TEXT ).Create();
++#else
++	// FreeType (and stb) take the height of the letters (em), the bold file comes from fontconfig by the weight
++	HFont font = CFontBuilder( name, em, weight ).Create();
++#endif
 +	if( font <= 0 || g_FontMgr->GetFontTall( font ) <= 0 )
 +		return 0;
 +	return font;
@@ -11642,7 +12391,7 @@ index 7d67022..a636abc 100644
  	if ( key == K_ENTER || key == K_KP_ENTER )
  	{
  		CMenuBaseItem *item = ItemAtCursor();
-@@ -90,9 +277,24 @@ bool CClientWindow::KeyDown( int key )
+@@ -90,9 +282,24 @@ bool CClientWindow::KeyDown( int key )
  
  bool CClientWindow::KeyUp( int key )
  {
