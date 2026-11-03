@@ -41,6 +41,17 @@ jobs:
         working-directory: cs16
         run: git apply --ignore-whitespace --whitespace=nowarn ../mypatch/cs16_cef_motd.patch
 
+      - name: Apply the Steam main menu patch (only if cs16_steam_gamemenu.patch is in this repository)
+        working-directory: cs16
+        # the main menu as in the Steam version (menu library); without the file the menu stays as it is
+        run: |
+          if [ -f ../mypatch/cs16_steam_gamemenu.patch ]; then
+            git apply --ignore-whitespace --whitespace=nowarn ../mypatch/cs16_steam_gamemenu.patch
+            echo "the Steam main menu patch is applied"
+          else
+            echo "no cs16_steam_gamemenu.patch: the main menu stays as it is"
+          fi
+
       - name: Choose CEF version (64-bit)
         run: |
           cat > pick_cef.py <<'PY'
