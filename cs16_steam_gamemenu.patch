@@ -1,0 +1,655 @@
+diff --git a/3rdparty/mainui_cpp/BaseMenu.cpp b/3rdparty/mainui_cpp/BaseMenu.cpp
+index acf8c32..7a9afd8 100755
+--- a/3rdparty/mainui_cpp/BaseMenu.cpp
++++ b/3rdparty/mainui_cpp/BaseMenu.cpp
+@@ -38,6 +38,7 @@ cvar_t		*ui_borderclip;
+ cvar_t		*ui_prefer_won_background;
+ cvar_t		*ui_background_stretch;
+ cvar_t		*ui_logohorizontal;
++cvar_t		*ui_steam_gamemenu;
+ 
+ uiStatic_t	uiStatic;
+ static CMenuEntry	*s_pEntries = NULL;
+@@ -1209,6 +1210,7 @@ void UI_Init( void )
+ 	ui_prefer_won_background = EngFuncs::CvarRegister( "ui_prefer_won_background", "0", FCVAR_ARCHIVE );
+ 	ui_background_stretch = EngFuncs::CvarRegister( "ui_background_stretch", "0", FCVAR_ARCHIVE );
+ 	ui_logohorizontal = EngFuncs::CvarRegister( "ui_logohorizontal", "0", FCVAR_ARCHIVE );
++	ui_steam_gamemenu = EngFuncs::CvarRegister( "ui_steam_gamemenu", "1", FCVAR_ARCHIVE );
+ 
+ 	// show cl_predict dialog
+ 	EngFuncs::CvarRegister( "menu_mp_firsttime2", "1", FCVAR_ARCHIVE );
+diff --git a/3rdparty/mainui_cpp/BaseMenu.h b/3rdparty/mainui_cpp/BaseMenu.h
+index d3119b4..5a81860 100755
+--- a/3rdparty/mainui_cpp/BaseMenu.h
++++ b/3rdparty/mainui_cpp/BaseMenu.h
+@@ -66,6 +66,7 @@ extern cvar_t	*ui_borderclip;
+ extern cvar_t	*ui_prefer_won_background;
+ extern cvar_t	*ui_background_stretch;
+ extern cvar_t	*ui_logohorizontal;
++extern cvar_t	*ui_steam_gamemenu; // the main menu as in the Steam version, from resource/GameMenu.res
+ 
+ enum EUISounds
+ {
+diff --git a/3rdparty/mainui_cpp/font/BaseFontBackend.h b/3rdparty/mainui_cpp/font/BaseFontBackend.h
+index ff53fa9..4a8f857 100644
+--- a/3rdparty/mainui_cpp/font/BaseFontBackend.h
++++ b/3rdparty/mainui_cpp/font/BaseFontBackend.h
+@@ -20,6 +20,11 @@ GNU General Public License for more details.
+ #include "BaseMenu.h"
+ #include "utlrbtree.h"
+ 
++// the letters without antialiasing, as the VGUI2 fonts without "antialias" (a flag of CFontBuilder::SetFlags)
++#ifndef FONT_NO_ANTIALIAS
++#define FONT_NO_ANTIALIAS ( 1 << 4 )
++#endif
++
+ // #ifdef XASH_MOBILE_PLATFORM
+ #if defined(__ANDROID__) || TARGET_OS_IPHONE || defined(XASH_SAILFISH) || defined(MAINUI_FONT_SCALE)
+ #define SCALE_FONTS
+diff --git a/3rdparty/mainui_cpp/font/FreeTypeFont.cpp b/3rdparty/mainui_cpp/font/FreeTypeFont.cpp
+index 62fc3b7..0c6a1fc 100644
+--- a/3rdparty/mainui_cpp/font/FreeTypeFont.cpp
++++ b/3rdparty/mainui_cpp/font/FreeTypeFont.cpp
+@@ -93,7 +93,10 @@ void CFreeTypeFont::GetCharRGBA(int ch, Point pt, Size sz, unsigned char *rgba,
+ 		GetCharABCWidths( ch, a, b, c );
+ 	}
+ 
+-	if(( error = FT_Load_Glyph( face, idx, FT_LOAD_RENDER | FT_LOAD_TARGET_NORMAL )))
++	// without antialiasing: a bitmap of 1 bit per pixel (drawn below as FT_PIXEL_MODE_MONO)
++	const FT_Int32 target = ( m_iFlags & FONT_NO_ANTIALIAS ) ? FT_LOAD_TARGET_MONO : FT_LOAD_TARGET_NORMAL;
++
++	if(( error = FT_Load_Glyph( face, idx, FT_LOAD_RENDER | target )))
+ 	{
+ 		Con_Printf( "Error in FT_Load_Glyph: %x\n", error );
+ 		return;
+diff --git a/3rdparty/mainui_cpp/font/WinAPIFont.cpp b/3rdparty/mainui_cpp/font/WinAPIFont.cpp
+index 0eda774..d937d7d 100644
+--- a/3rdparty/mainui_cpp/font/WinAPIFont.cpp
++++ b/3rdparty/mainui_cpp/font/WinAPIFont.cpp
+@@ -76,7 +76,7 @@ bool CWinAPIFont::Create( const char *name, int tall, int weight, int blur, floa
+ 		m_iFlags & FONT_UNDERLINE,
+ 		m_iFlags & FONT_STRIKEOUT,
+ 		charset, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+-		( m_iFlags & FONT_GDI_TEXT ) ? ANTIALIASED_QUALITY : PROOF_QUALITY,
++		( m_iFlags & FONT_NO_ANTIALIAS ) ? NONANTIALIASED_QUALITY : ( m_iFlags & FONT_GDI_TEXT ) ? ANTIALIASED_QUALITY : PROOF_QUALITY,
+ 		DEFAULT_PITCH | FF_DONTCARE, font.lfFaceName );
+ 
+ 	if( !m_hFont )
+diff --git a/3rdparty/mainui_cpp/menus/Main.cpp b/3rdparty/mainui_cpp/menus/Main.cpp
+index ba18a17..5e3be38 100644
+--- a/3rdparty/mainui_cpp/menus/Main.cpp
++++ b/3rdparty/mainui_cpp/menus/Main.cpp
+@@ -30,6 +30,8 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+ #include "gameinfo.h"
+ #include "AnimatedBanner.h"
+ #include "MovieBanner.h"
++#include "SteamGameMenu.h"
++#include "client/ClientWindow.h"
+ 
+ #define ART_MINIMIZE_N	"gfx/shell/min_n"
+ #define ART_MINIMIZE_F	"gfx/shell/min_f"
+@@ -56,6 +58,21 @@ private:
+ 
+ 	void DisconnectCb();
+ 	void DisconnectDialogCb();
++
++	// the main menu of the Steam version (SteamGameMenu.h), when the game has resource/GameMenu.res
++	bool InitSteamMenu();
++	void VidInitSteamMenu( bool connected );
++	bool SetSteamCommand( CSteamGameMenuItem &item, const SteamGameMenu::Entry &e );
++
++	enum { MAX_STEAM_ITEMS = 32 };
++	bool bSteamMenu = false;
++	CUtlVector<SteamGameMenu::Entry> steamEntries;
++	CSteamGameMenuItem steamItems[MAX_STEAM_ITEMS];
++	bool steamSupported[MAX_STEAM_ITEMS];
++	int numSteamItems = 0;
++	CSteamGameMenuLogo steamLogo;
++	HFont steamFont = 0;
++	float steamLastThink = -1000.0f;
+ 	void HazardCourseDialogCb();
+ 	void HazardCourseCb();
+ 
+@@ -175,6 +192,12 @@ void CMenuMain::_Init( void )
+ 		bCustomGame = true;
+ 	else bCustomGame = false;
+ 
++	// the main menu of the Steam version: the items of resource/GameMenu.res in text (ui_steam_gamemenu 0 brings the
++	// buttons back; read when the menu library starts)
++	bSteamMenu = ui_steam_gamemenu && ui_steam_gamemenu->value != 0.0f && InitSteamMenu();
++	if( bSteamMenu )
++		return;
++
+ 	// console
+ 	console.SetNameAndStatus( L( "GameUI_Console" ), NULL );
+ 	console.iFlags |= QMF_NOTIFY;
+@@ -402,11 +425,198 @@ void CMenuMain::VidInit( bool connected )
+ 
+ void CMenuMain::_VidInit()
+ {
++	if( bSteamMenu )
++	{
++		VidInitSteamMenu( CL_IsActive( ));
++		return;
++	}
++
+ 	VidInit( CL_IsActive() );
+ }
+ 
++bool CMenuMain::SetSteamCommand( CSteamGameMenuItem &item, const SteamGameMenu::Entry &e )
++{
++	const char *cmd = e.command;
++
++	// the commands of GameUI of the Steam version, done by the menus of mainui
++	if( !stricmp( cmd, "ResumeGame" ))
++		item.onReleased = UI_CloseMenu;
++	else if( !stricmp( cmd, "Disconnect" ))
++		item.onReleased = VoidCb( &CMenuMain::DisconnectCb ); // at once, as in the Steam version
++	else if( !stricmp( cmd, "Quit" ))
++		item.onReleased = VoidCb( &CMenuMain::QuitDialogCb );
++	else if( !stricmp( cmd, "OpenOptionsDialog" ))
++		item.onReleased = UI_Options_Menu;
++	else if( !stricmp( cmd, "OpenServerBrowser" ))
++		item.onReleased = UI_InternetGames_Menu;
++	else if( !stricmp( cmd, "OpenCreateMultiplayerGameDialog" ))
++		item.onReleased = UI_CreateGame_Menu;
++	else if( !stricmp( cmd, "OpenNewGameDialog" ))
++		item.onReleased = UI_NewGame_Menu;
++	else if( !stricmp( cmd, "OpenLoadGameDialog" ))
++		item.onReleased = UI_LoadGame_Menu;
++	else if( !stricmp( cmd, "OpenSaveGameDialog" ))
++		item.onReleased = UI_SaveGame_Menu;
++	else if( !stricmp( cmd, "OpenChangeGameDialog" ))
++		item.onReleased = UI_CustomGame_Menu;
++	else if( !strnicmp( cmd, "engine ", 7 ))
++		item.onReleased.SetCommand( false, cmd + 7 ); // "engine <console command>" as in GameUI
++	else
++		return false; // OpenPlayerListDialog and the like: no such menu here, the item is not shown
++
++	return true;
++}
++
++bool CMenuMain::InitSteamMenu()
++{
++	if( !SteamGameMenu::Load( steamEntries ))
++		return false;
++
++	// "Default" of TrackerScheme.res: Tahoma, tall 16 (the cell of the letters: 1.207 of their height), weight 0,
++	// without antialiasing
++	steamFont = CClientWindow::CreateSteamFont( "Tahoma", 13, 1.207f, 0, false );
++	if( steamFont <= 0 )
++		return false;
++
++	numSteamItems = 0;
++
++	for( int i = 0; i < steamEntries.Count() && numSteamItems < MAX_STEAM_ITEMS; i++ )
++	{
++		const SteamGameMenu::Entry &e = steamEntries[i];
++		CSteamGameMenuItem &item = steamItems[numSteamItems];
++		bool &supported = steamSupported[numSteamItems];
++
++		item.textFont = steamFont;
++		item.capHeight = 9;
++		item.spacer = !e.label[0];
++
++		if( item.spacer )
++		{
++			item.label[0] = 0;
++			item.iFlags |= QMF_INACTIVE;
++			supported = true;
++		}
++		else
++		{
++			Q_strncpy( item.label, L( e.label ), sizeof( item.label ));
++			item.iFlags |= QMF_NOTIFY;
++			supported = SetSteamCommand( item, e );
++		}
++
++		AddItem( item );
++		numSteamItems++;
++	}
++
++	if( steamLogo.Load( ))
++		AddItem( steamLogo );
++
++	dialog.Link( this );
++	return numSteamItems > 0;
++}
++
++void CMenuMain::VidInitSteamMenu( bool connected )
++{
++	// GameUI: "OnlyInGame" only while connected; in a game "notsingle" are hidden in a game of one player and "notmulti"
++	// in a game of many; "notsteam" only where a game may be changed (host_allow_changegame)
++	const bool single = gpGlobals->maxClients < 2;
++	bool shown[MAX_STEAM_ITEMS];
++	int count = 0;
++
++	for( int i = 0; i < numSteamItems; i++ )
++	{
++		const SteamGameMenu::Entry &e = steamEntries[i];
++		bool show = steamSupported[i];
++
++		if( e.onlyInGame && !connected )
++			show = false;
++		if( connected && e.notSingle && single )
++			show = false;
++		if( connected && e.notMulti && !single )
++			show = false;
++		if( e.notSteam && !bCustomGame )
++			show = false;
++		shown[i] = show;
++	}
++
++	// no empty line at the top, at the bottom or after another one (a hidden item between them)
++	bool lastWasSpacer = true;
++	for( int i = 0; i < numSteamItems; i++ )
++	{
++		if( !shown[i] )
++			continue;
++		if( steamItems[i].spacer && lastWasSpacer )
++			shown[i] = false;
++		else
++			lastWasSpacer = steamItems[i].spacer;
++	}
++	for( int i = numSteamItems - 1; i >= 0; i-- )
++	{
++		if( !shown[i] )
++			continue;
++		if( !steamItems[i].spacer )
++			break;
++		shown[i] = false;
++	}
++
++	for( int i = 0; i < numSteamItems; i++ )
++		if( shown[i] )
++			count++;
++
++	// the width of the menu: its widest item (all the items react on the whole width, as the buttons of GameUI)
++	int menuWide = 0;
++	for( int i = 0; i < numSteamItems; i++ )
++	{
++		if( shown[i] && !steamItems[i].spacer )
++		{
++			const int w = g_FontMgr->GetTextWideScaled( steamFont, steamItems[i].label, g_FontMgr->GetFontTall( steamFont ));
++			if( w > menuWide )
++				menuWide = w;
++		}
++	}
++	menuWide += 4;
++
++	// from the bottom: the capitals of the last item 82 pixels above the bottom of the screen, 28 pixels a line
++	int line = 0;
++	for( int i = 0; i < numSteamItems; i++ )
++	{
++		CSteamGameMenuItem &item = steamItems[i];
++
++		if( !shown[i] )
++		{
++			item.Hide();
++			continue;
++		}
++
++		item.Show();
++		item.capTop = gpGlobals->scrHeight - SteamGameMenu::LAST_CAP_FROM_BOTTOM - ( count - 1 - line ) * SteamGameMenu::ITEM_HEIGHT;
++		item.pixelPos = Point( SteamGameMenu::INSET, item.capTop - ( SteamGameMenu::ITEM_HEIGHT - item.capHeight ) / 2 );
++		item.pixelSize = Size( menuWide, SteamGameMenu::ITEM_HEIGHT );
++		line++;
++	}
++}
++
+ void CMenuMain::Think()
+ {
++	if( bSteamMenu )
++	{
++		// the menu was opened (it thinks only while it is shown): the items appear one after another, from the top
++		if( uiStatic.realTime - steamLastThink > 250.0f )
++		{
++			int line = 0;
++			for( int i = 0; i < numSteamItems; i++ )
++			{
++				if( !steamItems[i].IsVisible( ))
++					continue;
++				steamItems[i].appearTime = uiStatic.realTime + line * SteamGameMenu::ITEM_RATE * 1000.0f;
++				line++;
++			}
++		}
++		steamLastThink = uiStatic.realTime;
++
++		CMenuFramework::Think();
++		return;
++	}
++
+ 	if( gpGlobals->developer )
+ 	{
+ 		if( !console.IsVisible( ))
+diff --git a/3rdparty/mainui_cpp/menus/SteamGameMenu.cpp b/3rdparty/mainui_cpp/menus/SteamGameMenu.cpp
+new file mode 100644
+index 0000000..92d9d5e
+--- /dev/null
++++ b/3rdparty/mainui_cpp/menus/SteamGameMenu.cpp
+@@ -0,0 +1,173 @@
++/*
++SteamGameMenu.cpp - the main menu as in the Steam version of Half-Life and its mods (see SteamGameMenu.h)
++
++This program is free software: you can redistribute it and/or modify
++it under the terms of the GNU General Public License as published by
++the Free Software Foundation, either version 3 of the License, or
++(at your option) any later version.
++
++This program is distributed in the hope that it will be useful,
++but WITHOUT ANY WARRANTY; without even the implied warranty of
++MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++GNU General Public License for more details.
++*/
++
++#include <string.h>
++#include <stdlib.h>
++
++#include "BaseMenu.h"
++#include "SteamGameMenu.h"
++#include "client/ClientWindow.h"
++
++namespace SteamGameMenu {
++
++static bool IsTrue( const char *value )
++{
++	return atoi( value ) != 0;
++}
++
++bool Load( CUtlVector<Entry> &entries )
++{
++	entries.RemoveAll();
++
++	char *afile = (char *)EngFuncs::COM_LoadFile( "resource/GameMenu.res" );
++	if( !afile )
++		return false;
++
++	char token[1024];
++	char *pfile = EngFuncs::COM_ParseFile( afile, token, sizeof( token ));
++
++	// "GameMenu" { "1" { "label" "..." "command" "..." ... } ... }
++	if( pfile )
++		pfile = EngFuncs::COM_ParseFile( pfile, token, sizeof( token ));
++
++	if( !pfile || strcmp( token, "{" ))
++	{
++		EngFuncs::COM_FreeFile( afile );
++		return false;
++	}
++
++	while(( pfile = EngFuncs::COM_ParseFile( pfile, token, sizeof( token ))))
++	{
++		if( !strcmp( token, "}" ))
++			break; // the end of "GameMenu"
++
++		// the name of the item ("1", "2"...), then its block
++		pfile = EngFuncs::COM_ParseFile( pfile, token, sizeof( token ));
++		if( !pfile || strcmp( token, "{" ))
++			break;
++
++		Entry e;
++		memset( &e, 0, sizeof( e ));
++
++		while(( pfile = EngFuncs::COM_ParseFile( pfile, token, sizeof( token ))))
++		{
++			if( !strcmp( token, "}" ))
++				break;
++
++			char key[64];
++			Q_strncpy( key, token, sizeof( key ));
++
++			pfile = EngFuncs::COM_ParseFile( pfile, token, sizeof( token ));
++			if( !pfile )
++				break;
++
++			if( !stricmp( key, "label" ))
++				Q_strncpy( e.label, token, sizeof( e.label ));
++			else if( !stricmp( key, "command" ))
++				Q_strncpy( e.command, token, sizeof( e.command ));
++			else if( !stricmp( key, "OnlyInGame" ))
++				e.onlyInGame = IsTrue( token );
++			else if( !stricmp( key, "notsingle" ))
++				e.notSingle = IsTrue( token );
++			else if( !stricmp( key, "notmulti" ))
++				e.notMulti = IsTrue( token );
++			else if( !stricmp( key, "notsteam" ))
++				e.notSteam = IsTrue( token );
++		}
++
++		if( !pfile )
++			break;
++
++		entries.AddToTail( e );
++	}
++
++	EngFuncs::COM_FreeFile( afile );
++	return entries.Count() > 0;
++}
++
++} // namespace SteamGameMenu
++
++CSteamGameMenuItem::CSteamGameMenuItem() : BaseClass()
++{
++	label[0] = 0;
++	bDrawStroke = false;
++	SetText( "" );
++}
++
++void CSteamGameMenuItem::VidInit( void )
++{
++	BaseClass::VidInit();
++	m_scPos = pixelPos;
++	m_scSize = pixelSize;
++}
++
++void CSteamGameMenuItem::Draw( void )
++{
++	if( spacer || !label[0] )
++		return;
++
++	if( uiStatic.realTime < appearTime )
++		return;
++
++	unsigned int color = SteamGameMenu::MENU_COLOR;
++
++	if( iFlags & QMF_GRAYED )
++		color = PackRGBA( 117, 128, 111, 255 ); // "DisabledText1"
++	else if( m_bPressed )
++		color = SteamGameMenu::DEPRESSED_COLOR;
++	else if( iFlags & ( QMF_HASMOUSEFOCUS | QMF_HASKEYBOARDFOCUS ))
++		color = SteamGameMenu::ARMED_COLOR;
++
++	CClientWindow::DrawSteamText( textFont, m_scPos.x, capTop, capHeight, gpGlobals->scrWidth - m_scPos.x, label, color );
++}
++
++CSteamGameMenuLogo::CSteamGameMenuLogo() : BaseClass()
++{
++	iFlags |= QMF_INACTIVE; // not a button: only lit under the mouse, as in the Steam version
++}
++
++bool CSteamGameMenuLogo::Load( void )
++{
++	if( !EngFuncs::FileExists( "resource/game_menu.tga" ))
++		return false;
++
++	m_hLogo = EngFuncs::PIC_Load( "resource/game_menu.tga", PIC_NOFLIP_TGA );
++	if( EngFuncs::FileExists( "resource/game_menu_mouseover.tga" ))
++		m_hLogoOver = EngFuncs::PIC_Load( "resource/game_menu_mouseover.tga", PIC_NOFLIP_TGA );
++
++	return m_hLogo != 0;
++}
++
++void CSteamGameMenuLogo::VidInit( void )
++{
++	BaseClass::VidInit();
++
++	if( !m_hLogo )
++		return;
++
++	// pixels, like the Steam version (not scaled with the screen)
++	m_scSize = Size( EngFuncs::PIC_Width( m_hLogo ), EngFuncs::PIC_Height( m_hLogo ));
++	m_scPos = Point( SteamGameMenu::INSET, gpGlobals->scrHeight - SteamGameMenu::LOGO_FROM_BOTTOM );
++}
++
++void CSteamGameMenuLogo::Draw( void )
++{
++	if( !m_hLogo )
++		return;
++
++	const bool over = m_hLogoOver && UI_CursorInRect( m_scPos, m_scSize );
++
++	EngFuncs::PIC_Set( over ? m_hLogoOver : m_hLogo, 255, 255, 255, 255 );
++	EngFuncs::PIC_DrawTrans( m_scPos, m_scSize );
++}
+diff --git a/3rdparty/mainui_cpp/menus/SteamGameMenu.h b/3rdparty/mainui_cpp/menus/SteamGameMenu.h
+new file mode 100644
+index 0000000..d633620
+--- /dev/null
++++ b/3rdparty/mainui_cpp/menus/SteamGameMenu.h
+@@ -0,0 +1,97 @@
++/*
++SteamGameMenu.h - the main menu as in the Steam version of Half-Life and its mods (GameUI of VGUI2)
++
++This program is free software: you can redistribute it and/or modify
++it under the terms of the GNU General Public License as published by
++the Free Software Foundation, either version 3 of the License, or
++(at your option) any later version.
++
++This program is distributed in the hope that it will be useful,
++but WITHOUT ANY WARRANTY; without even the implied warranty of
++MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++GNU General Public License for more details.
++*/
++
++#pragma once
++
++// The items come from resource/GameMenu.res of the game, as in the Steam version: "label" (a key of the
++// translations, "#GameUI_GameMenu_FindServers"), "command" (what GameUI does: "OpenServerBrowser"...) and the
++// conditions "OnlyInGame", "notsingle", "notmulti", "notsteam". An item with an empty label is a gap of one line.
++//
++// The look is "InGameDesktop" of platform/resource/TrackerScheme.res of the Steam version:
++//   "MenuColor" 200 200 200, "ArmedMenuColor" 255 255 255 (under the mouse), "DepressedMenuColor" 192 186 80
++//   (pressed), "MenuItemHeight" 28, "GameMenuInset" 32, "MenuItemVisibilityRate" 0.03 (the items appear one after
++//   another, 0.03 s apart, when the menu is opened)
++// and its font is "Default" of the same file: Tahoma, tall 16, weight 0, without antialiasing. The sizes are pixels,
++// they don't depend on the resolution (as in the Steam version). Measured at 1920x1080: the text from x 32, the
++// capitals of the last item 998..1006 (9 pixels high, 82 pixels above the bottom), the items 28 pixels apart, the
++// logo of the game (resource/game_menu.tga, resource/game_menu_mouseover.tga under the mouse) at (32, 1034).
++
++#include "Action.h"
++#include "utlvector.h"
++
++namespace SteamGameMenu {
++
++// the colours of "InGameDesktop"
++const unsigned int MENU_COLOR      = PackRGBA( 200, 200, 200, 255 );
++const unsigned int ARMED_COLOR     = PackRGBA( 255, 255, 255, 255 );
++const unsigned int DEPRESSED_COLOR = PackRGBA( 192, 186, 80, 255 );
++
++const int ITEM_HEIGHT = 28;    // "MenuItemHeight"
++const int INSET = 32;          // "GameMenuInset"
++const float ITEM_RATE = 0.03f; // "MenuItemVisibilityRate"
++
++const int LAST_CAP_FROM_BOTTOM = 82; // the top of the capitals of the last item, from the bottom of the screen
++const int LOGO_FROM_BOTTOM = 46;     // the top of resource/game_menu.tga, from the bottom of the screen
++
++struct Entry
++{
++	char label[128];
++	char command[64];
++	bool onlyInGame;
++	bool notSingle;
++	bool notMulti;
++	bool notSteam;
++};
++
++// resource/GameMenu.res of the game (the mod first, then the base game); false if there is none
++bool Load( CUtlVector<Entry> &entries );
++
++} // namespace SteamGameMenu
++
++// One item of the menu: its text in "Default", drawn in the colours of "InGameDesktop"
++class CSteamGameMenuItem : public CMenuAction
++{
++public:
++	typedef CMenuAction BaseClass;
++
++	CSteamGameMenuItem();
++
++	void VidInit( void ) override;
++	void Draw( void ) override;
++
++	char label[128];
++	bool spacer = false;   // an empty line
++	HFont textFont = 0;
++	int capHeight = 9;
++	int capTop = 0;         // the top of the capitals on the screen
++	float appearTime = 0.0f; // when the item is shown after the menu was opened (uiStatic.realTime)
++	Point pixelPos;           // the place on the screen in pixels (not scaled, as in the Steam version)
++	Size pixelSize;
++};
++
++// The logo of the game under the items: resource/game_menu.tga, resource/game_menu_mouseover.tga under the mouse
++class CSteamGameMenuLogo : public CMenuBaseItem
++{
++public:
++	typedef CMenuBaseItem BaseClass;
++
++	CSteamGameMenuLogo();
++
++	bool Load( void ); // false if the game has no logo
++	void VidInit( void ) override;
++	void Draw( void ) override;
++
++private:
++	HIMAGE m_hLogo = 0, m_hLogoOver = 0;
++};
+diff --git a/3rdparty/mainui_cpp/menus/client/ClientWindow.cpp b/3rdparty/mainui_cpp/menus/client/ClientWindow.cpp
+index 8f8e9cf..e06822f 100644
+--- a/3rdparty/mainui_cpp/menus/client/ClientWindow.cpp
++++ b/3rdparty/mainui_cpp/menus/client/ClientWindow.cpp
+@@ -115,7 +115,7 @@ CSteamMenuButton *CClientWindow::AddSteamButton( int key, const char *name, int
+ 	return act;
+ }
+ 
+-HFont CClientWindow::CreateSteamFont( const char *name, int em, float cellPerEm, int weight )
++HFont CClientWindow::CreateSteamFont( const char *name, int em, float cellPerEm, int weight, bool antialias )
+ {
+ 	// the fonts of Windows get "tall + 6" as the height of their cell
+ 	int cell = (int)( em * cellPerEm + 0.5f );
+@@ -125,10 +125,10 @@ HFont CClientWindow::CreateSteamFont( const char *name, int em, float cellPerEm,
+ 	// FONT_GDI_TEXT: the letters are drawn by Windows as in a whole string and placed by their ABC widths, as the
+ 	// VGUI2 fonts of the Steam version (even spaces between the letters, "1 PISTOLS", "PREVIOUS")
+ #if defined( _WIN32 )
+-	HFont font = CFontBuilder( name, cell - 6, weight ).SetFlags( FONT_GDI_TEXT ).Create();
++	HFont font = CFontBuilder( name, cell - 6, weight ).SetFlags( FONT_GDI_TEXT | ( antialias ? 0 : FONT_NO_ANTIALIAS )).Create();
+ #else
+ 	// FreeType (and stb) take the height of the letters (em), the bold file comes from fontconfig by the weight
+-	HFont font = CFontBuilder( name, em, weight ).Create();
++	HFont font = CFontBuilder( name, em, weight ).SetFlags( antialias ? 0 : FONT_NO_ANTIALIAS ).Create();
+ #endif
+ 	if( font <= 0 || g_FontMgr->GetFontTall( font ) <= 0 )
+ 		return 0;
+diff --git a/3rdparty/mainui_cpp/menus/client/ClientWindow.h b/3rdparty/mainui_cpp/menus/client/ClientWindow.h
+index 3966338..84e3d2d 100644
+--- a/3rdparty/mainui_cpp/menus/client/ClientWindow.h
++++ b/3rdparty/mainui_cpp/menus/client/ClientWindow.h
+@@ -27,6 +27,11 @@ GNU General Public License for more details.
+ #define FONT_GDI_TEXT ( 1 << 3 )
+ #endif
+ 
++// the letters without antialiasing, as the VGUI2 fonts without "antialias" (a flag of CFontBuilder::SetFlags)
++#ifndef FONT_NO_ANTIALIAS
++#define FONT_NO_ANTIALIAS ( 1 << 4 )
++#endif
++
+ class CSteamMenuButton;
+ 
+ class CClientWindow : public CMenuBaseClientWindow
+@@ -110,5 +115,5 @@ public:
+ 	static void DrawSteamText( HFont font, int x, int capTop, int capHeight, int maxWidth, const char *text, unsigned int color );
+ 	static void FillRoundedRect( int x, int y, int w, int h, int radius, bool roundTop, bool roundBottom, unsigned int color );
+ 	static void DrawFrame( int x, int y, int w, int h, unsigned int color ); // 1 pixel inside the rectangle
+-	static HFont CreateSteamFont( const char *name, int em, float cellPerEm, int weight );
++	static HFont CreateSteamFont( const char *name, int em, float cellPerEm, int weight, bool antialias = true );
+ };
