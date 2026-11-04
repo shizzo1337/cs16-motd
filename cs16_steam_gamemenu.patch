@@ -30,6 +30,20 @@ index d3119b4..5a81860 100755
  
  enum EUISounds
  {
+diff --git a/3rdparty/mainui_cpp/MenuStrings.cpp b/3rdparty/mainui_cpp/MenuStrings.cpp
+index 69fbe2d..d32220b 100644
+--- a/3rdparty/mainui_cpp/MenuStrings.cpp
++++ b/3rdparty/mainui_cpp/MenuStrings.cpp
+@@ -469,6 +469,9 @@ static void Localize_InitLanguage( const char *language )
+ 	if( strcmp( gamedir, "mainui" ))
+ 		Localize_AddToDictionary( "mainui", language );
+ 
++	// the server browser of the Steam version (platform/servers/serverbrowser_<language>.txt copied into resource/)
++	Localize_AddToDictionary( "serverbrowser", language );
++
+ 	// mod strings override default ones
+ 	Localize_AddToDictionary( gamedir,  language );
+ }
 diff --git a/3rdparty/mainui_cpp/controls/BackgroundBitmap.cpp b/3rdparty/mainui_cpp/controls/BackgroundBitmap.cpp
 index aa18fea..0b85027 100644
 --- a/3rdparty/mainui_cpp/controls/BackgroundBitmap.cpp
@@ -109,7 +123,7 @@ index 0eda774..d937d7d 100644
  
  	if( !m_hFont )
 diff --git a/3rdparty/mainui_cpp/menus/Main.cpp b/3rdparty/mainui_cpp/menus/Main.cpp
-index ba18a17..9a5e2c9 100644
+index ba18a17..fefc825 100644
 --- a/3rdparty/mainui_cpp/menus/Main.cpp
 +++ b/3rdparty/mainui_cpp/menus/Main.cpp
 @@ -30,6 +30,8 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
@@ -184,7 +198,7 @@ index ba18a17..9a5e2c9 100644
 +	else if( !stricmp( cmd, "OpenOptionsDialog" ))
 +		item.onReleased = UI_SteamOptions_Menu; // the Options window of the Steam version (SteamOptions.cpp)
 +	else if( !stricmp( cmd, "OpenServerBrowser" ))
-+		item.onReleased = UI_InternetGames_Menu;
++		item.onReleased = UI_SteamServerBrowser_Menu; // the Servers window of the Steam version (SteamServerBrowser.cpp)
 +	else if( !stricmp( cmd, "OpenCreateMultiplayerGameDialog" ))
 +		item.onReleased = UI_CreateGame_Menu;
 +	else if( !stricmp( cmd, "OpenNewGameDialog" ))
@@ -356,6 +370,28 @@ index ba18a17..9a5e2c9 100644
  	if( gpGlobals->developer )
  	{
  		if( !console.IsVisible( ))
+diff --git a/3rdparty/mainui_cpp/menus/ServerBrowser.cpp b/3rdparty/mainui_cpp/menus/ServerBrowser.cpp
+index 9656eb7..e122ea1 100644
+--- a/3rdparty/mainui_cpp/menus/ServerBrowser.cpp
++++ b/3rdparty/mainui_cpp/menus/ServerBrowser.cpp
+@@ -29,6 +29,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+ #include "SpinControl.h"
+ #include "StringArrayModel.h"
+ #include "DropDown.h"
++#include "SteamGameMenu.h"
+ 
+ #define ART_BANNER_INET     "gfx/shell/head_inetgames"
+ #define ART_BANNER_LAN      "gfx/shell/head_lan"
+@@ -1678,6 +1679,9 @@ UI_AddServerToList
+ */
+ void UI_AddServerToList( netadr_t adr, const char *info )
+ {
++	// the Servers window of the Steam version (SteamServerBrowser.cpp) takes them too
++	SteamServerBrowser_AddServer( adr, info );
++
+ 	if( !menu_internetgames )
+ 		return;
+ 
 diff --git a/3rdparty/mainui_cpp/menus/SteamGameMenu.cpp b/3rdparty/mainui_cpp/menus/SteamGameMenu.cpp
 new file mode 100644
 index 0000000..db43811
@@ -546,10 +582,10 @@ index 0000000..db43811
 +}
 diff --git a/3rdparty/mainui_cpp/menus/SteamGameMenu.h b/3rdparty/mainui_cpp/menus/SteamGameMenu.h
 new file mode 100644
-index 0000000..a7c1c08
+index 0000000..c8e0ef3
 --- /dev/null
 +++ b/3rdparty/mainui_cpp/menus/SteamGameMenu.h
-@@ -0,0 +1,105 @@
+@@ -0,0 +1,107 @@
 +/*
 +SteamGameMenu.h - the main menu as in the Steam version of Half-Life and its mods (GameUI of VGUI2)
 +
@@ -618,6 +654,8 @@ index 0000000..a7c1c08
 +
 +// the windows of the Steam version (SteamOptions.cpp...)
 +void UI_SteamOptions_Menu( void );
++void UI_SteamServerBrowser_Menu( void );
++void SteamServerBrowser_AddServer( netadr_t adr, const char *info ); // the answers of the servers (UI_AddServerToList)
 +
 +// One item of the menu: its text in "Default", drawn in the colours of "InGameDesktop"
 +class CSteamGameMenuItem : public CMenuAction
@@ -1877,12 +1915,1347 @@ index 0000000..41d64b2
 +	}
 +	s_options->Show();
 +}
+diff --git a/3rdparty/mainui_cpp/menus/SteamServerBrowser.cpp b/3rdparty/mainui_cpp/menus/SteamServerBrowser.cpp
+new file mode 100644
+index 0000000..e60f399
+--- /dev/null
++++ b/3rdparty/mainui_cpp/menus/SteamServerBrowser.cpp
+@@ -0,0 +1,1329 @@
++/*
++SteamServerBrowser.cpp - the Servers window of the Steam version (ServerBrowser of VGUI2): Internet, Favorites,
++History, Spectate, Lan, Friends
++
++This program is free software: you can redistribute it and/or modify
++it under the terms of the GNU General Public License as published by
++the Free Software Foundation, either version 3 of the License, or
++(at your option) any later version.
++
++This program is distributed in the hope that it will be useful,
++but WITHOUT ANY WARRANTY; without even the implied warranty of
++MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++GNU General Public License for more details.
++*/
++
++// Measured on screenshots of the Steam version at 1920x1080 (a window of 960 x 569):
++//   the tabs from (8, 48) (the chosen one from 46), at least 72 pixels wide; the page under them a raised border from
++//   (8, 72) to (wide - 9, tall - 34); the status line under it from (11, tall - 28)
++//   the list of the servers: from the page (0, 8), a header of 18 pixels (raised cells, "DefaultSmall"), rows of 14
++//   pixels in "DefaultSmall"; the columns: the lock 16, the shield 16, Players 55, Servers (the rest), Game 112,
++//   Map 90, Latency 56, the scroll bar 17
++// The places of the list, the buttons and the filters come from platform/servers/InternetGamesPage.res and
++// InternetGamesPage_Filters.res of the Steam version (copied into resource/ of the game or found in servers/), with the
++// same numbers built in when the game has no such files. "AutoResize" and "PinCorner" of the files make the controls
++// follow the window when it is made bigger or smaller by its edges, as in the Steam version.
++//
++// The servers come from the engine (UI_AddServerToList), as for the server browser of mainui: the Internet and the
++// Spectate tabs ask the master servers ("internetservers"), Lan the local network ("localservers"), Favorites and
++// History ask every server of their lists ("ui_queryserver"). The lists are the files of mainui: favorite_servers.lst and
++// history_servers.lst. Friends needs Steam: it shows that none of the friends play.
++
++#include <string.h>
++#include <stdlib.h>
++#include <stdio.h>
++
++#include "BaseMenu.h"
++#include "keydefs.h"
++#include "SteamUI.h"
++#include "SteamGameMenu.h"
++#include "net_api.h"
++
++using namespace SteamUI;
++
++namespace {
++
++enum ETab { TAB_INTERNET = 0, TAB_FAVORITES, TAB_HISTORY, TAB_SPECTATE, TAB_LAN, TAB_FRIENDS, TAB_COUNT };
++
++// a translation of the server browser, or the English text of the Steam version when the game has no
++// resource/serverbrowser_<language>.txt
++const char *SB( const char *key, const char *english )
++{
++	const char *t = L( key );
++	return t != key && strcmp( t, key ) ? t : english;
++}
++
++struct SteamServer
++{
++	netadr_t adr;
++	char name[128];
++	char map[64];
++	char game[64];
++	int numcl = 0, maxcl = 0;
++	bool password = false;
++	bool goldsrc = false;
++	bool pending = true; // no answer yet (a server of the favorites or the history)
++	float ping = 0.0f;   // seconds
++
++	const char *Protocol() const { return goldsrc ? "gs" : "49"; }
++};
++
++struct ListEntry
++{
++	char adr[128];
++	char prot[16];
++};
++
++void ReadList( const char *file, CUtlVector<ListEntry> &list )
++{
++	list.RemoveAll();
++	char *afile = (char *)EngFuncs::COM_LoadFile( file );
++	if( !afile )
++		return;
++
++	char *p = afile;
++	while( true )
++	{
++		ListEntry e;
++		p = EngFuncs::COM_ParseFile( p, e.adr, sizeof( e.adr ));
++		if( !p )
++			break;
++		p = EngFuncs::COM_ParseFile( p, e.prot, sizeof( e.prot ));
++		if( !p )
++			break;
++		if( !strcmp( e.prot, "48" ))
++			continue; // the old protocol, as mainui
++		list.AddToTail( e );
++	}
++	EngFuncs::COM_FreeFile( afile );
++}
++
++void WriteList( const char *file, const CUtlVector<ListEntry> &list )
++{
++	if( !list.Count( ))
++	{
++		EngFuncs::DeleteFile( file );
++		return;
++	}
++
++	CUtlString s;
++	for( int i = 0; i < list.Count(); i++ )
++		s.AppendFormat( "%s %s\n", list[i].adr, list[i].prot );
++	EngFuncs::COM_SaveFile( file, s.Get(), s.Length());
++}
++
++int FindInList( const CUtlVector<ListEntry> &list, const char *adr )
++{
++	for( int i = 0; i < list.Count(); i++ )
++		if( !strcmp( list[i].adr, adr ))
++			return i;
++	return -1;
++}
++
++// a lock, as the icon of the password column (7 x 9)
++void DrawLock( int x, int y, unsigned int c )
++{
++	Fill( x + 1, y, 5, 1, c );
++	Fill( x + 1, y, 1, 4, c );
++	Fill( x + 5, y, 1, 4, c );
++	Fill( x, y + 4, 7, 5, c );
++}
++
++// a shield, as the icon of the anti-cheat column (7 x 8)
++void DrawShield( int x, int y, unsigned int c )
++{
++	Fill( x, y, 7, 4, c );
++	Fill( x + 1, y + 4, 5, 2, c );
++	Fill( x + 2, y + 6, 3, 1, c );
++	Fill( x + 3, y + 7, 1, 1, c );
++}
++
++} // namespace
++
++// ---------------------------------------------------------------------------------------------------------------------
++
++// The list of the servers of a tab: a header of columns that sort it, rows of servers
++class CSteamServerList : public CSteamControl
++{
++public:
++	typedef CSteamControl BaseClass;
++
++	enum EColumn { COL_PASSWORD = 0, COL_SECURE, COL_PLAYERS, COL_NAME, COL_GAME, COL_MAP, COL_PING, COL_COUNT };
++
++	bool KeyDown( int key ) override;
++	void Draw() override;
++
++	void SetServers( CUtlVector<SteamServer> *servers ) { m_servers = servers; Resort(); }
++	void Resort();
++	int Selected() const { return m_iSelected >= 0 && m_servers && m_iSelected < m_order.Count() ? m_order[m_iSelected] : -1; }
++	void ClearSelection() { m_iSelected = -1; }
++	int Count() const { return m_order.Count(); }
++
++	CEventCallback onActivate;   // a double click or Enter
++	CEventCallback onContext;    // a right click on a server
++	const char *emptyText = "";  // shown when there are no servers
++
++private:
++	void ColumnRect( int col, int &x, int &w ) const;
++	int RowsTop() const { return m_scPos.y + 19; }
++	int VisibleRows() const { return ( m_scSize.h - 21 ) / 14; }
++	void ClampTop();
++	bool Passes( int i ) const;
++
++	CUtlVector<SteamServer> *m_servers = nullptr;
++	CUtlVector<int> m_order;
++	int m_iSortColumn = COL_PING;
++	bool m_bAscend = true;
++	int m_iSelected = -1;
++	int m_iTop = 0;
++	int m_iLastClick = 0, m_iLastClickRow = -1;
++
++public:
++	// the filters of the page
++	int maxPing = 0;           // 0: any
++	char mapFilter[64] = "";
++	bool notFull = false, notEmpty = false, noPassword = false;
++};
++
++void CSteamServerList::ColumnRect( int col, int &x, int &w ) const
++{
++	static const int fixed[COL_COUNT] = { 16, 16, 55, 0, 112, 90, 56 };
++	const int inner = m_scSize.w - 2 - 17; // the scroll bar
++	int nameW = inner;
++	for( int i = 0; i < COL_COUNT; i++ )
++		nameW -= fixed[i];
++	if( nameW < 80 )
++		nameW = 80;
++
++	x = m_scPos.x + 1;
++	for( int i = 0; i < col; i++ )
++		x += i == COL_NAME ? nameW : fixed[i];
++	w = col == COL_NAME ? nameW : fixed[col];
++}
++
++bool CSteamServerList::Passes( int i ) const
++{
++	const SteamServer &s = ( *m_servers )[i];
++	if( s.pending )
++		return true;
++	if( maxPing > 0 && s.ping * 1000.0f > maxPing )
++		return false;
++	if( notFull && s.maxcl > 0 && s.numcl >= s.maxcl )
++		return false;
++	if( notEmpty && s.numcl <= 0 )
++		return false;
++	if( noPassword && s.password )
++		return false;
++	if( mapFilter[0] && !strstr( s.map, mapFilter ))
++		return false;
++	return true;
++}
++
++void CSteamServerList::Resort()
++{
++	// keep the chosen server chosen
++	const int sel = Selected();
++
++	m_order.RemoveAll();
++	if( !m_servers )
++		return;
++
++	for( int i = 0; i < m_servers->Count(); i++ )
++		if( Passes( i ))
++			m_order.AddToTail( i );
++
++	const CUtlVector<SteamServer> &sv = *m_servers;
++	const int col = m_iSortColumn;
++	const bool asc = m_bAscend;
++
++	// a stable insertion sort: the lists are short (a few thousand at most)
++	for( int i = 1; i < m_order.Count(); i++ )
++	{
++		const int v = m_order[i];
++		int j = i - 1;
++		while( j >= 0 )
++		{
++			const SteamServer &a = sv[m_order[j]], &b = sv[v];
++			int c = 0;
++			switch( col )
++			{
++			case COL_PASSWORD: c = (int)a.password - (int)b.password; break;
++			case COL_PLAYERS: c = a.numcl - b.numcl; break;
++			case COL_NAME: c = stricmp( a.name, b.name ); break;
++			case COL_GAME: c = stricmp( a.game, b.game ); break;
++			case COL_MAP: c = stricmp( a.map, b.map ); break;
++			default: c = a.ping < b.ping ? -1 : a.ping > b.ping ? 1 : 0; break;
++			}
++			if( !asc )
++				c = -c;
++			if( c <= 0 )
++				break;
++			m_order[j + 1] = m_order[j];
++			j--;
++		}
++		m_order[j + 1] = v;
++	}
++
++	m_iSelected = -1;
++	for( int i = 0; i < m_order.Count(); i++ )
++		if( m_order[i] == sel ) { m_iSelected = i; break; }
++	ClampTop();
++}
++
++void CSteamServerList::ClampTop()
++{
++	const int maxTop = m_order.Count() - VisibleRows();
++	if( m_iTop > maxTop ) m_iTop = maxTop;
++	if( m_iTop < 0 ) m_iTop = 0;
++}
++
++bool CSteamServerList::KeyDown( int key )
++{
++	if( key == K_MWHEELUP || key == K_MWHEELDOWN )
++	{
++		m_iTop += key == K_MWHEELUP ? -3 : 3;
++		ClampTop();
++		return true;
++	}
++
++	if( UI::Key::IsUpArrow( key ) || UI::Key::IsDownArrow( key ))
++	{
++		m_iSelected += UI::Key::IsUpArrow( key ) ? -1 : 1;
++		if( m_iSelected < 0 ) m_iSelected = 0;
++		if( m_iSelected >= m_order.Count( )) m_iSelected = m_order.Count() - 1;
++		if( m_iSelected < m_iTop ) m_iTop = m_iSelected;
++		if( m_iSelected >= m_iTop + VisibleRows( )) m_iTop = m_iSelected - VisibleRows() + 1;
++		ClampTop();
++		return true;
++	}
++
++	if( UI::Key::IsEnter( key ))
++	{
++		if( Selected() >= 0 && onActivate )
++			onActivate( this );
++		return true;
++	}
++
++	const bool left = UI::Key::IsLeftMouse( key ), right = key == K_MOUSE2;
++	if(( left || right ) && Hovered( ))
++	{
++		const int cx = uiStatic.cursorX, cy = uiStatic.cursorY;
++		const int sbX = m_scPos.x + m_scSize.w - 18;
++
++		if( cx >= sbX )
++		{
++			if( !left )
++				return true;
++			const int y = cy - m_scPos.y;
++			if( y < 18 ) m_iTop--;
++			else if( y > m_scSize.h - 18 ) m_iTop++;
++			else m_iTop += y < m_scSize.h / 2 ? -VisibleRows() : VisibleRows();
++			ClampTop();
++			return true;
++		}
++
++		// the header: sorts by the column (again: the other way)
++		if( cy < RowsTop( ))
++		{
++			if( !left )
++				return true;
++			for( int col = 0; col < COL_COUNT; col++ )
++			{
++				int x, w;
++				ColumnRect( col, x, w );
++				if( cx >= x && cx < x + w )
++				{
++					if( m_iSortColumn == col )
++						m_bAscend = !m_bAscend;
++					else
++					{
++						m_iSortColumn = col;
++						m_bAscend = col != COL_PLAYERS; // the most players first, as in the Steam version
++					}
++					Resort();
++					break;
++				}
++			}
++			return true;
++		}
++
++		const int row = m_iTop + ( cy - RowsTop( )) / 14;
++		if( row >= 0 && row < m_order.Count( ))
++		{
++			const bool dbl = left && row == m_iLastClickRow && uiStatic.realTime - m_iLastClick < 400;
++			m_iSelected = row;
++			m_iLastClickRow = row;
++			m_iLastClick = uiStatic.realTime;
++
++			if( right && onContext )
++				onContext( this );
++			else if( dbl && onActivate )
++				onActivate( this );
++		}
++		return true;
++	}
++
++	return BaseClass::KeyDown( key );
++}
++
++void CSteamServerList::Draw()
++{
++	const int x = m_scPos.x, y = m_scPos.y, w = m_scSize.w, h = m_scSize.h;
++	const EFont font = FONT_DEFAULT_SMALL;
++
++	Fill( x, y, w, h, ListBG );
++	InsetBorder( x, y, w, h );
++
++	// the header
++	for( int col = 0; col < COL_COUNT; col++ )
++	{
++		int cx, cw;
++		ColumnRect( col, cx, cw );
++		Fill( cx, y + 1, cw, 18, ControlBG );
++		RaisedBorder( cx, y + 1, cw, 18 );
++
++		char title[96] = "";
++		switch( col )
++		{
++		case COL_PASSWORD: DrawLock( cx + 4, y + 5, ControlText ); break;
++		case COL_SECURE: DrawShield( cx + 4, y + 6, ControlText ); break;
++		case COL_PLAYERS: Q_strncpy( title, SB( "ServerBrowser_Players", "Players" ), sizeof( title )); break;
++		case COL_NAME:
++		{
++			char count[16];
++			snprintf( count, sizeof( count ), "%d", m_order.Count());
++			const char *fmt = SB( "ServerBrowser_ServersCount", "Servers (%s1)" );
++			const char *p = strstr( fmt, "%s1" );
++			if( p )
++				snprintf( title, sizeof( title ), "%.*s%s%s", (int)( p - fmt ), fmt, count, p + 3 );
++			else
++				Q_strncpy( title, fmt, sizeof( title ));
++			break;
++		}
++		case COL_GAME: Q_strncpy( title, SB( "ServerBrowser_Game", "Game" ), sizeof( title )); break;
++		case COL_MAP: Q_strncpy( title, SB( "ServerBrowser_Map", "Map" ), sizeof( title )); break;
++		case COL_PING: Q_strncpy( title, SB( "ServerBrowser_Latency", "Latency" ), sizeof( title )); break;
++		}
++		if( title[0] )
++			TextInBox( font, cx + 4, y + 1, cw - 6, 18, title, ControlText );
++	}
++
++	// the rows
++	const int visible = VisibleRows();
++	for( int i = 0; i < visible && m_iTop + i < m_order.Count(); i++ )
++	{
++		const int idx = m_order[m_iTop + i];
++		const SteamServer &s = ( *m_servers )[idx];
++		const int ry = RowsTop() + i * 14;
++		const bool sel = m_iTop + i == m_iSelected;
++
++		if( sel )
++		{
++			int nx, nw;
++			ColumnRect( COL_COUNT - 1, nx, nw );
++			Fill( x + 1, ry, nx + nw - x - 1, 14, SelectionBG );
++		}
++
++		const unsigned int c = sel ? BrightBaseText : ControlText;
++		int cx, cw;
++		char buf[64];
++
++		if( s.password )
++		{
++			ColumnRect( COL_PASSWORD, cx, cw );
++			DrawLock( cx + 4, ry + 3, c );
++		}
++
++		ColumnRect( COL_PLAYERS, cx, cw );
++		if( !s.pending )
++		{
++			snprintf( buf, sizeof( buf ), "%d / %d", s.numcl, s.maxcl );
++			TextInBox( font, cx + 6, ry, cw - 8, 14, buf, c );
++		}
++
++		ColumnRect( COL_NAME, cx, cw );
++		TextInBox( font, cx + 4, ry, cw - 6, 14, s.name, c );
++
++		ColumnRect( COL_GAME, cx, cw );
++		TextInBox( font, cx + 4, ry, cw - 6, 14, s.game, c );
++
++		ColumnRect( COL_MAP, cx, cw );
++		TextInBox( font, cx + 4, ry, cw - 6, 14, s.map, c );
++
++		ColumnRect( COL_PING, cx, cw );
++		if( !s.pending )
++		{
++			snprintf( buf, sizeof( buf ), "%d", (int)( s.ping * 1000.0f + 0.5f ));
++			TextInBox( font, cx + 6, ry, cw - 8, 14, buf, c );
++		}
++	}
++
++	if( !m_order.Count() && emptyText && emptyText[0] )
++		WrappedText( font, x + 8, RowsTop() + 4, w - 40, h - 24, emptyText, DimBaseText );
++
++	// the scroll bar
++	const int sbX = x + w - 18, sbY = y + 1, sbH = h - 2;
++	Fill( sbX, sbY, 17, sbH, ControlDarkBG );
++	Fill( sbX, sbY, 17, 17, ControlBG );
++	RaisedBorder( sbX, sbY, 17, 17 );
++	DrawArrow( sbX + 5, sbY + 7, false, DimBaseText );
++	Fill( sbX, sbY + sbH - 17, 17, 17, ControlBG );
++	RaisedBorder( sbX, sbY + sbH - 17, 17, 17 );
++	DrawArrow( sbX + 5, sbY + sbH - 10, true, DimBaseText );
++
++	const int trackY = sbY + 17, trackH = sbH - 34;
++	if( m_order.Count() > visible && trackH > 8 )
++	{
++		int nobH = trackH * visible / m_order.Count();
++		if( nobH < 8 ) nobH = 8;
++		const int maxTop = m_order.Count() - visible;
++		const int nobY = trackY + ( trackH - nobH ) * m_iTop / ( maxTop > 0 ? maxTop : 1 );
++		Fill( sbX, nobY, 17, nobH, ControlBG );
++		RaisedBorder( sbX, nobY, 17, nobH );
++	}
++}
++
++// ---------------------------------------------------------------------------------------------------------------------
++
++// A small window with a text to enter: the address of a server to add, the password of a server
++class CSteamTextDialog : public CSteamFrame
++{
++public:
++	typedef CSteamFrame BaseClass;
++
++	CSteamTextDialog() : BaseClass( "CSteamTextDialog", 320, 140 ) {}
++
++	void Ask( const char *title, const char *text, bool hidden, CEventCallback ok )
++	{
++		SetTitle( title );
++		Q_strncpy( m_label.text, text, sizeof( m_label.text ));
++		m_entry.bHideInput = hidden;
++		m_onOk = ok;
++		Show();
++		m_entry.SetBuffer( "" );
++		SetCursorToItem( m_entry );
++	}
++
++	const char *Text() { return m_entry.GetBuffer(); }
++
++	bool KeyDown( int key ) override
++	{
++		if( UI::Key::IsEnter( key ))
++		{
++			Done();
++			return true;
++		}
++		return BaseClass::KeyDown( key );
++	}
++
++private:
++	void _Init() override
++	{
++		m_label.SetBounds( 12, 32, 296, 40 );
++		m_label.wrap = true;
++		m_label.iFlags |= QMF_INACTIVE;
++		m_entry.SetBounds( 12, 74, 296, 24 );
++		m_entry.iMaxLength = 127;
++		m_ok.SetBounds( 320 - 14 - 72 * 2 - 8, 140 - 9 - 24, 72, 24 );
++		m_cancel.SetBounds( 320 - 14 - 72, 140 - 9 - 24, 72, 24 );
++		Q_strncpy( m_ok.text, "#GameUI_OK", sizeof( m_ok.text ));
++		Q_strncpy( m_cancel.text, "#GameUI_Cancel", sizeof( m_cancel.text ));
++		m_ok.isDefault = true;
++		m_ok.onReleased = VoidCb( &CSteamTextDialog::Done );
++		m_cancel.onReleased = VoidCb( &CSteamTextDialog::Hide );
++		AddItem( m_label );
++		AddItem( m_entry );
++		AddItem( m_ok );
++		AddItem( m_cancel );
++	}
++
++	void Done()
++	{
++		Hide();
++		if( m_onOk )
++			m_onOk( this );
++	}
++
++	CSteamLabel m_label;
++	CSteamTextEntry m_entry;
++	CSteamButton m_ok, m_cancel;
++	CEventCallback m_onOk;
++};
++
++// ---------------------------------------------------------------------------------------------------------------------
++
++class CSteamServerBrowser : public CSteamFrame
++{
++public:
++	typedef CSteamFrame BaseClass;
++
++	CSteamServerBrowser() : BaseClass( "CSteamServerBrowser", 641, 384 ) {}
++
++	void Show() override;
++	void Hide() override;
++	void Think() override;
++	bool KeyDown( int key ) override;
++	void Draw() override;
++
++	void AddServer( netadr_t adr, const char *info );
++
++private:
++	void _Init() override;
++	void _VidInit() override;
++	void OnPageChanged( int page ) override;
++	void OnResized() override;
++
++	void Layout();
++	void UpdateButtons();
++	void UpdateFilterString();
++	void ApplyFilters();
++	void ToggleFilters();
++
++	void Refresh( bool newList );
++	void RefreshAll() { Refresh( true ); }
++	void RefreshQuick() { Refresh( false ); }
++	void QueryList( const CUtlVector<ListEntry> &list );
++
++	void ConnectSelected();
++	void Connect( const SteamServer &s );
++	void PasswordEntered();
++	void AskAddServer();
++	void AddServerEntered();
++	void AddCurrentServer();
++	void OpenContextMenu();
++	void ToggleFavorite( const SteamServer &s );
++
++	SteamServer *SelectedServer();
++
++	// the controls with their places in the .res files: the normal one and the one with the filters
++	struct Control
++	{
++		CMenuBaseItem *item;
++		Placed normal, filters;
++		bool inNormal, inFilters;
++	};
++	CUtlVector<Control> m_controls;
++	void Place( CMenuBaseItem *item, const char *name, const CUtlVector<Placed> &normal, const CUtlVector<Placed> &filters,
++		const Placed &builtin );
++
++	CSteamServerList m_list;
++	CSteamButton m_connect, m_refreshAll, m_refreshQuick, m_addServer, m_addCurrent, m_filterButton;
++	CSteamLabel m_filterString, m_status;
++	CSteamComboBox m_gameFilter, m_pingFilter, m_secureFilter;
++	CSteamTextEntry m_mapFilter;
++	CSteamCheckButton m_notEmpty, m_notFull, m_noPassword, m_validSteam;
++	CSteamLabel m_gameLabel, m_mapLabel, m_pingLabel, m_secureLabel;
++
++	CUtlVector<SteamServer> m_servers[TAB_COUNT];
++	CUtlVector<ListEntry> m_favorites, m_history;
++	double m_refreshStart[TAB_COUNT] = {};
++	int m_iRefreshTab = -1;
++	int m_iRefreshUntil = 0;
++	bool m_bFilters = false;
++	char m_szLastMapFilter[64] = "";
++
++	SteamServer m_pendingConnect;
++	CSteamTextDialog m_textDialog;
++
++	// the menu of a right click
++	struct MenuItem { char text[96]; int action; };
++	CUtlVector<MenuItem> m_menu;
++	int m_iMenuX = 0, m_iMenuY = 0;
++	bool m_bMenu = false;
++	void DrawMenu();
++	bool MenuKey( int key );
++};
++
++static CSteamServerBrowser *s_browser = nullptr;
++
++void CSteamServerBrowser::Place( CMenuBaseItem *item, const char *name, const CUtlVector<Placed> &normal,
++	const CUtlVector<Placed> &filters, const Placed &builtin )
++{
++	Control c;
++	memset( &c, 0, sizeof( c ));
++	c.item = item;
++
++	const Placed *n = FindPlaced( normal, name );
++	const Placed *f = FindPlaced( filters, name );
++	c.normal = n ? *n : builtin;
++	c.filters = f ? *f : c.normal;
++	c.inNormal = n ? n->visible : builtin.visible;
++	c.inFilters = f ? f->visible : c.inNormal;
++	m_controls.AddToTail( c );
++	AddItem( *item );
++}
++
++void CSteamServerBrowser::_Init()
++{
++	SetTitle( SB( "ServerBrowser_Servers", "Servers" ));
++	SetSheet( 8, 72, 9, 34, 72 );
++	SetSizeable( true, 641, 384 );
++
++	AddPage( SB( "ServerBrowser_InternetTab", "Internet" ));
++	AddPage( SB( "ServerBrowser_FavoritesTab", "Favorites" ));
++	AddPage( SB( "ServerBrowser_HistoryTab", "History" ));
++	AddPage( SB( "ServerBrowser_SpectateTab", "Spectate" ));
++	AddPage( SB( "ServerBrowser_LanTab", "Lan" ));
++	AddPage( SB( "ServerBrowser_FriendsTab", "Friends" ));
++
++	// the places: the files of the Steam version if the game has them, the same numbers otherwise
++	CUtlVector<Placed> normal, filters;
++	if( !ReadRes( "resource/InternetGamesPage.res", normal ))
++		ReadRes( "servers/InternetGamesPage.res", normal );
++	if( !ReadRes( "resource/InternetGamesPage_Filters.res", filters ))
++		ReadRes( "servers/InternetGamesPage_Filters.res", filters );
++
++	auto P = []( int x, int y, int w, int h, int resize, int pin, bool visible = true )
++	{
++		Placed p;
++		memset( &p, 0, sizeof( p ));
++		p.x = x; p.y = y; p.w = w; p.h = h; p.autoResize = resize; p.pinCorner = pin; p.visible = visible;
++		return p;
++	};
++
++	m_list.onActivate = VoidCb( &CSteamServerBrowser::ConnectSelected );
++	m_list.onContext = VoidCb( &CSteamServerBrowser::OpenContextMenu );
++	Place( &m_list, "gamelist", normal, filters, P( 0, 8, 624, 226, 3, 0 ));
++
++	Q_strncpy( m_connect.text, "#ServerBrowser_Connect", sizeof( m_connect.text ));
++	Q_strncpy( m_refreshAll.text, "#ServerBrowser_RefreshAll", sizeof( m_refreshAll.text ));
++	Q_strncpy( m_refreshQuick.text, "#ServerBrowser_RefreshQuick", sizeof( m_refreshQuick.text ));
++	Q_strncpy( m_addServer.text, "#ServerBrowser_AddServer", sizeof( m_addServer.text ));
++	Q_strncpy( m_addCurrent.text, "#ServerBrowser_AddCurrentServer", sizeof( m_addCurrent.text ));
++	Q_strncpy( m_filterButton.text, "#ServerBrowser_ChangeFilters", sizeof( m_filterButton.text ));
++	m_connect.onReleased = VoidCb( &CSteamServerBrowser::ConnectSelected );
++	m_refreshAll.onReleased = VoidCb( &CSteamServerBrowser::RefreshAll );
++	m_refreshQuick.onReleased = VoidCb( &CSteamServerBrowser::RefreshQuick );
++	m_addServer.onReleased = VoidCb( &CSteamServerBrowser::AskAddServer );
++	m_addCurrent.onReleased = VoidCb( &CSteamServerBrowser::AddCurrentServer );
++	m_filterButton.onReleased = VoidCb( &CSteamServerBrowser::ToggleFilters );
++	Place( &m_connect, "ConnectButton", normal, filters, P( 545, 244, 75, 24, 0, 3 ));
++	Place( &m_refreshAll, "RefreshButton", normal, filters, P( 445, 244, 95, 24, 0, 3 ));
++	Place( &m_refreshQuick, "RefreshQuickButton", normal, filters, P( 334, 244, 105, 24, 0, 3 ));
++	Place( &m_addServer, "AddServerButton", normal, filters, P( 344, 244, 98, 24, 0, 3, false ));
++	Place( &m_addCurrent, "AddCurrentServerButton", normal, filters, P( 196, 244, 142, 24, 0, 3, false ));
++	Place( &m_filterButton, "Filter", normal, filters, P( 8, 244, 108, 24, 0, 2 ));
++
++	m_filterString.dull = true;
++	m_filterString.iFlags |= QMF_INACTIVE;
++	Place( &m_filterString, "FilterString", normal, filters, P( 119, 244, 78, 24, 1, 2 ));
++
++	// the filters (shown by "Change filters")
++	m_gameFilter.AddItem( gMenu.m_gameinfo.title, gMenu.m_gameinfo.gamefolder );
++	m_gameFilter.Select( 0 );
++	static const struct { const char *key, *english; int ms; } pings[] = {
++		{ "ServerBrowser_All", "<All>", 0 }, { "ServerBrowser_LessThan50", "< 50", 50 },
++		{ "ServerBrowser_LessThan100", "< 100", 100 }, { "ServerBrowser_LessThan150", "< 150", 150 },
++		{ "ServerBrowser_LessThan250", "< 250", 250 }, { "ServerBrowser_LessThan350", "< 350", 350 },
++		{ "ServerBrowser_LessThan600", "< 600", 600 },
++	};
++	for( const auto &p : pings )
++	{
++		char data[16];
++		snprintf( data, sizeof( data ), "%d", p.ms );
++		m_pingFilter.AddItem( SB( p.key, p.english ), data );
++	}
++	m_pingFilter.Select( 0 );
++	m_secureFilter.AddItem( SB( "ServerBrowser_All", "<All>" ), "" );
++	m_secureFilter.AddItem( SB( "ServerBrowser_Secure", "Secure" ), "secure" );
++	m_secureFilter.AddItem( SB( "ServerBrowser_NotSecure", "Not secure" ), "insecure" );
++	m_secureFilter.Select( 0 );
++	m_pingFilter.onChanged = VoidCb( &CSteamServerBrowser::ApplyFilters );
++	m_gameFilter.onChanged = VoidCb( &CSteamServerBrowser::ApplyFilters );
++	m_secureFilter.onChanged = VoidCb( &CSteamServerBrowser::ApplyFilters );
++	m_notEmpty.onChanged = VoidCb( &CSteamServerBrowser::ApplyFilters );
++	m_notFull.onChanged = VoidCb( &CSteamServerBrowser::ApplyFilters );
++	m_noPassword.onChanged = VoidCb( &CSteamServerBrowser::ApplyFilters );
++	Q_strncpy( m_notEmpty.text, "#ServerBrowser_HasUsersPlaying", sizeof( m_notEmpty.text ));
++	Q_strncpy( m_notFull.text, "#ServerBrowser_ServerNotFull", sizeof( m_notFull.text ));
++	Q_strncpy( m_noPassword.text, "#ServerBrowser_IsNotPasswordProtected", sizeof( m_noPassword.text ));
++	Q_strncpy( m_validSteam.text, "#ServerBrowser_ValidSteamAccount", sizeof( m_validSteam.text ));
++	Q_strncpy( m_gameLabel.text, "#ServerBrowser_Game", sizeof( m_gameLabel.text ));
++	Q_strncpy( m_mapLabel.text, "#ServerBrowser_Map", sizeof( m_mapLabel.text ));
++	Q_strncpy( m_pingLabel.text, "#ServerBrowser_Latency", sizeof( m_pingLabel.text ));
++	Q_strncpy( m_secureLabel.text, "#ServerBrowser_AntiCheat", sizeof( m_secureLabel.text ));
++	m_gameLabel.iFlags |= QMF_INACTIVE;
++	m_mapLabel.iFlags |= QMF_INACTIVE;
++	m_pingLabel.iFlags |= QMF_INACTIVE;
++	m_secureLabel.iFlags |= QMF_INACTIVE;
++	m_mapFilter.iMaxLength = 63;
++
++	Place( &m_gameFilter, "GameFilter", normal, filters, P( 60, 150, 164, 24, 0, 2, false ));
++	Place( &m_mapFilter, "MapFilter", normal, filters, P( 60, 180, 164, 24, 0, 2, false ));
++	Place( &m_pingFilter, "PingFilter", normal, filters, P( 311, 150, 112, 24, 0, 2, false ));
++	Place( &m_secureFilter, "SecureFilter", normal, filters, P( 311, 180, 112, 24, 0, 2, false ));
++	Place( &m_notEmpty, "ServerEmptyFilterCheck", normal, filters, P( 436, 170, 184, 24, 0, 2, false ));
++	Place( &m_notFull, "ServerFullFilterCheck", normal, filters, P( 436, 146, 184, 24, 0, 2, false ));
++	Place( &m_noPassword, "NoPasswordFilterCheck", normal, filters, P( 436, 194, 250, 24, 0, 2, false ));
++	Place( &m_validSteam, "ValidSteamAccountFilterCheck", normal, filters, P( 436, 218, 285, 24, 0, 2, false ));
++	Place( &m_gameLabel, "GameFilterLabel", normal, filters, P( 12, 150, 44, 24, 0, 2, false ));
++	Place( &m_mapLabel, "MapFilterLabel", normal, filters, P( 12, 180, 44, 24, 0, 2, false ));
++	Place( &m_pingLabel, "PingFilterLabel", normal, filters, P( 234, 150, 72, 24, 0, 2, false ));
++	Place( &m_secureLabel, "SecureFilterLabel", normal, filters, P( 236, 180, 72, 24, 0, 2, false ));
++
++	// the filters files of the Steam version cut the name of the last check box ("...FilterChe"): found by its start
++	for( int i = 0; i < m_controls.Count(); i++ )
++	{
++		if( m_controls[i].item != &m_validSteam )
++			continue;
++		for( int k = 0; k < filters.Count(); k++ )
++			if( !strnicmp( filters[k].name, "ValidSteamAccountFilter", 23 ))
++			{
++				m_controls[i].filters = filters[k];
++				m_controls[i].inFilters = filters[k].visible;
++			}
++	}
++
++	// the status line of the window, under the page
++	m_status.iFlags |= QMF_INACTIVE;
++	AddItem( m_status );
++}
++
++void CSteamServerBrowser::_VidInit()
++{
++	BaseClass::_VidInit();
++
++	// the size the window had the last time
++	int w = 0, h = 0;
++	if( sscanf( EngFuncs::GetCvarString( "ui_steam_serverbrowser_size" ), "%d %d", &w, &h ) == 2 && w >= 641 && h >= 384 )
++	{
++		if( w > gpGlobals->scrWidth ) w = gpGlobals->scrWidth;
++		if( h > gpGlobals->scrHeight ) h = gpGlobals->scrHeight;
++		m_iWide = w;
++		m_iTall = h;
++		pos = Point(( gpGlobals->scrWidth - w ) / 2, ( gpGlobals->scrHeight - h ) / 2 );
++		size = Size( w, h );
++	}
++
++	Layout();
++}
++
++void CSteamServerBrowser::OnResized()
++{
++	char buf[32];
++	snprintf( buf, sizeof( buf ), "%d %d", m_iWide, m_iTall );
++	EngFuncs::CvarSetString( "ui_steam_serverbrowser_size", buf );
++	Layout();
++}
++
++void CSteamServerBrowser::Layout()
++{
++	// the page of the .res files is 624 x 278; it grows with the window
++	const int pageW = m_iWide - 8 - 9, pageH = m_iTall - 72 - 34;
++	const int dw = pageW - 624, dh = pageH - 278;
++	const int tab = ActivePage();
++
++	for( int i = 0; i < m_controls.Count(); i++ )
++	{
++		Control &c = m_controls[i];
++		const Placed &p = m_bFilters ? c.filters : c.normal;
++		bool visible = m_bFilters ? c.inFilters : c.inNormal;
++
++		// the buttons of the tabs: Favorites adds servers, the others refresh quickly
++		if( c.item == &m_addServer || c.item == &m_addCurrent )
++			visible = tab == TAB_FAVORITES;
++		else if( c.item == &m_refreshQuick )
++			visible = tab != TAB_FAVORITES && tab != TAB_FRIENDS;
++		else if( c.item == &m_filterButton || c.item == &m_filterString )
++			visible = visible && tab != TAB_FRIENDS;
++
++		int x = p.x, y = p.y, w = p.w, h = p.h;
++		if( p.autoResize & 1 ) w += dw;
++		if( p.autoResize & 2 ) h += dh;
++		if( p.pinCorner == 1 || p.pinCorner == 3 ) x += dw;
++		if( p.pinCorner == 2 || p.pinCorner == 3 ) y += dh;
++
++		c.item->pos = Point( PageOrigin().x + x, PageOrigin().y + y );
++		c.item->size = Size( w, h );
++		c.item->SetVisibility( visible );
++	}
++
++	m_status.pos = Point( 11, m_iTall - 28 );
++	m_status.size = Size( m_iWide - 11 - 80, 24 );
++
++	CalcItemsPositions();
++	CalcItemsSizes();
++}
++
++void CSteamServerBrowser::UpdateFilterString()
++{
++	// as the Steam version: the game, then the filters that are on, each followed by ";"
++	char s[256];
++	snprintf( s, sizeof( s ), "%s;", m_gameFilter.SelectedText());
++	if( m_mapFilter.GetBuffer()[0] )
++		snprintf( s + strlen( s ), sizeof( s ) - strlen( s ), " %s;", m_mapFilter.GetBuffer());
++	if( m_pingFilter.Selected() > 0 )
++		snprintf( s + strlen( s ), sizeof( s ) - strlen( s ), " %s;", m_pingFilter.SelectedText());
++	if( m_notFull.checked )
++		snprintf( s + strlen( s ), sizeof( s ) - strlen( s ), " %s;", SB( "ServerBrowser_ServerNotFull", "Server not full" ));
++	if( m_notEmpty.checked )
++		snprintf( s + strlen( s ), sizeof( s ) - strlen( s ), " %s;", SB( "ServerBrowser_HasUsersPlaying", "Has users playing" ));
++	if( m_noPassword.checked )
++		snprintf( s + strlen( s ), sizeof( s ) - strlen( s ), " %s;", SB( "ServerBrowser_IsNotPasswordProtected", "Is not password protected" ));
++	Q_strncpy( m_filterString.text, s, sizeof( m_filterString.text ));
++}
++
++void CSteamServerBrowser::ApplyFilters()
++{
++	m_list.maxPing = atoi( m_pingFilter.SelectedData());
++	Q_strncpy( m_list.mapFilter, m_mapFilter.GetBuffer(), sizeof( m_list.mapFilter ));
++	m_list.notFull = m_notFull.checked;
++	m_list.notEmpty = m_notEmpty.checked;
++	m_list.noPassword = m_noPassword.checked;
++	m_list.Resort();
++	UpdateFilterString();
++}
++
++void CSteamServerBrowser::ToggleFilters()
++{
++	m_bFilters = !m_bFilters;
++	Layout();
++}
++
++void CSteamServerBrowser::UpdateButtons()
++{
++	const bool chosen = m_list.Selected() >= 0;
++	m_connect.SetGrayed( !chosen );
++	m_addCurrent.SetGrayed( !CL_IsActive( ));
++}
++
++void CSteamServerBrowser::OnPageChanged( int page )
++{
++	m_bMenu = false;
++	m_list.ClearSelection();
++	m_list.SetServers( &m_servers[page] );
++
++	switch( page )
++	{
++	case TAB_FAVORITES: m_list.emptyText = SB( "ServerBrowser_NoFavoriteServers", "You currently have no favorite servers selected." ); break;
++	case TAB_HISTORY: m_list.emptyText = SB( "ServerBrowser_NoServersPlayed", "No servers have been played recently." ); break;
++	case TAB_LAN: m_list.emptyText = SB( "ServerBrowser_NoLanServers", "There are no servers running on your local network." ); break;
++	case TAB_FRIENDS: m_list.emptyText = SB( "ServerBrowser_NoFriendsServers", "None of your friends are currently playing a game." ); break;
++	default: m_list.emptyText = SB( "ServerBrowser_NoInternetGames", "There are no internet games visible that pass your filter settings." ); break;
++	}
++
++	Layout();
++
++	// a tab seen for the first time asks for its servers
++	if( !m_servers[page].Count() && page != TAB_FRIENDS )
++		Refresh( true );
++}
++
++void CSteamServerBrowser::Show()
++{
++	BaseClass::Show();
++
++	ReadList( "favorite_servers.lst", m_favorites );
++	ReadList( "history_servers.lst", m_history );
++
++	if( ActivePage() < 0 )
++		SetActivePage( TAB_INTERNET );
++	else
++		OnPageChanged( ActivePage());
++
++	ApplyFilters();
++}
++
++void CSteamServerBrowser::Hide()
++{
++	WriteList( "favorite_servers.lst", m_favorites );
++	WriteList( "history_servers.lst", m_history );
++	m_bMenu = false;
++	BaseClass::Hide();
++}
++
++void CSteamServerBrowser::QueryList( const CUtlVector<ListEntry> &list )
++{
++	CUtlVector<SteamServer> &servers = m_servers[m_iRefreshTab];
++
++	for( int i = 0; i < list.Count(); i++ )
++	{
++		netadr_t adr;
++		if( !EngFuncs::textfuncs.pNetAPI->StringToAdr( (char *)list[i].adr, &adr ))
++			continue;
++
++		bool found = false;
++		for( int k = 0; k < servers.Count(); k++ )
++			if( !EngFuncs::NET_CompareAdr( &servers[k].adr, &adr ))
++			{
++				servers[k].pending = true;
++				found = true;
++				break;
++			}
++
++		// the server is shown at once with its address, the answer fills it in
++		if( !found )
++		{
++			SteamServer s;
++			s.adr = adr;
++			Q_strncpy( s.name, list[i].adr, sizeof( s.name ));
++			s.map[0] = s.game[0] = 0;
++			s.goldsrc = !stricmp( list[i].prot, "gs" ) || !stricmp( list[i].prot, "goldsrc" );
++			s.pending = true;
++			servers.AddToTail( s );
++		}
++
++		EngFuncs::ClientCmdF( false, "ui_queryserver \"%s\" \"%s\"\n", list[i].adr, list[i].prot );
++	}
++}
++
++void CSteamServerBrowser::Refresh( bool newList )
++{
++	const int tab = ActivePage();
++	if( tab < 0 || tab == TAB_FRIENDS )
++		return;
++
++	m_iRefreshTab = tab;
++	m_refreshStart[tab] = EngFuncs::DoubleTime();
++	m_iRefreshUntil = uiStatic.realTime + 5000;
++
++	if( newList && tab != TAB_FAVORITES && tab != TAB_HISTORY )
++		m_servers[tab].RemoveAll();
++	m_list.SetServers( &m_servers[tab] );
++
++	switch( tab )
++	{
++	case TAB_FAVORITES: QueryList( m_favorites ); break;
++	case TAB_HISTORY: QueryList( m_history ); break;
++	case TAB_LAN: EngFuncs::ClientCmd( false, "localservers\n" ); break;
++	case TAB_SPECTATE: EngFuncs::ClientCmd( false, "internetservers \\proxy\\1\n" ); break;
++	default:
++		if( newList )
++			EngFuncs::ClientCmd( false, "internetservers\n" );
++		else
++		{
++			// a quick refresh asks the servers of the list again
++			CUtlVector<ListEntry> list;
++			for( int i = 0; i < m_servers[tab].Count(); i++ )
++			{
++				ListEntry e;
++				Q_strncpy( e.adr, EngFuncs::NET_AdrToString( m_servers[tab][i].adr ), sizeof( e.adr ));
++				Q_strncpy( e.prot, m_servers[tab][i].Protocol(), sizeof( e.prot ));
++				list.AddToTail( e );
++			}
++			QueryList( list );
++		}
++		break;
++	}
++
++	Q_strncpy( m_status.text, SB( "ServerBrowser_RefreshingServerList", "Refreshing server list..." ), sizeof( m_status.text ));
++}
++
++void CSteamServerBrowser::AddServer( netadr_t adr, const char *info )
++{
++#ifndef XASH_ALL_SERVERS
++	if( stricmp( gMenu.m_gameinfo.gamefolder, Info_ValueForKey( info, "gamedir" )) != 0 )
++		return;
++#endif
++
++	const int tab = m_iRefreshTab;
++	if( tab < 0 || tab >= TAB_COUNT )
++		return;
++
++	// the favorites and the history take only their own servers
++	const char *sadr = EngFuncs::NET_AdrToString( adr );
++	if( tab == TAB_FAVORITES && FindInList( m_favorites, sadr ) < 0 )
++		return;
++	if( tab == TAB_HISTORY && FindInList( m_history, sadr ) < 0 )
++		return;
++
++	CUtlVector<SteamServer> &servers = m_servers[tab];
++	int pos = -1;
++	for( int i = 0; i < servers.Count(); i++ )
++		if( !EngFuncs::NET_CompareAdr( &servers[i].adr, &adr ))
++		{
++			pos = i;
++			break;
++		}
++
++	if( pos < 0 )
++	{
++		SteamServer s;
++		s.adr = adr;
++		pos = servers.AddToTail( s );
++	}
++
++	SteamServer &s = servers[pos];
++	Q_strncpy( s.name, Info_ValueForKey( info, "host" ), sizeof( s.name ));
++	Q_strncpy( s.map, Info_ValueForKey( info, "map" ), sizeof( s.map ));
++	// the engine doesn't pass the description of the game the server gives: the title of the game
++	Q_strncpy( s.game, gMenu.m_gameinfo.title, sizeof( s.game ));
++	s.numcl = atoi( Info_ValueForKey( info, "numcl" ));
++	s.maxcl = atoi( Info_ValueForKey( info, "maxcl" ));
++	s.password = !strcmp( Info_ValueForKey( info, "password" ), "1" );
++	s.goldsrc = !strcmp( Info_ValueForKey( info, "gs" ), "1" );
++	s.ping = (float)( EngFuncs::DoubleTime() - m_refreshStart[tab] );
++	s.pending = false;
++
++	if( tab == ActivePage( ))
++		m_list.Resort();
++}
++
++void CSteamServerBrowser::Think()
++{
++	if( m_iRefreshTab >= 0 && uiStatic.realTime > m_iRefreshUntil && m_status.text[0] )
++		m_status.text[0] = 0;
++
++	// the map filter is a text: the list follows it while it is typed
++	if( strcmp( m_szLastMapFilter, m_mapFilter.GetBuffer( )))
++	{
++		Q_strncpy( m_szLastMapFilter, m_mapFilter.GetBuffer(), sizeof( m_szLastMapFilter ));
++		ApplyFilters();
++	}
++
++	UpdateButtons();
++	BaseClass::Think();
++}
++
++SteamServer *CSteamServerBrowser::SelectedServer()
++{
++	const int tab = ActivePage();
++	const int i = m_list.Selected();
++	if( tab < 0 || i < 0 || i >= m_servers[tab].Count( ))
++		return nullptr;
++	return &m_servers[tab][i];
++}
++
++void CSteamServerBrowser::ConnectSelected()
++{
++	if( SteamServer *s = SelectedServer( ))
++		Connect( *s );
++}
++
++void CSteamServerBrowser::Connect( const SteamServer &s )
++{
++	if( s.password )
++	{
++		m_pendingConnect = s;
++		m_textDialog.Ask( SB( "ServerBrowser_Password", "Password" ),
++			SB( "ServerBrowser_ServerRequiresPassword", "This server requires a password to join." ), true,
++			VoidCb( &CSteamServerBrowser::PasswordEntered ));
++		return;
++	}
++
++	EngFuncs::CvarSetString( "password", "" );
++
++	const char *sadr = EngFuncs::NET_AdrToString( s.adr );
++	if( FindInList( m_history, sadr ) < 0 )
++	{
++		ListEntry e;
++		Q_strncpy( e.adr, sadr, sizeof( e.adr ));
++		Q_strncpy( e.prot, s.Protocol(), sizeof( e.prot ));
++		if( m_history.Count() >= 20 )
++			m_history.Remove( 0 );
++		m_history.AddToTail( e );
++		WriteList( "history_servers.lst", m_history );
++	}
++
++	EngFuncs::ClientCmdF( false, "connect \"%s\" \"%s\"\n", sadr, s.Protocol());
++	UI_ConnectionProgress_Connect( "" );
++}
++
++void CSteamServerBrowser::PasswordEntered()
++{
++	EngFuncs::CvarSetString( "password", m_textDialog.Text());
++
++	SteamServer s = m_pendingConnect;
++	s.password = false; // asked already
++	const char *pw = m_textDialog.Text();
++	char keep[128];
++	Q_strncpy( keep, pw, sizeof( keep ));
++	Connect( s );
++	EngFuncs::CvarSetString( "password", keep );
++}
++
++void CSteamServerBrowser::AskAddServer()
++{
++	m_textDialog.Ask( SB( "ServerBrowser_AddServer", "Add a Server" ),
++		SB( "ServerBrowser_EnterIPofServerToAdd", "Enter the IP address of the server you wish to add." ), false,
++		VoidCb( &CSteamServerBrowser::AddServerEntered ));
++}
++
++void CSteamServerBrowser::AddServerEntered()
++{
++	const char *text = m_textDialog.Text();
++	netadr_t adr;
++	if( !text[0] || !EngFuncs::textfuncs.pNetAPI->StringToAdr( (char *)text, &adr ))
++		return;
++
++	const char *sadr = EngFuncs::NET_AdrToString( adr );
++	if( FindInList( m_favorites, sadr ) < 0 )
++	{
++		ListEntry e;
++		Q_strncpy( e.adr, sadr, sizeof( e.adr ));
++		Q_strncpy( e.prot, "gs", sizeof( e.prot )); // a server of the Steam version; Xash servers answer it too
++		m_favorites.AddToTail( e );
++		WriteList( "favorite_servers.lst", m_favorites );
++	}
++
++	if( ActivePage() == TAB_FAVORITES )
++		Refresh( false );
++}
++
++void CSteamServerBrowser::AddCurrentServer()
++{
++	const char *server = EngFuncs::GetCvarString( "cl_serveraddress" ); // not every engine has it
++	if( !server[0] )
++		return;
++	netadr_t adr;
++	if( !EngFuncs::textfuncs.pNetAPI->StringToAdr( (char *)server, &adr ))
++		return;
++
++	const char *sadr = EngFuncs::NET_AdrToString( adr );
++	if( FindInList( m_favorites, sadr ) >= 0 )
++		return;
++
++	ListEntry e;
++	Q_strncpy( e.adr, sadr, sizeof( e.adr ));
++	Q_strncpy( e.prot, "gs", sizeof( e.prot ));
++	m_favorites.AddToTail( e );
++	WriteList( "favorite_servers.lst", m_favorites );
++	Refresh( false );
++}
++
++void CSteamServerBrowser::ToggleFavorite( const SteamServer &s )
++{
++	const char *sadr = EngFuncs::NET_AdrToString( s.adr );
++	const int i = FindInList( m_favorites, sadr );
++	if( i >= 0 )
++	{
++		m_favorites.Remove( i );
++		for( int k = 0; k < m_servers[TAB_FAVORITES].Count(); k++ )
++			if( !EngFuncs::NET_CompareAdr( &m_servers[TAB_FAVORITES][k].adr, &s.adr ))
++			{
++				m_servers[TAB_FAVORITES].Remove( k );
++				break;
++			}
++		if( ActivePage() == TAB_FAVORITES )
++			m_list.SetServers( &m_servers[TAB_FAVORITES] );
++	}
++	else
++	{
++		ListEntry e;
++		Q_strncpy( e.adr, sadr, sizeof( e.adr ));
++		Q_strncpy( e.prot, s.Protocol(), sizeof( e.prot ));
++		m_favorites.AddToTail( e );
++		m_servers[TAB_FAVORITES].AddToTail( s );
++	}
++	WriteList( "favorite_servers.lst", m_favorites );
++}
++
++enum { MENU_CONNECT = 0, MENU_FAVORITE, MENU_REFRESH };
++
++void CSteamServerBrowser::OpenContextMenu()
++{
++	SteamServer *s = SelectedServer();
++	if( !s )
++		return;
++
++	m_menu.RemoveAll();
++	MenuItem m;
++	Q_strncpy( m.text, SB( "ServerBrowser_ConnectToServer", "Connect to server" ), sizeof( m.text ));
++	m.action = MENU_CONNECT;
++	m_menu.AddToTail( m );
++
++	const bool fav = FindInList( m_favorites, EngFuncs::NET_AdrToString( s->adr )) >= 0;
++	Q_strncpy( m.text, fav ? SB( "ServerBrowser_RemoveFromFavorites", "Remove server from favorites" )
++		: SB( "ServerBrowser_AddToFavorites", "Add To Favorites" ), sizeof( m.text ));
++	m.action = MENU_FAVORITE;
++	m_menu.AddToTail( m );
++
++	Q_strncpy( m.text, SB( "ServerBrowser_RefreshServer", "Refresh server" ), sizeof( m.text ));
++	m.action = MENU_REFRESH;
++	m_menu.AddToTail( m );
++
++	m_iMenuX = uiStatic.cursorX;
++	m_iMenuY = uiStatic.cursorY;
++	m_bMenu = true;
++}
++
++void CSteamServerBrowser::DrawMenu()
++{
++	int w = 0;
++	for( int i = 0; i < m_menu.Count(); i++ )
++	{
++		const int tw = TextWidth( FONT_DEFAULT, m_menu[i].text );
++		if( tw > w ) w = tw;
++	}
++	w += 6 * 2 + 2;
++	const int rowH = FontTall( FONT_DEFAULT ) + 4;
++	const int h = m_menu.Count() * rowH + 2;
++	if( m_iMenuX + w > gpGlobals->scrWidth ) m_iMenuX = gpGlobals->scrWidth - w;
++	if( m_iMenuY + h > gpGlobals->scrHeight ) m_iMenuY = gpGlobals->scrHeight - h;
++
++	Fill( m_iMenuX, m_iMenuY, w, h, ControlBG );
++	RaisedBorder( m_iMenuX, m_iMenuY, w, h );
++	for( int i = 0; i < m_menu.Count(); i++ )
++	{
++		const int ry = m_iMenuY + 1 + i * rowH;
++		const bool armed = UI_CursorInRect( m_iMenuX + 1, ry, w - 2, rowH );
++		if( armed )
++			Fill( m_iMenuX + 1, ry, w - 2, rowH, SelectionBG );
++		TextInBox( FONT_DEFAULT, m_iMenuX + 7, ry, w - 12, rowH, m_menu[i].text, armed ? BrightBaseText : DimBaseText );
++	}
++}
++
++bool CSteamServerBrowser::MenuKey( int key )
++{
++	if( !UI::Key::IsLeftMouse( key ) && key != K_MOUSE2 && !UI::Key::IsEscape( key ))
++		return false;
++
++	m_bMenu = false;
++	if( !UI::Key::IsLeftMouse( key ))
++		return true;
++
++	const int rowH = FontTall( FONT_DEFAULT ) + 4;
++	const int i = ( uiStatic.cursorY - m_iMenuY - 1 ) / rowH;
++	if( uiStatic.cursorX < m_iMenuX || uiStatic.cursorY < m_iMenuY || i < 0 || i >= m_menu.Count( ))
++		return true;
++
++	SteamServer *s = SelectedServer();
++	if( !s )
++		return true;
++
++	switch( m_menu[i].action )
++	{
++	case MENU_CONNECT: Connect( *s ); break;
++	case MENU_FAVORITE: ToggleFavorite( *s ); break;
++	case MENU_REFRESH:
++	{
++		m_iRefreshTab = ActivePage();
++		m_refreshStart[m_iRefreshTab] = EngFuncs::DoubleTime();
++		s->pending = true;
++		EngFuncs::ClientCmdF( false, "ui_queryserver \"%s\" \"%s\"\n", EngFuncs::NET_AdrToString( s->adr ), s->Protocol());
++		break;
++	}
++	}
++	return true;
++}
++
++bool CSteamServerBrowser::KeyDown( int key )
++{
++	if( m_bMenu && MenuKey( key ))
++		return true;
++	return BaseClass::KeyDown( key );
++}
++
++void CSteamServerBrowser::Draw()
++{
++	BaseClass::Draw();
++	if( m_bMenu )
++		DrawMenu();
++}
++
++void UI_SteamServerBrowser_Menu( void )
++{
++	if( !s_browser )
++	{
++		s_browser = new CSteamServerBrowser;
++		EngFuncs::CvarRegister( "ui_steam_serverbrowser_size", "", FCVAR_ARCHIVE );
++	}
++	s_browser->Show();
++}
++
++// the answers of the servers, from UI_AddServerToList of mainui
++void SteamServerBrowser_AddServer( netadr_t adr, const char *info )
++{
++	if( s_browser && s_browser->WasInit() && s_browser->IsVisible( ))
++		s_browser->AddServer( adr, info );
++}
 diff --git a/3rdparty/mainui_cpp/menus/SteamUI.cpp b/3rdparty/mainui_cpp/menus/SteamUI.cpp
 new file mode 100644
-index 0000000..6fe377e
+index 0000000..8d57199
 --- /dev/null
 +++ b/3rdparty/mainui_cpp/menus/SteamUI.cpp
-@@ -0,0 +1,1116 @@
+@@ -0,0 +1,1119 @@
 +/*
 +SteamUI.cpp - the windows of the Steam version of Half-Life and its mods (see SteamUI.h)
 +
@@ -2684,24 +4057,24 @@ index 0000000..6fe377e
 +
 +void CSteamFrame::TabRect( int page, int &x, int &y, int &w, int &h ) const
 +{
-+	x = m_scPos.x + 5;
++	x = m_scPos.x + m_pageInset[0];
 +	for( int i = 0; i < page; i++ )
 +	{
 +		int tw = TextWidth( FONT_DEFAULT, Localize( m_pages[i]->title )) + 16;
-+		x += ( tw < 64 ? 64 : tw ) + 1;
++		x += ( tw < m_iTabMinWide ? m_iTabMinWide : tw ) + 1;
 +	}
 +	w = TextWidth( FONT_DEFAULT, Localize( m_pages[page]->title )) + 16;
-+	if( w < 64 )
-+		w = 64;
++	if( w < m_iTabMinWide )
++		w = m_iTabMinWide;
 +
 +	if( page == m_iActivePage )
 +	{
-+		y = m_scPos.y + 29;
++		y = m_scPos.y + m_pageInset[1] - 26;
 +		h = 27;
 +	}
 +	else
 +	{
-+		y = m_scPos.y + 31;
++		y = m_scPos.y + m_pageInset[1] - 24;
 +		h = 24;
 +	}
 +}
@@ -2909,7 +4282,8 @@ index 0000000..6fe377e
 +	// the tabs and the page
 +	if( m_pages.Count( ))
 +	{
-+		const int px = x + 5, py = y + 55, pw = w - 10, ph = h - 92;
++		int px, py, pw, ph;
++		PageRect( px, py, pw, ph );
 +		RaisedBorder( px, py, pw, ph );
 +
 +		for( int i = 0; i < m_pages.Count(); i++ )
@@ -2983,6 +4357,8 @@ index 0000000..6fe377e
 +		p.visible = n->GetInt( "visible", 1 ) != 0;
 +		p.dull = n->GetInt( "dulltext", 0 ) != 0;
 +		p.wrap = n->GetInt( "wrap", 0 ) != 0;
++		p.autoResize = n->GetInt( "autoResize", 0 );
++		p.pinCorner = n->GetInt( "pinCorner", 0 );
 +		Q_strncpy( p.leftText, n->GetString( "leftText" ), sizeof( p.leftText ));
 +		Q_strncpy( p.rightText, n->GetString( "rightText" ), sizeof( p.rightText ));
 +		out.AddToTail( p );
@@ -3001,10 +4377,10 @@ index 0000000..6fe377e
 +}
 diff --git a/3rdparty/mainui_cpp/menus/SteamUI.h b/3rdparty/mainui_cpp/menus/SteamUI.h
 new file mode 100644
-index 0000000..8e3c2b6
+index 0000000..e681919
 --- /dev/null
 +++ b/3rdparty/mainui_cpp/menus/SteamUI.h
-@@ -0,0 +1,289 @@
+@@ -0,0 +1,309 @@
 +/*
 +SteamUI.h - the windows of the Steam version of Half-Life and its mods (GameUI of VGUI2): their colours, fonts and
 +controls, drawn in pixels as there
@@ -3243,7 +4619,23 @@ index 0000000..8e3c2b6
 +	void AddToPage( int page, CMenuBaseItem &item );
 +	void SetActivePage( int page );
 +	int ActivePage() const { return m_iActivePage; }
-+	Point PageOrigin() const { return Point( 5, 55 ); } // where the controls of a page are counted from
++	Point PageOrigin() const { return Point( m_pageInset[0], m_pageInset[1] ); } // where the controls of a page are counted from
++
++	// the place of the property sheet: the border of the page from (left, top) to (wide - right, tall - bottom), the
++	// tabs over it; and the least width of a tab. The Options window: 5, 55, 5, 37 and 64; the Server Browser:
++	// 8, 72, 9, 34 and 72 (measured at 1920x1080)
++	void SetSheet( int left, int top, int right, int bottom, int tabMinWide )
++	{
++		m_pageInset[0] = left; m_pageInset[1] = top; m_pageInset[2] = right; m_pageInset[3] = bottom;
++		m_iTabMinWide = tabMinWide;
++	}
++	void PageRect( int &x, int &y, int &w, int &h ) const
++	{
++		x = m_scPos.x + m_pageInset[0];
++		y = m_scPos.y + m_pageInset[1];
++		w = m_iWide - m_pageInset[0] - m_pageInset[2];
++		h = m_iTall - m_pageInset[1] - m_pageInset[3];
++	}
 +
 +	// a combo box opens its list above everything; only one at a time
 +	void OpenList( CSteamComboBox *box ) { m_pOpenList = box; }
@@ -3256,6 +4648,8 @@ index 0000000..8e3c2b6
 +		int x, y, w, h;
 +		char label[256];
 +		bool visible, dull, wrap;
++		int autoResize, pinCorner; // VGUI2: 1 the right edge follows the window, 2 the bottom, 3 both;
++		                           // the corner it keeps its place to: 0 top left, 1 top right, 2 bottom left, 3 bottom right
 +		char leftText[64], rightText[64];
 +	};
 +	static bool ReadRes( const char *path, CUtlVector<Placed> &out );
@@ -3269,6 +4663,8 @@ index 0000000..8e3c2b6
 +	char m_szTitle[128];
 +	int m_iWide, m_iTall;
 +	int m_iActivePage = -1;
++	int m_pageInset[4] = { 5, 55, 5, 37 };
++	int m_iTabMinWide = 64;
 +	CSteamComboBox *m_pOpenList = nullptr;
 +
 +	struct Page
