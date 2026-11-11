@@ -1,0 +1,225 @@
+name: Build cs16-client (x64) with CEF and MOTD
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      # The client version these patches are made for. When you move to another client version change BOTH
+      # values below and the label "<number>-CEF" in cl_dll/hud.cpp inside the patch (see the README).
+      # The check at the end of the build fails if the built client does not have the label "<CLIENT_BUILD>-CEF".
+      # f8ecf49 (9 November 2026) is still build 4011 for these patches (after 8ae1ebe: the scoreboard fix, which was in
+      # these patches, is in the client now; the bots and the server code updated). 8ae1ebe fixed the HUD menus of server plugins
+      # (text cut at 320 pixels, "\\R" alignment); the menu is FWGS/mainui_cpp a5bb833.
+      CLIENT_BUILD: "4011"
+      CLIENT_REF: f8ecf4962c1878d7d9ad0d329aa7e53fe0addcab
+      # The CEF version the client is built with. If the CDN does not have exactly this version, the newest
+      # stable build of the same major version (147.x) is taken; another major version is never taken.
+      # The archive is always checked by its SHA-1 from the index of the CDN.
+      # To move to a newer CEF put its full version here (see https://cef-builds.spotifycdn.com/index.html).
+      CEF_VERSION: "147.0.10+gd58e84d+chromium-147.0.7727.118"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Keep line endings as is
+        run: git config --global core.autocrlf false
+
+      - name: Get this repository (contains the patch)
+        uses: actions/checkout@v5
+        with:
+          path: mypatch
+
+      - name: Get cs16-client sources (build 4011)
+        uses: actions/checkout@v5
+        with:
+          repository: Velaron/cs16-client
+          ref: ${{ env.CLIENT_REF }}
+          submodules: recursive
+          path: cs16
+
+      - name: Apply CEF + MOTD patch
+        working-directory: cs16
+        run: git apply --ignore-whitespace --whitespace=nowarn ../mypatch/cs16_cef_motd.patch
+
+      - name: Apply the Steam main menu patch (only if cs16_steam_gamemenu.patch is in this repository)
+        working-directory: cs16
+        # the main menu as in the Steam version (menu library); without the file the menu stays as it is
+        run: |
+          if [ -f ../mypatch/cs16_steam_gamemenu.patch ]; then
+            git apply --ignore-whitespace --whitespace=nowarn ../mypatch/cs16_steam_gamemenu.patch
+            echo "the Steam main menu patch is applied"
+          else
+            echo "no cs16_steam_gamemenu.patch: the main menu stays as it is"
+          fi
+
+      - name: Choose CEF version (64-bit)
+        run: |
+          cat > pick_cef.py <<'PY'
+          import json, os, sys, urllib.parse, urllib.request
+
+          plat = sys.argv[1]
+          pin = os.environ["CEF_VERSION"].strip()
+          major = pin.split(".")[0]
+          BASE = "https://cef-builds.spotifycdn.com/"
+          UA = {"User-Agent": "cs16-client-ci/1.0"}
+
+          def get(url):
+              req = urllib.request.Request(url, headers=UA)
+              with urllib.request.urlopen(req, timeout=120) as r:
+                  return r.read()
+
+          def minimal(version):
+              for f in version.get("files", []):
+                  if f.get("type") == "minimal":
+                      return f
+              return None
+
+          def result(name, sha1, note):
+              print(note)
+              print("CEF_URL=" + BASE + urllib.parse.quote(name))
+              print("CEF_NAME=" + name)
+              print("CEF_SHA1=" + sha1)
+              sys.exit(0)
+
+          try:
+              versions = json.loads(get(BASE + "index.json"))[plat]["versions"]
+          except Exception as e:
+              versions = None
+              print("index.json is not usable:", e)
+
+          if versions is not None:
+              for v in versions:
+                  f = minimal(v)
+                  if v.get("cef_version") == pin and f and f.get("sha1"):
+                      result(f["name"], f["sha1"], "Using the pinned CEF " + pin)
+
+              # newest first in the index: the first stable build of the same major version
+              for v in versions:
+                  f = minimal(v)
+                  if v.get("channel") == "stable" and str(v.get("cef_version", "")).startswith(major + ".") and f and f.get("sha1"):
+                      result(f["name"], f["sha1"],
+                             "WARNING: the pinned CEF %s is not on the CDN, using %s (same major version)" % (pin, v["cef_version"]))
+
+              print("ERROR: no CEF %s.x build for %s on the CDN. Put an existing version into CEF_VERSION." % (major, plat))
+              sys.exit(1)
+
+          # no index: only the pinned version, checked by the .sha1 file that lies next to every archive
+          name = "cef_binary_%s_%s_minimal.tar.bz2" % (pin, plat)
+          try:
+              sha1 = get(BASE + urllib.parse.quote(name) + ".sha1").decode().split()[0]
+          except Exception as e:
+              print("ERROR: cannot get the SHA-1 of %s: %s" % (name, e))
+              sys.exit(1)
+          result(name, sha1, "Using the pinned CEF " + pin + " (checked by its .sha1 file)")
+          PY
+          python pick_cef.py windows64 | tee pick.log
+          grep '^CEF_URL=' pick.log >> "$GITHUB_ENV"
+          grep '^CEF_NAME=' pick.log >> "$GITHUB_ENV"
+          grep '^CEF_SHA1=' pick.log >> "$GITHUB_ENV"
+
+      - name: Download, check and unpack CEF
+        run: |
+          CEF_ROOT="$(python cs16/scripts/ci_fetch_cef.py "$CEF_URL" "$RUNNER_TEMP/cef" "$CEF_SHA1")"
+          CEF_ROOT="$(cygpath -m "$CEF_ROOT")"
+          echo "CEF root: $CEF_ROOT"
+          ls "$CEF_ROOT"
+          echo "CEF_ROOT=$CEF_ROOT" >> "$GITHUB_ENV"
+
+      - name: Setup Visual Studio (64-bit)
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw "Visual Studio with the C++ tools is not found" }
+          $vcvars = Join-Path $vs "VC\Auxiliary\Build\vcvars64.bat"
+          cmd /c "`"$vcvars`" >nul && set" | ForEach-Object {
+            # only plain names (cmd also has internal ones like "=C:" and "ProgramFiles(x86)")
+            if ($_ -match '^([A-Za-z_][A-Za-z0-9_]*)=(.*)$') { "$($matches[1])=$($matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8 }
+          }
+
+      - name: Configure
+        working-directory: cs16
+        env:
+          MSYS_NO_PATHCONV: "1"
+        run: |
+          cmake --preset win32-release-amd64 "-DCEF_ROOT=${CEF_ROOT}" -DCEF_RUNTIME_LIBRARY_FLAG=/MD -DBUILD_MAINUI=ON -DBUILD_SERVER=OFF
+
+      - name: Build client only
+        working-directory: cs16
+        run: cmake --build build --target client menu cs16_cef_helper
+
+      - name: Collect result
+        working-directory: cs16
+        run: |
+          OUT="$GITHUB_WORKSPACE/result"
+          mkdir -p "$OUT/cstrike/cl_dlls" "$OUT/cstrike/cef/locales"
+          find build -name "client*.dll" -exec cp -v {} "$OUT/cstrike/cl_dlls/" \;
+          find build -name "menu*.dll" -exec cp -v {} "$OUT/cstrike/cl_dlls/" \;
+          find build -name "cs16_cef_helper.exe" -exec cp -v {} "$OUT/cstrike/cef/" \;
+          find "$CEF_ROOT/Release" -maxdepth 1 \( -name '*.dll' -o -name '*.bin' -o -name '*.json' \) -exec cp -v {} "$OUT/cstrike/cef/" \;
+          find "$CEF_ROOT/Resources" -maxdepth 1 \( -name '*.pak' -o -name '*.dat' -o -name '*.bin' \) -exec cp -v {} "$OUT/cstrike/cef/" \;
+          cp -r "$CEF_ROOT/Resources/locales/." "$OUT/cstrike/cef/locales/"
+          printf '%s\nsha1 %s\n' "$CEF_NAME" "$CEF_SHA1" > "$OUT/CEF_VERSION.txt"
+          du -sh "$OUT/cstrike/cef"
+          ls -la "$OUT/cstrike/cl_dlls" "$OUT/cstrike/cef" | head -40
+
+      - name: Check result (64-bit client linked with CEF, CEF files present)
+        working-directory: result
+        run: |
+          set -eu
+          f=$(ls cstrike/cl_dlls/client*.dll | head -n1)
+          m=$(ls cstrike/cl_dlls/menu*.dll | head -n1)
+          echo "menu: $m"
+          grep -aq "Trebuchet MS" "$m" || { echo "ERROR: the menu library has no team menu of the Steam version"; exit 1; }
+          echo "client: $f"
+          python - "$f" <<'PY'
+          import struct, sys
+          d = open(sys.argv[1], 'rb').read(4096)
+          pe = struct.unpack_from('<I', d, 0x3c)[0]
+          machine = struct.unpack_from('<H', d, pe + 4)[0]
+          print('PE machine type:', hex(machine), '(0x8664 = 64-bit x64)')
+          sys.exit(0 if machine == 0x8664 else 1)
+          PY
+          grep -aq "libcef.dll" "$f" || { echo "ERROR: client is not linked with CEF"; exit 1; }
+          grep -aq "cl_tutor_maxtime" "$f" || { echo "ERROR: the tutor messages are not in this client"; exit 1; }
+          grep -aq -- "${CLIENT_BUILD}-CEF" "$f" || { echo "ERROR: the version mark ${CLIENT_BUILD}-CEF is not in the client. If the patch was moved to another client version, put the same number into the label in cl_dll/hud.cpp (inside the patch) as in CLIENT_BUILD at the top of this workflow"; exit 1; }
+          test -f cstrike/cef/libcef.dll || { echo "ERROR: libcef.dll is missing"; exit 1; }
+          test -f cstrike/cef/cs16_cef_helper.exe || { echo "ERROR: cs16_cef_helper.exe is missing"; exit 1; }
+          python - cstrike/cef/cs16_cef_helper.exe <<'PY'
+          import struct, sys
+          d = open(sys.argv[1], 'rb').read(4096)
+          pe = struct.unpack_from('<I', d, 0x3c)[0]
+          machine = struct.unpack_from('<H', d, pe + 4)[0]
+          print('helper PE machine type:', hex(machine))
+          sys.exit(0 if machine == 0x8664 else 1)
+          PY
+          test -f cstrike/cef/icudtl.dat || { echo "ERROR: icudtl.dat is missing"; exit 1; }
+          test -f cstrike/cef/resources.pak || { echo "ERROR: resources.pak is missing"; exit 1; }
+          echo "Result looks complete"
+
+      # Two archives: the small one has only what changes with the patch (the client, the menu and the helper of
+      # the browser, ~3 MB); the full one also has the files of CEF (~165 MB) and is needed only the first time or
+      # when the version of CEF (CEF_VERSION above) changes.
+      - name: Collect the small archive (without the files of CEF)
+        run: |
+          SMALL="$GITHUB_WORKSPACE/result-small"
+          mkdir -p "$SMALL/cstrike/cl_dlls" "$SMALL/cstrike/cef"
+          cp -v result/cstrike/cl_dlls/* "$SMALL/cstrike/cl_dlls/"
+          cp -v result/cstrike/cef/cs16_cef_helper.exe "$SMALL/cstrike/cef/"
+          cp -v result/CEF_VERSION.txt "$SMALL/"
+          du -sh "$SMALL"
+
+      - name: Upload the small archive (client, menu, helper)
+        uses: actions/upload-artifact@v6
+        with:
+          name: cs16-client-cef-motd-x64-dlls-only
+          path: result-small/*
+
+      - name: Upload the full archive (with CEF)
+        uses: actions/upload-artifact@v6
+        with:
+          name: cs16-client-cef-motd-x64-full
+          path: result/*
