@@ -1239,7 +1239,7 @@ index 0000000..4af0ce4
 +			const InputEvent& e = out.events[i];
 +			if( output_events <= 8 || output_events % 100 == 0 )
 +				gEngfuncs.Con_Printf( "[motd-input] event[%d] type=%d x=%d y=%d key=%d button=%d wheel=%d\n",
-+					i, (int)e.type, e.x, e.y, e.key, e.button, e.wheel_delta );
++					i, (int)e.type, e.x, e.y, e.key, e.button, e.delta_y );
 +			inst->EnqueueInput( e );
 +		}
 +	}
