@@ -1,0 +1,78 @@
+name: Adapt Xash3D SteamUI patch to upstream master
+
+on:
+  push:
+    branches:
+      - automation/xash3d-steamui-master-adaptation
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  adapt:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout patch repository
+        uses: actions/checkout@v5
+        with:
+          path: patch-repo
+
+      - name: Checkout pinned upstream master
+        uses: actions/checkout@v5
+        with:
+          repository: FWGS/xash3d-fwgs
+          ref: cdcb29aa86a5ab16154622e862dd05c62b7561fc
+          fetch-depth: 0
+          submodules: recursive
+          path: xash
+
+      - name: Adapt patch and verify applicability
+        id: adapt
+        shell: bash
+        run: |
+          set +e
+          mkdir -p "${GITHUB_WORKSPACE}/result"
+          cd "${GITHUB_WORKSPACE}/xash"
+          echo "Upstream commit: $(git rev-parse HEAD)" > "${GITHUB_WORKSPACE}/result/adaptation-report.txt"
+          echo "Source patch SHA256:" >> "${GITHUB_WORKSPACE}/result/adaptation-report.txt"
+          sha256sum "${GITHUB_WORKSPACE}/patch-repo/xash3d_steamui.source.patch" >> "${GITHUB_WORKSPACE}/result/adaptation-report.txt"
+          git apply --3way --reject --whitespace=nowarn "${GITHUB_WORKSPACE}/patch-repo/xash3d_steamui.source.patch"
+          APPLY_RC=$?
+          echo "git apply --3way exit code: ${APPLY_RC}" >> "${GITHUB_WORKSPACE}/result/adaptation-report.txt"
+          git status --short > "${GITHUB_WORKSPACE}/result/git-status.txt"
+          find . -name '*.rej' -type f -print > "${GITHUB_WORKSPACE}/result/reject-files.txt"
+          if [ "${APPLY_RC}" -eq 0 ]; then
+            git diff --binary HEAD > "${GITHUB_WORKSPACE}/result/xash3d_steamui.patch"
+            git reset --hard HEAD
+            git clean -fd
+            git apply --check "${GITHUB_WORKSPACE}/result/xash3d_steamui.patch"
+            CHECK_RC=$?
+            echo "git apply --check exit code: ${CHECK_RC}" >> "${GITHUB_WORKSPACE}/result/adaptation-report.txt"
+            if [ "${CHECK_RC}" -eq 0 ]; then
+              echo "RESULT=SUCCESS" >> "${GITHUB_WORKSPACE}/result/adaptation-report.txt"
+              echo "success=true" >> "${GITHUB_OUTPUT}"
+            else
+              rm -f "${GITHUB_WORKSPACE}/result/xash3d_steamui.patch"
+              echo "RESULT=PATCH_CHECK_FAILED" >> "${GITHUB_WORKSPACE}/result/adaptation-report.txt"
+              echo "success=false" >> "${GITHUB_OUTPUT}"
+            fi
+          else
+            echo "RESULT=CONFLICTS_REQUIRE_MANUAL_RECONCILIATION" >> "${GITHUB_WORKSPACE}/result/adaptation-report.txt"
+            echo "success=false" >> "${GITHUB_OUTPUT}"
+          fi
+          exit 0
+
+      - name: Upload adapted patch and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xash3d-steamui-adaptation-${{ github.run_number }}
+          path: result/
+          if-no-files-found: error
+
+      - name: Set workflow result
+        if: steps.adapt.outputs.success != 'true'
+        run: |
+          echo "Patch adaptation did not produce a verified patch. Inspect the uploaded diagnostics."
+          exit 1
