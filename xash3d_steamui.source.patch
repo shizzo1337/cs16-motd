@@ -903,7 +903,7 @@ index c7b35c5..3b6dae4 100644
  			Con_DrawSolidConsole( refState.height );
  			Key_SetKeyDest( key_console );
  		}
-@@ -2911,3 +3063,186 @@ void Test_RunCon( void )
+@@ -2911,3 +3063,185 @@ void Test_RunCon( void )
  }
  
  #endif /* XASH_ENGINE_TESTS */
