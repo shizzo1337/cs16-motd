@@ -32,34 +32,45 @@ jobs:
         shell: bash
         run: |
           set +e
-          mkdir -p "${GITHUB_WORKSPACE}/result"
+          RESULT="${GITHUB_WORKSPACE}/result"
+          PATCH="${GITHUB_WORKSPACE}/patch-repo/xash3d_steamui.source.patch"
+          mkdir -p "$RESULT"
           cd "${GITHUB_WORKSPACE}/xash"
-          echo "Upstream commit: $(git rev-parse HEAD)" > "${GITHUB_WORKSPACE}/result/adaptation-report.txt"
-          echo "Source patch SHA256:" >> "${GITHUB_WORKSPACE}/result/adaptation-report.txt"
-          sha256sum "${GITHUB_WORKSPACE}/patch-repo/xash3d_steamui.source.patch" >> "${GITHUB_WORKSPACE}/result/adaptation-report.txt"
-          git apply --3way --reject --whitespace=nowarn "${GITHUB_WORKSPACE}/patch-repo/xash3d_steamui.source.patch"
+
+          {
+            echo "Upstream commit: $(git rev-parse HEAD)"
+            echo "Source patch SHA256:"
+            sha256sum "$PATCH"
+            echo "Adaptation method: git apply --3way (without --reject)"
+          } > "$RESULT/adaptation-report.txt"
+
+          git apply --3way --whitespace=nowarn "$PATCH" > "$RESULT/apply.stdout.txt" 2> "$RESULT/apply.stderr.txt"
           APPLY_RC=$?
-          echo "git apply --3way exit code: ${APPLY_RC}" >> "${GITHUB_WORKSPACE}/result/adaptation-report.txt"
-          git status --short > "${GITHUB_WORKSPACE}/result/git-status.txt"
-          find . -name '*.rej' -type f -print > "${GITHUB_WORKSPACE}/result/reject-files.txt"
-          if [ "${APPLY_RC}" -eq 0 ]; then
-            git diff --binary HEAD > "${GITHUB_WORKSPACE}/result/xash3d_steamui.patch"
+          echo "git apply --3way exit code: $APPLY_RC" >> "$RESULT/adaptation-report.txt"
+
+          git status --short > "$RESULT/git-status.txt"
+          git ls-files -u > "$RESULT/unmerged-index.txt"
+          git diff --cc > "$RESULT/conflict-diff.txt"
+          git diff --binary HEAD > "$RESULT/worktree-diff.patch"
+
+          if [ "$APPLY_RC" -eq 0 ]; then
+            cp "$RESULT/worktree-diff.patch" "$RESULT/xash3d_steamui.patch"
             git reset --hard HEAD
             git clean -fd
-            git apply --check "${GITHUB_WORKSPACE}/result/xash3d_steamui.patch"
+            git apply --check "$RESULT/xash3d_steamui.patch" > "$RESULT/check.stdout.txt" 2> "$RESULT/check.stderr.txt"
             CHECK_RC=$?
-            echo "git apply --check exit code: ${CHECK_RC}" >> "${GITHUB_WORKSPACE}/result/adaptation-report.txt"
-            if [ "${CHECK_RC}" -eq 0 ]; then
-              echo "RESULT=SUCCESS" >> "${GITHUB_WORKSPACE}/result/adaptation-report.txt"
-              echo "success=true" >> "${GITHUB_OUTPUT}"
+            echo "git apply --check exit code: $CHECK_RC" >> "$RESULT/adaptation-report.txt"
+            if [ "$CHECK_RC" -eq 0 ]; then
+              echo "RESULT=SUCCESS" >> "$RESULT/adaptation-report.txt"
+              echo "success=true" >> "$GITHUB_OUTPUT"
             else
-              rm -f "${GITHUB_WORKSPACE}/result/xash3d_steamui.patch"
-              echo "RESULT=PATCH_CHECK_FAILED" >> "${GITHUB_WORKSPACE}/result/adaptation-report.txt"
-              echo "success=false" >> "${GITHUB_OUTPUT}"
+              rm -f "$RESULT/xash3d_steamui.patch"
+              echo "RESULT=PATCH_CHECK_FAILED" >> "$RESULT/adaptation-report.txt"
+              echo "success=false" >> "$GITHUB_OUTPUT"
             fi
           else
-            echo "RESULT=CONFLICTS_REQUIRE_MANUAL_RECONCILIATION" >> "${GITHUB_WORKSPACE}/result/adaptation-report.txt"
-            echo "success=false" >> "${GITHUB_OUTPUT}"
+            echo "RESULT=CONFLICTS_REQUIRE_MANUAL_RECONCILIATION" >> "$RESULT/adaptation-report.txt"
+            echo "success=false" >> "$GITHUB_OUTPUT"
           fi
           exit 0
 
@@ -67,7 +78,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: xash3d-steamui-adaptation-${{ github.run_number }}
+          name: xash3d-steamui-adaptation-${{ github.run_number }}-${{ github.run_attempt }}
           path: result/
           if-no-files-found: error
 
