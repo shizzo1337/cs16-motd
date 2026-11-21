@@ -20,7 +20,7 @@ jobs:
     env:
       # the engine version this patch is made for (FWGS "continuous" of 10 November 2026). For another version change
       # ENGINE_REF and check that the patch still applies (the step "Apply the patch" fails otherwise).
-      ENGINE_REF: 707596f4905689ec224e993fcaa4d4ad66aa67d6
+      ENGINE_REF: cdcb29aa86a5ab16154622e862dd05c62b7561fc
       # as in .github/workflows/c-cpp.yml of that engine version
       SDL_VERSION: 2.32.10
       FFMPEG_VERSION: '9.0'
