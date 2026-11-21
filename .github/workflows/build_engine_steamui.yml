@@ -2,6 +2,9 @@ name: Build Xash3D FWGS (Windows x64, x86 and Windows XP) with the console and t
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - automation/xash3d-steamui-master-adaptation
 
 jobs:
   build:
