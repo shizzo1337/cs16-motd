@@ -898,7 +898,7 @@ index c7b35c5..3b6dae4 100644
 +				UI_SetActiveMenu( true );
 +				if( cls.key_dest == key_console )
 +					UI_SteamConsoleShow( true );
-+				break;
++				return;
 +			}
  			Con_DrawSolidConsole( refState.height );
  			Key_SetKeyDest( key_console );
